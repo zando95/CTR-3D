@@ -2,6 +2,7 @@
 #include <platform/native_audio.h>
 #include <platform/native_assets.h>
 #include <platform/native_disc_image.h>
+#include <platform/native_path.h>
 #include <platform/native_perf.h>
 
 #if !defined(__3DS__)
@@ -577,6 +578,7 @@ struct NativeAudioXaTrackInfo
 	int channelFilter;
 	int numSectors;
 	int entryIndex; // XNF-global track index (firstSongIndex[category] + xaID); keys the voice cache + count memo
+	int pack;       // 0 = the disc's own (NTSC-U English) voices; 1..6 = a PAL voice pack (3DS). entryIndex is then offset by pack * 512 so the keys never collide
 };
 
 struct NativeAudioVoiceState
@@ -3102,6 +3104,8 @@ internal int NativeAudio_BuildXAPath(char *path, size_t pathSize, int categoryID
 	return (written > 0) && ((size_t)written < pathSize);
 }
 
+internal int NativeAudio_LookupPalVoiceTrackInfo(int categoryID, int xaID, struct NativeAudioXaTrackInfo *info);
+
 internal int NativeAudio_LookupXATrackInfo(int categoryID, int xaID, struct NativeAudioXaTrackInfo *info)
 {
 	struct NativeAudioByteBuffer xnf;
@@ -3118,6 +3122,15 @@ internal int NativeAudio_LookupXATrackInfo(int categoryID, int xaID, struct Nati
 	{
 		return 0;
 	}
+
+#if defined(__3DS__)
+	/* A PAL voice pack is selected: speech (EXTRA, GAME) comes from it when it has the line.
+	 * Anything it lacks falls through to the disc's English below. */
+	if (NativeAudio_LookupPalVoiceTrackInfo(categoryID, xaID, info))
+	{
+		return 1;
+	}
+#endif
 
 	if (!NativeAudio_ReadXnfBytes(&xnf))
 	{
@@ -3179,10 +3192,370 @@ internal int NativeAudio_LookupXATrackInfo(int categoryID, int xaID, struct Nati
 	info->fileNumber = entry[1];
 	info->numSectors = NativeAudio_ReadLE16Signed(entry + 2);
 	info->entryIndex = entryIndex;
+	info->pack = 0;
 
 	NativeAudio_FreeByteBuffer(&xnf);
 	return info->numSectors > 0;
 }
+
+
+#if defined(__3DS__)
+/*
+ * PAL voice packs (3DS).
+ *
+ * The NTSC-U disc only carries English speech. A pack extracted from a PAL disc with
+ * tools/extract_pal_voices.py, placed in <base dir>/mods/pal-voices (on the SD card:
+ * /3ds/ctr_native/mods/pal-voices), gives the other languages their own voices:
+ *
+ *   mods/pal-voices/XA/<CODE>.XNF              the pack's track table
+ *   mods/pal-voices/XA/<CODE>/EXTRA/Sxx.XA     raw 2352-byte sectors, copied off the disc unchanged
+ *   mods/pal-voices/XA/<CODE>/GAME/Sxx.XA      (CODE = ENG FRN GRM ITL SPN DCH)
+ *
+ * LOAD_LangFile reports the language (NativeAudio_SetVoiceLanguage). While a pack is
+ * selected, every EXTRA/GAME lookup resolves through the pack's own XNF; a line the pack does not
+ * have (or a pack that is not installed) plays from the disc's English exactly as before. MUSIC
+ * is never touched. Nothing here runs unless a pack is selected, so English is unchanged.
+ *
+ * Voice pack numbers are LOAD_LangFile's language file index minus one:
+ * 2 en2 -> 1 ENG, 3 fr -> 2 FRN, 4 de -> 3 GRM, 5 it -> 4 ITL, 6 es -> 5 SPN, 7 nl -> 6 DCH.
+ */
+#define NATIVE_AUDIO_PAL_PACK_COUNT    6
+#define NATIVE_AUDIO_PAL_FILE_MAX      256
+#define NATIVE_AUDIO_PAL_XNF_MAX_BYTES (256 * 1024)
+#define NATIVE_AUDIO_PAL_KEY_STRIDE    512 /* must equal NATIVE_AUDIO_XA_TRACK_INDEX_MAX (asserted below it) */
+
+__attribute__((format(printf, 1, 2))) internal void NativeAudio_XAVoiceCacheLog(const char *fmt, ...);
+
+internal int s_voicePack; /* 0 = disc voices */
+internal struct NativeAudioByteBuffer s_palXnf[NATIVE_AUDIO_PAL_PACK_COUNT + 1];
+internal u8 s_palXnfTried[NATIVE_AUDIO_PAL_PACK_COUNT + 1];
+/* [pack][category - 1][file number]: 0 = not looked at yet, 1 = present, 2 = missing. One SD probe per file per boot. */
+internal u8 s_palFileState[NATIVE_AUDIO_PAL_PACK_COUNT + 1][2][NATIVE_AUDIO_PAL_FILE_MAX];
+
+internal const char *NativeAudio_PalPackCode(int pack)
+{
+	static const char *const codes[NATIVE_AUDIO_PAL_PACK_COUNT + 1] = {NULL, "ENG", "FRN", "GRM", "ITL", "SPN", "DCH"};
+
+	return ((pack >= 1) && (pack <= NATIVE_AUDIO_PAL_PACK_COUNT)) ? codes[pack] : NULL;
+}
+
+/* fileNumber < 0 names the pack's XNF manifest. */
+internal int NativeAudio_PalVoicePath(char *path, size_t pathSize, int pack, int categoryID, int fileNumber)
+{
+	const char *code = NativeAudio_PalPackCode(pack);
+	const char *category;
+	char relative[96];
+	int written;
+
+	if (code == NULL)
+	{
+		return 0;
+	}
+
+	if (fileNumber < 0)
+	{
+		written = snprintf(relative, sizeof(relative), "mods/pal-voices/XA/%s.XNF", code);
+	}
+	else
+	{
+		if (categoryID == 1)
+		{
+			category = "EXTRA";
+		}
+		else if (categoryID == 2)
+		{
+			category = "GAME";
+		}
+		else
+		{
+			return 0;
+		}
+		written = snprintf(relative, sizeof(relative), "mods/pal-voices/XA/%s/%s/S%02d.XA", code, category, fileNumber);
+	}
+
+	if ((written <= 0) || ((size_t)written >= sizeof(relative)))
+	{
+		return 0;
+	}
+
+	return NativePath_Join(path, pathSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NativeStr8_FromCString(relative));
+}
+
+/* The pack's XNF, read from the SD card once and kept. NULL if the pack is not installed. */
+internal const struct NativeAudioByteBuffer *NativeAudio_GetPalXnf(int pack)
+{
+	if ((pack < 1) || (pack > NATIVE_AUDIO_PAL_PACK_COUNT))
+	{
+		return NULL;
+	}
+
+	if (!s_palXnfTried[pack])
+	{
+		char path[256];
+		FILE *file;
+
+		s_palXnfTried[pack] = 1;
+		if (NativeAudio_PalVoicePath(path, sizeof(path), pack, 0, -1) && ((file = fopen(path, "rb")) != NULL))
+		{
+			long size = 0;
+
+			if ((fseek(file, 0, SEEK_END) == 0) && ((size = ftell(file)) >= XA_HEADER_SIZE) && (size <= NATIVE_AUDIO_PAL_XNF_MAX_BYTES) && (fseek(file, 0, SEEK_SET) == 0))
+			{
+				u8 *data = (u8 *)malloc((size_t)size);
+
+				if ((data != NULL) && (fread(data, 1, (size_t)size, file) == (size_t)size))
+				{
+					s_palXnf[pack].data = data;
+					s_palXnf[pack].size = (int)size;
+				}
+				else
+				{
+					free(data);
+				}
+			}
+			fclose(file);
+		}
+
+		if (s_palXnf[pack].data != NULL)
+		{
+			NativeAudio_XAVoiceCacheLog("[PALVOICE] pack %s found", NativeAudio_PalPackCode(pack));
+		}
+		else
+		{
+			NativeAudio_XAVoiceCacheLog("[PALVOICE] pack %s not installed (needs mods/pal-voices/XA/%s.XNF) -- English voices", NativeAudio_PalPackCode(pack),
+			                            NativeAudio_PalPackCode(pack));
+		}
+	}
+
+	return (s_palXnf[pack].data != NULL) ? &s_palXnf[pack] : NULL;
+}
+
+internal int NativeAudio_PalTrackFileExists(int pack, int categoryID, int fileNumber)
+{
+	u8 *state;
+
+	if ((pack < 1) || (pack > NATIVE_AUDIO_PAL_PACK_COUNT) || (categoryID < 1) || (categoryID > 2) || (fileNumber < 0) || (fileNumber >= NATIVE_AUDIO_PAL_FILE_MAX))
+	{
+		return 0;
+	}
+
+	state = &s_palFileState[pack][categoryID - 1][fileNumber];
+	if (*state == 0)
+	{
+		char path[256];
+		FILE *file;
+
+		*state = 2;
+		if (NativeAudio_PalVoicePath(path, sizeof(path), pack, categoryID, fileNumber) && ((file = fopen(path, "rb")) != NULL))
+		{
+			fclose(file);
+			*state = 1;
+		}
+		else
+		{
+			NativeAudio_XAVoiceCacheLog("[PALVOICE] %s cat=%d S%02d.XA missing -- English for its lines", NativeAudio_PalPackCode(pack), categoryID, fileNumber);
+		}
+	}
+
+	return *state == 1;
+}
+
+/* Same XNF layout as the disc's, parsed straight from a byte range. */
+internal int NativeAudio_ParseXnfEntry(const u8 *data, int size, int categoryID, int xaID, struct NativeAudioXaTrackInfo *info)
+{
+	int numXasTotal;
+	int numTracksTotal;
+	int xaSizeOffset;
+	int xaSizeEnd;
+	int numSongs;
+	int firstSongIndex;
+	int entryIndex;
+	const u8 *entry;
+
+	if ((data == NULL) || (info == NULL) || (categoryID < 0) || (categoryID >= XA_NUM_TYPES) || (xaID < 0) || (size < XA_HEADER_SIZE))
+	{
+		return 0;
+	}
+	if ((NativeAudio_ReadLE32(&data[0]) != 0x464e4958) || (NativeAudio_ReadLE32(&data[4]) != 102) || (NativeAudio_ReadLE32(&data[8]) != XA_NUM_TYPES))
+	{
+		return 0;
+	}
+
+	numXasTotal = NativeAudio_ReadLE32(&data[XA_NUM_XAS_TOTAL_OFFSET]);
+	numTracksTotal = NativeAudio_ReadLE32(&data[XA_NUM_TRACKS_TOTAL_OFFSET]);
+	if ((numXasTotal < 0) || (numTracksTotal < 0) || (numXasTotal > ((INT_MAX - XA_HEADER_SIZE) / 4)))
+	{
+		return 0;
+	}
+	xaSizeOffset = XA_HEADER_SIZE + numXasTotal * 4;
+	if (numTracksTotal > ((INT_MAX - xaSizeOffset) / XA_SIZE_ENTRY_BYTES))
+	{
+		return 0;
+	}
+	xaSizeEnd = xaSizeOffset + numTracksTotal * XA_SIZE_ENTRY_BYTES;
+	if ((xaSizeEnd < xaSizeOffset) || (xaSizeEnd > size))
+	{
+		return 0;
+	}
+
+	numSongs = NativeAudio_ReadLE32(&data[XA_NUM_SONGS_OFFSET + categoryID * 4]);
+	firstSongIndex = NativeAudio_ReadLE32(&data[XA_FIRST_SONG_INDEX_OFFSET + categoryID * 4]);
+	if (xaID >= numSongs)
+	{
+		return 0;
+	}
+	entryIndex = firstSongIndex + xaID;
+	if ((entryIndex < 0) || (entryIndex >= numTracksTotal))
+	{
+		return 0;
+	}
+
+	entry = &data[xaSizeOffset + entryIndex * XA_SIZE_ENTRY_BYTES];
+	info->channelFilter = entry[0];
+	info->fileNumber = entry[1];
+	info->numSectors = NativeAudio_ReadLE16Signed(entry + 2);
+	info->entryIndex = entryIndex;
+	info->pack = 0;
+	return info->numSectors > 0;
+}
+
+/*
+ * Where each disc (NTSC-U) speech line lives in a PAL pack, or -1 if the PAL disc has no such
+ * line. PAL dropped some lines and renumbered the rest, so the ID cannot be used as is. This is
+ * the mapping the PS Vita port (Rinnegatamante/Crash-Team-Racing-High-Octane) uses.
+ */
+internal int NativeAudio_ResolvePalVoiceXaID(int categoryID, int xaID)
+{
+	if (xaID < 0)
+	{
+		return -1;
+	}
+
+	if (categoryID == 1)
+	{
+		// PAL EXTRA removes NTSC-U 0x3e/0x3f and 0x53..0x56. Everything
+		// after the first removed pair therefore moves down by two slots.
+		if (xaID <= 0x3d)
+		{
+			return xaID;
+		}
+		if ((xaID >= 0x40) && (xaID <= 0x52))
+		{
+			return xaID - 2;
+		}
+		return -1;
+	}
+
+	if (categoryID == 2)
+	{
+		if (xaID <= 0x12f)
+		{
+			int characterID = xaID / 19;
+			int characterVoiceIndex = xaID % 19;
+
+			if ((characterID >= 0) && (characterID <= 15) && (characterID != 10) && (characterVoiceIndex < 16))
+			{
+				return characterID * 16 + characterVoiceIndex;
+			}
+
+			if ((xaID >= 0xc0) && (xaID <= 0xcd))
+			{
+				return xaID - 0x1e;
+			}
+			return -1;
+		}
+
+		if (xaID == 0x130)
+		{
+			return 0x100;
+		}
+		if (xaID == 0x131)
+		{
+			return 0x101;
+		}
+		if ((xaID >= 0x134) && (xaID <= 0x139))
+		{
+			return xaID - 0x32;
+		}
+		return -1;
+	}
+
+	return -1;
+}
+
+/* The selected pack's version of a speech line: 1 and fills `info`, or 0 to use the disc's English. */
+internal int NativeAudio_LookupPalVoiceTrackInfo(int categoryID, int xaID, struct NativeAudioXaTrackInfo *info)
+{
+	const struct NativeAudioByteBuffer *xnf;
+	int pack = s_voicePack;
+	int palXaID;
+
+	if ((pack < 1) || (pack > NATIVE_AUDIO_PAL_PACK_COUNT) || ((categoryID != 1) && (categoryID != 2)))
+	{
+		return 0;
+	}
+
+	palXaID = NativeAudio_ResolvePalVoiceXaID(categoryID, xaID);
+	if (palXaID < 0)
+	{
+		return 0;
+	}
+
+	xnf = NativeAudio_GetPalXnf(pack);
+	if ((xnf == NULL) || !NativeAudio_ParseXnfEntry(xnf->data, xnf->size, categoryID, palXaID, info))
+	{
+		return 0;
+	}
+
+	if ((info->entryIndex >= NATIVE_AUDIO_PAL_KEY_STRIDE) || !NativeAudio_PalTrackFileExists(pack, categoryID, info->fileNumber))
+	{
+		return 0;
+	}
+
+	info->entryIndex += pack * NATIVE_AUDIO_PAL_KEY_STRIDE;
+	info->pack = pack;
+	return 1;
+}
+
+/* Called from LOAD_LangFile with the language file index that was just loaded. */
+void NativeAudio_SetVoiceLanguage(int languageFileIndex)
+{
+	int pack = ((languageFileIndex >= 2) && (languageFileIndex <= 7)) ? (languageFileIndex - 1) : 0;
+
+	s_voicePack = pack;
+	if (pack != 0)
+	{
+		/* Read the manifest now, at the menu, rather than on the first voice line mid-race. */
+		(void)NativeAudio_GetPalXnf(pack);
+	}
+}
+
+/* 1 while the selected language has an installed voice pack. */
+int NativeAudio_HasPalVoicePack(void)
+{
+	return (s_voicePack != 0) && (NativeAudio_GetPalXnf(s_voicePack) != NULL);
+}
+
+internal void NativeAudio_PalVoiceShutdown(void)
+{
+	for (int pack = 0; pack <= NATIVE_AUDIO_PAL_PACK_COUNT; pack++)
+	{
+		NativeAudio_FreeByteBuffer(&s_palXnf[pack]);
+		s_palXnfTried[pack] = 0;
+	}
+	memset(s_palFileState, 0, sizeof(s_palFileState));
+}
+#else
+void NativeAudio_SetVoiceLanguage(int languageFileIndex)
+{
+	(void)languageFileIndex;
+}
+
+int NativeAudio_HasPalVoicePack(void)
+{
+	return 0;
+}
+#endif /* __3DS__ */
 
 internal int NativeAudio_GetXASectorLayout(int byteCount, int *sectorSizeOut, int *sectorBaseOut, int *totalSectorsOut)
 {
@@ -3494,6 +3867,74 @@ internal int NativeAudio_XASourceOpen(struct NativeAudioXaSource *source, const 
 	return source->totalSectors > 0;
 }
 
+#if defined(__3DS__)
+/* A PAL voice pack file: an absolute host path (not under the assets dir), raw 2352-byte sectors. */
+internal int NativeAudio_XASourceOpenPal(struct NativeAudioXaSource *source, const char *path, int channelFilter)
+{
+	FILE *file;
+	long size;
+	int sectorSize;
+	int sectorBase;
+	int totalSectors;
+
+	memset(source, 0, sizeof(*source));
+
+	if ((channelFilter < 0) || (channelFilter > 0xff) || (path == NULL))
+	{
+		return 0;
+	}
+
+	file = fopen(path, "rb");
+	if (file == NULL)
+	{
+		return 0;
+	}
+
+	if ((fseek(file, 0, SEEK_END) != 0) || ((size = ftell(file)) <= 0) || (size > INT_MAX) || (fseek(file, 0, SEEK_SET) != 0) ||
+	    !NativeAudio_GetXASectorLayout((int)size, &sectorSize, &sectorBase, &totalSectors))
+	{
+		fclose(file);
+		return 0;
+	}
+
+	source->useDiscImage = 0;
+	source->hostFile.file = file;
+	source->hostFile.size = size;
+	source->sectorSize = sectorSize;
+	source->sectorBase = sectorBase;
+	source->totalSectors = totalSectors;
+	source->channelFilter = channelFilter;
+	return 1;
+}
+#endif
+
+/* Path and open for a track of `pack` (0 = the disc's own files). Identical to the two plain calls when pack is 0. */
+internal int NativeAudio_BuildXAPathForPack(char *path, size_t pathSize, int pack, int categoryID, int fileNumber)
+{
+#if defined(__3DS__)
+	if (pack != 0)
+	{
+		return NativeAudio_PalVoicePath(path, pathSize, pack, categoryID, fileNumber);
+	}
+#else
+	(void)pack;
+#endif
+	return NativeAudio_BuildXAPath(path, pathSize, categoryID, fileNumber);
+}
+
+internal int NativeAudio_XASourceOpenForPack(struct NativeAudioXaSource *source, const char *path, int pack, int channelFilter)
+{
+#if defined(__3DS__)
+	if (pack != 0)
+	{
+		return NativeAudio_XASourceOpenPal(source, path, channelFilter);
+	}
+#else
+	(void)pack;
+#endif
+	return NativeAudio_XASourceOpen(source, path, channelFilter);
+}
+
 /*
  * `scratch` names the disc-read staging this call may use, i.e. which thread
  * is asking (see struct NativeDiscImageScratch). NULL means "main thread,
@@ -3733,6 +4174,9 @@ internal int NativeAudio_XAStreamCountAudioSectors(struct NativeAudioXaSource *s
  */
 #define NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
 #define NATIVE_AUDIO_XA_TRACK_INDEX_MAX       512
+/* Cache/memo keys: the disc's tracks use their XNF entryIndex, a PAL pack's are offset by pack * 512. */
+#define NATIVE_AUDIO_XA_KEY_MAX               ((NATIVE_AUDIO_PAL_PACK_COUNT + 1) * NATIVE_AUDIO_XA_TRACK_INDEX_MAX)
+_Static_assert(NATIVE_AUDIO_PAL_KEY_STRIDE == NATIVE_AUDIO_XA_TRACK_INDEX_MAX, "PAL voice keys must stride by the disc's key space");
 #define NATIVE_AUDIO_XA_CATEGORY_MUSIC        0
 #define NATIVE_AUDIO_XA_CATEGORY_EXTRA        1
 #define NATIVE_AUDIO_XA_CATEGORY_GAME         2
@@ -3760,7 +4204,7 @@ struct NativeAudioXaVoiceCache
 	b32 built; // build ran (only then is a lookup miss an alarm worth logging)
 	u8 *blob;
 	u32 blobUsed;
-	struct NativeAudioXaVoiceCacheTrack tracks[NATIVE_AUDIO_XA_TRACK_INDEX_MAX]; // by XNF entryIndex
+	struct NativeAudioXaVoiceCacheTrack tracks[NATIVE_AUDIO_XA_KEY_MAX]; // by track key (XNF entryIndex, PAL packs offset)
 };
 
 internal struct NativeAudioXaVoiceCache s_xaVoiceCache;
@@ -3769,7 +4213,11 @@ internal struct NativeAudioXaVoiceCache s_xaVoiceCache;
  * build and memoized from every full CountAudioSectors run, so an uncached
  * track (MUSIC, cutscene EXTRA) pays its whole-file scan once per boot, not
  * once per play. */
-internal s32 s_xaAudioSectorCountMemo[NATIVE_AUDIO_XA_TRACK_INDEX_MAX];
+internal s32 s_xaAudioSectorCountMemo[NATIVE_AUDIO_XA_KEY_MAX];
+
+/* Which voice pack the RAM cache holds: the one selected when the boot warm ran (0 = the disc's English).
+ * Switching language later leaves the cache as it is; the other language's lines stream from the SD card. */
+internal int s_xaCachePack;
 
 /* Build scratch: wanted tracks of the category being built. Static because
  * 512 entries is stack-hostile on the 3DS main thread. Only touched inside
@@ -3810,7 +4258,7 @@ internal int NativeAudio_XAVoiceCacheOpen(struct NativeAudioXaSource *source, co
 {
 	const struct NativeAudioXaVoiceCacheTrack *track;
 
-	if (!s_xaVoiceCache.built || (s_xaVoiceCache.blob == NULL) || (info->entryIndex < 0) || (info->entryIndex >= NATIVE_AUDIO_XA_TRACK_INDEX_MAX))
+	if (!s_xaVoiceCache.built || (s_xaVoiceCache.blob == NULL) || (info->entryIndex < 0) || (info->entryIndex >= NATIVE_AUDIO_XA_KEY_MAX))
 	{
 		return 0;
 	}
@@ -3852,6 +4300,7 @@ internal struct
 	b32 active;
 	b32 srcOpen;
 	int categoryID;
+	int pack; /* voice pack being cached (s_xaCachePack) */
 	int numWanted;
 	u32 filesWanted;
 	int fileNumber;
@@ -3883,7 +4332,7 @@ internal u32 NativeAudio_XAVoiceCachePlannedSectors(int categoryID)
 		{
 			continue;
 		}
-		if ((info.fileNumber < 0) || (info.fileNumber >= 32) || (info.entryIndex >= NATIVE_AUDIO_XA_TRACK_INDEX_MAX))
+		if ((info.fileNumber < 0) || (info.fileNumber >= 32) || (info.entryIndex >= NATIVE_AUDIO_XA_KEY_MAX) || (info.pack != s_xaCachePack))
 		{
 			continue;
 		}
@@ -3906,6 +4355,7 @@ internal void NativeAudio_XAVoiceCacheBuildCategoryBegin(int categoryID)
 
 	memset(&s_xacb, 0, sizeof(s_xacb));
 	s_xacb.categoryID = categoryID;
+	s_xacb.pack = s_xaCachePack;
 
 	for (xaID = 0; xaID < NATIVE_AUDIO_XA_TRACK_INDEX_MAX; xaID++)
 	{
@@ -3915,7 +4365,7 @@ internal void NativeAudio_XAVoiceCacheBuildCategoryBegin(int categoryID)
 		{
 			continue;
 		}
-		if ((info.fileNumber < 0) || (info.fileNumber >= 32) || (info.entryIndex >= NATIVE_AUDIO_XA_TRACK_INDEX_MAX))
+		if ((info.fileNumber < 0) || (info.fileNumber >= 32) || (info.entryIndex >= NATIVE_AUDIO_XA_KEY_MAX) || (info.pack != s_xaCachePack))
 		{
 			continue;
 		}
@@ -3939,7 +4389,7 @@ internal int NativeAudio_XAVoiceCacheBuildCategoryStep(int budgetSectors)
 
 	while (!s_xacb.srcOpen)
 	{
-		char path[128];
+		char path[256];
 		int i;
 
 		if (s_xacb.fileNumber >= 32)
@@ -3952,7 +4402,8 @@ internal int NativeAudio_XAVoiceCacheBuildCategoryStep(int budgetSectors)
 			s_xacb.fileNumber++;
 			continue;
 		}
-		if (!NativeAudio_BuildXAPath(path, sizeof(path), s_xacb.categoryID, s_xacb.fileNumber) || !NativeAudio_XASourceOpen(&s_xacb.src, path, 0))
+		if (!NativeAudio_BuildXAPathForPack(path, sizeof(path), s_xacb.pack, s_xacb.categoryID, s_xacb.fileNumber) ||
+		    !NativeAudio_XASourceOpenForPack(&s_xacb.src, path, s_xacb.pack, 0))
 		{
 			NativeAudio_XAVoiceCacheLog("[XAPRELOAD] cannot open %s -- its tracks stay on the SD path", path);
 			s_xacb.fileNumber++;
@@ -4380,6 +4831,13 @@ void NativeAudio_VoiceCacheEnsureBegin(void)
 
 	memset(&s_vce, 0, sizeof(s_vce));
 	s_vce.active = 1;
+
+	/* The language chosen at boot (LOAD_LangFile has already run) decides whose voices are cached. */
+	s_xaCachePack = s_voicePack;
+	if (s_xaCachePack != 0)
+	{
+		NativeAudio_XAVoiceCacheLog("[PALVOICE] caching the %s voice pack", NativeAudio_PalPackCode(s_xaCachePack));
+	}
 
 	s_xaVoiceCache.blob = (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES);
 	if (s_xaVoiceCache.blob == NULL)
@@ -4844,7 +5302,7 @@ internal int NativeAudio_XAStreamSectorsBuffered(void)
 internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, int categoryID, int xaID, int *frameCountOut, int *sampleRateOut)
 {
 	struct NativeAudioXaTrackInfo info;
-	char path[128];
+	char path[256];
 	int audioSectors;
 	int fromCache; /* 3DS voice cache hit; constant 0 elsewhere */
 	int i;
@@ -4856,7 +5314,7 @@ internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, i
 	{
 		return 0;
 	}
-	if (!NativeAudio_BuildXAPath(path, sizeof(path), categoryID, info.fileNumber))
+	if (!NativeAudio_BuildXAPathForPack(path, sizeof(path), info.pack, categoryID, info.fileNumber))
 	{
 		return 0;
 	}
@@ -4874,7 +5332,7 @@ internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, i
 		fromCache = 1;
 		audioSectors = stream->source.totalSectors;
 	}
-	else if (s_xaVoiceCache.built && NativeAudio_XAVoiceCacheWantsTrack(categoryID, xaID))
+	else if (s_xaVoiceCache.built && NativeAudio_XAVoiceCacheWantsTrack(categoryID, xaID) && (info.pack == s_xaCachePack))
 	{
 		/* A track the preloader should own is falling back to SD. This line
 		 * is the preloader spec's regression alarm -- it should never print
@@ -4885,7 +5343,7 @@ internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, i
 
 	if (!fromCache)
 	{
-		if (!NativeAudio_XASourceOpen(&stream->source, path, info.channelFilter))
+		if (!NativeAudio_XASourceOpenForPack(&stream->source, path, info.pack, info.channelFilter))
 		{
 			return 0;
 		}
@@ -4903,7 +5361,7 @@ internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, i
 		// channelFilter instead, exactly like NativeAudio_XAStreamOpenFile
 		// already does.
 #if defined(__3DS__)
-		if ((info.entryIndex >= 0) && (info.entryIndex < NATIVE_AUDIO_XA_TRACK_INDEX_MAX) && (s_xaAudioSectorCountMemo[info.entryIndex] > 0))
+		if ((info.entryIndex >= 0) && (info.entryIndex < NATIVE_AUDIO_XA_KEY_MAX) && (s_xaAudioSectorCountMemo[info.entryIndex] > 0))
 		{
 			/* Same scan, same source, same bound -- the count cannot change
 			 * within a boot, and for MUSIC-sized files re-walking the whole
@@ -4925,7 +5383,7 @@ internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, i
 #endif
 			audioSectors = NativeAudio_XAStreamCountAudioSectors(&stream->source);
 #if defined(__3DS__)
-			if ((audioSectors > 0) && (info.entryIndex >= 0) && (info.entryIndex < NATIVE_AUDIO_XA_TRACK_INDEX_MAX))
+			if ((audioSectors > 0) && (info.entryIndex >= 0) && (info.entryIndex < NATIVE_AUDIO_XA_KEY_MAX))
 			{
 				s_xaAudioSectorCountMemo[info.entryIndex] = audioSectors;
 			}
@@ -5022,7 +5480,7 @@ internal int NativeAudio_XAStreamOpenTrackSeek(struct NativeAudioXaStream *strea
                                                int *sampleRateOut)
 {
 	struct NativeAudioXaTrackInfo info;
-	char path[128];
+	char path[256];
 	int audioSectors;
 	int targetSector;
 
@@ -5033,7 +5491,7 @@ internal int NativeAudio_XAStreamOpenTrackSeek(struct NativeAudioXaStream *strea
 	{
 		return 0;
 	}
-	if (!NativeAudio_BuildXAPath(path, sizeof(path), categoryID, info.fileNumber))
+	if (!NativeAudio_BuildXAPathForPack(path, sizeof(path), info.pack, categoryID, info.fileNumber))
 	{
 		return 0;
 	}
@@ -5041,7 +5499,7 @@ internal int NativeAudio_XAStreamOpenTrackSeek(struct NativeAudioXaStream *strea
 	NativeAudio_XAStreamInitRingBackingIfNeeded();
 	NativeAudio_XAStreamClearNoLock(stream);
 
-	if (!NativeAudio_XASourceOpen(&stream->source, path, info.channelFilter))
+	if (!NativeAudio_XASourceOpenForPack(&stream->source, path, info.pack, info.channelFilter))
 	{
 		return 0;
 	}
@@ -7273,6 +7731,7 @@ void NativeAudio_Shutdown(void)
 	 * via the early init-failure path before N3DS_AudioThreadInit ever ran
 	 * -- N3DS_AudioThreadShutdown is null-safe for that case. */
 	N3DS_AudioThreadShutdown();
+	NativeAudio_PalVoiceShutdown();
 #endif
 
 	if (s_audio.output.stream != NULL)

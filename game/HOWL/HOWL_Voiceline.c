@@ -310,6 +310,15 @@ void Voiceline_StartPlay(struct Item *voiceLine)
 		voiceSetIndex = data.voiceID[(s16)voiceID];
 	}
 
+#if defined(CTR_NATIVE)
+	// Voice lines 21..23 are NTSC-U only: a PAL voice pack has no recording for them (see the
+	// PAL mapping in NativeAudio_ResolvePalVoiceXaID), so use the plain set instead.
+	if (NativeAudio_HasPalVoicePack() && (voiceID >= 21) && (voiceID <= 23))
+	{
+		voiceSetIndex = 0;
+	}
+#endif
+
 	s16 *voiceIDs = data.voiceData[characterID].voiceSet[voiceSetIndex].ptr;
 	u16 numVoiceIDs = data.voiceData[characterID].voiceSet[voiceSetIndex].num;
 

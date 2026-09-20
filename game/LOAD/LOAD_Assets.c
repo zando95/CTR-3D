@@ -221,6 +221,26 @@ void LOAD_LangFile(int bigfilePtr, int lang)
 
 	if (sdata->lngFile == 0)
 	{
+#if defined(CTR_NATIVE) && defined(__3DS__)
+		// NOTE: the PAL language files (en2, fr, de, it, es, nl) can be larger than the
+		// NTSC-U English buffer (sdata->langBufferSize == 0x3F04). Size the buffer for the
+		// largest of the 8 language files so a runtime language switch cannot overflow it.
+		struct BigEntry *langEntries = BIG_GETENTRY((struct BigHeader *)bigfilePtr);
+		u32 langBufferSize = (u32)sdata->langBufferSize;
+
+		for (int langIndex = 0; langIndex < (BI_RACERMODELHI - BI_LANGUAGEFILE); langIndex++)
+		{
+			u32 fileSize = (u32)langEntries[BI_LANGUAGEFILE + langIndex].size;
+			u32 readSize = (fileSize + LOAD_CD_DATA_SECTOR_ROUND_MASK) & ~LOAD_CD_DATA_SECTOR_ROUND_MASK;
+
+			if (langBufferSize < readSize)
+			{
+				langBufferSize = readSize;
+			}
+		}
+
+		sdata->langBufferSize = (int)langBufferSize;
+#endif
 		sdata->lngFile = MEMPACK_AllocMem(sdata->langBufferSize /* "lang buffer" */);
 	}
 
@@ -242,6 +262,19 @@ void LOAD_LangFile(int bigfilePtr, int lang)
 	{
 		strArray[i] = (char *)((u32)strArray[i] + (u32)lngFile);
 	}
+
+#if defined(CTR_NATIVE)
+	// PAL language files (index >= 2) encode n-tilde, inverted ! and ?, the ordinal
+	// indicator and quotation marks with special characters that only the PAL font
+	// code understands. DecalFont.c emulates them on this NTSC-U build when this is set.
+	{
+		extern int gNativePalGlyphs;
+		gNativePalGlyphs = (lang >= 2);
+	}
+
+	// speech follows the language too: a PAL voice pack from mods/pal-voices, if installed
+	NativeAudio_SetVoiceLanguage(lang);
+#endif
 #if BUILD == EurRetail
 	// set voicelines to new lang
 	CDSYS_SetXAToLang(lang);

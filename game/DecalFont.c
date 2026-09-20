@@ -1,5 +1,160 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE) && (BUILD != EurRetail)
+
+// Set by LOAD_LangFile: non-zero while a PAL language file (index >= 2) is loaded.
+//
+// PAL text encodes a few characters with codes that only the European font code knows how to
+// draw. This NTSC-U build has neither that code nor the European font data tables, so they are
+// emulated here from icons the NTSC-U font already has (the same trick the retail PAL build
+// uses: existing icons, shifted / scaled / rotated):
+//   0x03 -> "~" over the NEXT character (n-tilde): the underscore icon, shrunk, zero advance
+//   '#'  -> inverted exclamation mark: the "!" icon rotated 180 degrees
+//   '$'  -> inverted question mark:    the "?" icon rotated 180 degrees
+//   '&'  -> ordinal indicator:         the "." icon raised
+//   '"'  -> quotation mark:            two apostrophe icons side by side
+// With the flag clear (English, and every PC build) none of this runs and text is unchanged.
+int gNativePalGlyphs = 0;
+
+enum
+{
+	NATIVE_PAL_GLYPH_TILDE = 0x03,
+
+	// icon IDs inside the font icon groups (same IDs the PAL build uses)
+	NATIVE_FONT_ICON_APOSTROPHE = 0x24,
+	NATIVE_FONT_ICON_EXCLAMATION = 0x25,
+	NATIVE_FONT_ICON_PERIOD = 0x2c,
+	NATIVE_FONT_ICON_QUESTION = 0x2e,
+	NATIVE_FONT_ICON_UNDERSCORE = 0x2f,
+
+	// angle units: 0x1000 is a full turn
+	NATIVE_PAL_ROTATE_180 = 0x800,
+};
+
+// Quotation mark placement: identical to the values in CTR-ModSDK's ExpandedFont module
+// (which adds these very quotation marks to NTSC-U). Indexed by fontType: DEBUG, BIG, SMALL, CREDITS.
+static const s16 s_nativeQuoteOffsetX[FONT_NUM] = {0, -3, -2, -3};
+static const s16 s_nativeQuoteStepX[FONT_NUM] = {0, 6, 4, 5};
+
+// TUNING KNOBS. The PAL exe's own offsets for these glyphs are not available to this build, so
+// they are derived from each icon's size at runtime. If a glyph looks a pixel or two off on
+// screen, these are the numbers to change.
+//   Tilde: the underscore icon is shrunk to this scale (0x1000 = 100%)...
+#define NATIVE_TILDE_SCALE 0x999
+//   ...and lifted so it sits (charPixHeight / this) pixels above the letter, at least 1.
+#define NATIVE_TILDE_GAP_DIVISOR 8
+//   Ordinal indicator: the period icon is raised by this fraction of its own height.
+#define NATIVE_ORDINAL_RAISE_NUM 3
+#define NATIVE_ORDINAL_RAISE_DEN 4
+
+// Returns 1 if the character was handled here (drawn, or intentionally drawn as nothing),
+// 0 to let the normal NTSC-U path deal with it.
+static s32 DecalFont_NativePalGlyph(u8 c, s16 fontType, int posX, int posY, u32 *ptrColor)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	struct IconGroup *iconGroup;
+	struct Icon **icons;
+	struct Icon *icon = 0;
+	s16 iconGroupID;
+	int iconID;
+	int width;
+	int height;
+
+	if ((c != NATIVE_PAL_GLYPH_TILDE) && (c != '#') && (c != '$') && (c != '&') && (c != '"'))
+	{
+		return 0;
+	}
+
+	if ((fontType <= 0) || (fontType >= FONT_NUM))
+	{
+		return 0;
+	}
+
+	iconGroupID = data.font_IconGroupID[fontType];
+	iconGroup = gGT->iconGroup[iconGroupID];
+
+	// same guard the normal path has: boot can run before every icon group is loaded
+	if (iconGroup == 0)
+	{
+		return 0;
+	}
+
+	icons = ICONGROUP_GETICONS(iconGroup);
+
+	switch (c)
+	{
+	case NATIVE_PAL_GLYPH_TILDE:
+		iconID = NATIVE_FONT_ICON_UNDERSCORE;
+		break;
+	case '#':
+		iconID = NATIVE_FONT_ICON_EXCLAMATION;
+		break;
+	case '$':
+		iconID = NATIVE_FONT_ICON_QUESTION;
+		break;
+	case '&':
+		iconID = NATIVE_FONT_ICON_PERIOD;
+		break;
+	default: // '"'
+		iconID = NATIVE_FONT_ICON_APOSTROPHE;
+		break;
+	}
+
+	if (iconID < iconGroup->numIcons)
+	{
+		icon = icons[iconID];
+	}
+
+	if (icon == 0)
+	{
+		return 1;
+	}
+
+	width = icon->texLayout.u1 - icon->texLayout.u0;
+	height = icon->texLayout.v2 - icon->texLayout.v0;
+
+	if (c == NATIVE_PAL_GLYPH_TILDE)
+	{
+		int scale = NATIVE_TILDE_SCALE;
+		int gap = data.font_charPixHeight[fontType] / NATIVE_TILDE_GAP_DIVISOR;
+
+		if (gap < 1)
+		{
+			gap = 1;
+		}
+
+		// centre the shrunk bar over the character that follows, and sit it above that character
+		DecalHUD_DrawPolyGT4(icon, posX + ((width * (FP(1.0) - scale)) >> 13), posY - FP_Mult(height, scale) - gap, &gGT->backBuffer->primMem, gGT->pushBuffer_UI.ptrOT,
+		                     ptrColor[0], ptrColor[1], ptrColor[2], ptrColor[3], 0, scale);
+	}
+	else if ((c == '#') || (c == '$'))
+	{
+		// DecalHUD_Arrow2D rotates about the icon's centre, so pass the centre of the glyph cell.
+		// Vertex colours are swapped top/bottom, exactly as the PAL build does, so the gradient stays upright.
+		DecalHUD_Arrow2D(icon, posX + ((width * FP(1.0)) >> 13), posY + ((height * FP(1.0)) >> 13), &gGT->backBuffer->primMem, gGT->pushBuffer_UI.ptrOT, ptrColor[2],
+		                 ptrColor[3], ptrColor[0], ptrColor[1], 0, FP(1.0), NATIVE_PAL_ROTATE_180);
+	}
+	else if (c == '&')
+	{
+		DecalHUD_DrawPolyGT4(icon, posX, posY - ((height * NATIVE_ORDINAL_RAISE_NUM) / NATIVE_ORDINAL_RAISE_DEN), &gGT->backBuffer->primMem, gGT->pushBuffer_UI.ptrOT,
+		                     ptrColor[0], ptrColor[1], ptrColor[2], ptrColor[3], 0, FP(1.0));
+	}
+	else
+	{
+		int quoteX = posX + s_nativeQuoteOffsetX[fontType];
+
+		for (int mark = 0; mark < 2; mark++, quoteX += s_nativeQuoteStepX[fontType])
+		{
+			DecalHUD_DrawPolyGT4(icon, quoteX, posY, &gGT->backBuffer->primMem, gGT->pushBuffer_UI.ptrOT, ptrColor[0], ptrColor[1], ptrColor[2], ptrColor[3], 0,
+			                     FP(1.0));
+		}
+	}
+
+	return 1;
+}
+
+#endif
+
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800223f4-0x800224d0.
 int DecalFont_GetLineWidthStrlen(char *character, int len, int fontType)
 {
@@ -64,7 +219,12 @@ int DecalFont_GetLineWidthStrlen(char *character, int len, int fontType)
 
 // if normal character
 #if BUILD != EurRetail
+#if defined(CTR_NATIVE)
+		// the PAL tilde diacritic (0x03) takes no room, exactly like the retail PAL build
+		if ((c > 2) && !((c == NATIVE_PAL_GLYPH_TILDE) && (gNativePalGlyphs != 0)))
+#else
 		if (c > 2)
+#endif
 #else
 		if (c > 3)
 #endif
@@ -139,6 +299,18 @@ void DecalFont_DrawLineStrlen(char *str, s16 len, int posX, s16 posY, s16 fontTy
 #endif
 
 		u32 *ptrColor = data.ptrColor[flags];
+
+#if defined(CTR_NATIVE) && (BUILD != EurRetail)
+		if ((gNativePalGlyphs != 0) && DecalFont_NativePalGlyph(*strcopy, fontType, posX, posY, ptrColor))
+		{
+			// the tilde diacritic has zero advance; everything else takes a normal character cell
+			if (*strcopy != NATIVE_PAL_GLYPH_TILDE)
+			{
+				posX += charWidth;
+			}
+			continue;
+		}
+#endif
 
 #if BUILD >= JpnTrial
 
