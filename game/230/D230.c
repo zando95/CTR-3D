@@ -264,14 +264,13 @@ struct OverlayDATA_230 D230 =
         .cheats =
             {
 #if defined(CTR_NATIVE)
-                /* SOAR: retail chain-loaded the Spyro 2 demo here. Native
-                 * cannot chain-load an executable, and MainKillGame_LaunchSpyro2
-                 * does not merely decline -- it tears the game down and then
-                 * hangs in `while (1) {}`, so entering SOAR froze the console.
-                 * Repointed at the purple/white flag egg, which removes the
-                 * hard-lock (this row was that function's only caller) and
-                 * respects the dragon. */
-                {4, {CHEAT_S, CHEAT_O, CHEAT_A, CHEAT_R}, MM_Cheat_SpyroFlag},
+                /* SOAR: retail chain-loaded the Spyro 2 demo here. Native cannot chain-load an
+                 * executable, and MainKillGame_LaunchSpyro2 does not merely decline -- it tears the
+                 * game down and then hangs in `while (1) {}`, so entering SOAR froze the console.
+                 * Repointed at unlocking Nitrous Oxide (see MM_Cheat_UnlockOxide), which also
+                 * removes the hard-lock -- this row was that function's only caller -- and matches
+                 * what the code was for on retail more closely than a pure cosmetic replacement. */
+                {4, {CHEAT_S, CHEAT_O, CHEAT_A, CHEAT_R}, MM_Cheat_UnlockOxide},
 #else
                 {4, {CHEAT_S, CHEAT_O, CHEAT_A, CHEAT_R}, MainKillGame_LaunchSpyro2},
 #endif

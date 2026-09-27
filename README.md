@@ -96,6 +96,7 @@ Everything here is on by default unless it says otherwise. The toggles are the O
 - **The Spyro 2 demo cheat code does something else now**, since a native build cannot launch the demo off the disc. One new cheat code has been added.
 - **Language selection** (English, French, German, Italian, Spanish, Dutch), using the localized text files that are already on the NTSC-U disc. The n-tilde, inverted `¡` `¿`, the ordinal `º` and quotation marks that those files rely on are drawn from existing font icons, because the NTSC-U font code does not know them. Remembered between launches.
 - **Voices in the selected language** (French, German, Italian, Spanish, Dutch) from PAL voice packs on the SD card. English keeps the NTSC-U disc's own voices.
+- **Nitros Oxide as a playable character.** Enter SOAR (originally the code for the Spyro 2 demo, which this port cannot chain-load) at the cheat-code screen to unlock him for Arcade and Versus. His character-select model and icon slot come from the PS Vita port ([Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0), since the retail NTSC-U disc was never built with a 16th racer in mind. Unlocking him also still cycles the flag-color easter egg SOAR already triggered; both happen together.
 - **VS and Battle modes** are not offered.
 
 The PC build from this repository carries the changes that are not 3DS-specific: PAL Penta, the reserves meter, the ice-reflection fix and the cheat codes. On PC they are always on; only the 3DS build has the OPTIONS menu.

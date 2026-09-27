@@ -1,5 +1,12 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+// Extracted from the retail PS1 disc (same struct/pointer-map format LOAD_RunPtrMap already
+// uses for every other model in this codebase) by the PS Vita port
+// (Rinnegatamante/Crash-Team-Racing-High-Octane, GPL-3.0), which first made Oxide selectable.
+#include "OxideMenuModel.h"
+#endif
+
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
 // Register the diorama backdrop strips' packet span so the 3DS walk pins them
 // to the far depth plane (they are screen-space quads with no captured depth,
@@ -17,7 +24,11 @@ enum
 	MM_CHARACTER_SELECT_MODEL_MOVE_FP_SHIFT = 0xc,
 	MM_CHARACTER_SELECT_MODEL_MOVE_NEXT = 1,
 	MM_CHARACTER_SELECT_MODEL_MOVE_PREV = -1,
+#if defined(CTR_NATIVE)
+	MM_CHARACTER_SELECT_ICON_COUNT = 0x10, // 15 retail + Oxide
+#else
 	MM_CHARACTER_SELECT_ICON_COUNT = 0xf,
+#endif
 	MM_CHARACTER_SELECT_EXPANSION_ICON_FIRST = 0xc,
 	MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT = 8,
 	MM_CHARACTER_SELECT_MAX_PLAYERS = 4,
@@ -28,6 +39,7 @@ enum
 	MM_CHARACTER_SELECT_ANGLE_STEP = 0x400,
 	MM_CHARACTER_SELECT_ANGLE_OFFSET = 400,
 	MM_CHARACTER_SELECT_SPIN_STEP = 0x40,
+	MM_CHARACTER_SELECT_WHEEL_SIZE = 0xccc, // matches GhostReplay.c's driver->wheelSize
 	MM_CHARACTER_SELECT_LAYOUT_3P = 2,
 	MM_CHARACTER_SELECT_LAYOUT_4P = 3,
 	MM_CHARACTER_SELECT_LAYOUT_1P_LIMITED = 4,
@@ -71,6 +83,122 @@ enum
 	MM_CHARACTER_SELECT_COLOR_PULSE_SCALE_SHIFT = 7,
 	MM_CHARACTER_SELECT_COLOR_PULSE_FP_SHIFT = 0xc,
 };
+
+#if defined(CTR_NATIVE)
+/*
+ * Nitrous Oxide as a playable character (native-only): retail's character-select screen and its
+ * LEV230 menu-level model set were both built for exactly 15 racers, with no 16th slot and no
+ * select-screen model for Oxide -- the only racer retail never intended to be selectable outside
+ * a cheat device. Unlocked via the SOAR cheat, see MM_Cheat_UnlockOxide.
+ *
+ * The three tables below are the geometry the Vita port uses for icon position and D-pad
+ * neighbours (plain UI layout numbers, not game assets) with a 16th entry added for Oxide;
+ * everything else is unchanged from D230's own retail tables. unlockFlags values are
+ * GameProgressUnlockBitIndex bit numbers (MM_CHARACTER_UNLOCK_ALWAYS = always shown).
+ */
+static struct CharacterSelectMeta s_oxideCharacterSelectMeta1P2P[MM_CHARACTER_SELECT_ICON_COUNT] = {
+    {128, 96, {0, 4, 8, 1}, 0, MM_CHARACTER_UNLOCK_ALWAYS},
+    {192, 96, {1, 5, 0, 2}, 1, MM_CHARACTER_UNLOCK_ALWAYS},
+    {256, 96, {2, 6, 1, 3}, 2, MM_CHARACTER_UNLOCK_ALWAYS},
+    {320, 96, {3, 7, 2, 9}, 3, MM_CHARACTER_UNLOCK_ALWAYS},
+    {128, 135, {0, 12, 10, 5}, 4, MM_CHARACTER_UNLOCK_ALWAYS},
+    {192, 135, {1, 13, 4, 6}, 5, MM_CHARACTER_UNLOCK_ALWAYS},
+    {256, 135, {2, 14, 5, 7}, 6, MM_CHARACTER_UNLOCK_ALWAYS},
+    {320, 135, {3, 15, 6, 11}, 7, MM_CHARACTER_UNLOCK_ALWAYS},
+    {64, 96, {8, 10, 8, 0}, 12, 0x5},
+    {384, 96, {9, 11, 3, 9}, 8, 0xA},
+    {64, 135, {8, 10, 10, 4}, 10, 0x7},
+    {384, 135, {9, 15, 7, 11}, 9, 0x8},
+    {128, 174, {4, 12, 12, 13}, 11, 0x9},
+    {192, 174, {5, 13, 12, 14}, 13, 0x6},
+    {256, 174, {6, 14, 13, 15}, 14, 0xB},
+    {320, 174, {7, 15, 14, 11}, 15, GAME_UNLOCK_BIT_OXIDE},
+};
+
+static struct CharacterSelectMeta s_oxideCharacterSelectMeta3P[MM_CHARACTER_SELECT_ICON_COUNT] = {
+    {32, 71, {12, 4, 0, 1}, 0, MM_CHARACTER_UNLOCK_ALWAYS},
+    {96, 71, {13, 5, 0, 2}, 1, MM_CHARACTER_UNLOCK_ALWAYS},
+    {160, 71, {14, 6, 1, 3}, 2, MM_CHARACTER_UNLOCK_ALWAYS},
+    {224, 71, {15, 7, 2, 3}, 3, MM_CHARACTER_UNLOCK_ALWAYS},
+    {32, 110, {0, 8, 4, 5}, 4, MM_CHARACTER_UNLOCK_ALWAYS},
+    {96, 110, {1, 9, 4, 6}, 5, MM_CHARACTER_UNLOCK_ALWAYS},
+    {160, 110, {2, 10, 5, 7}, 6, MM_CHARACTER_UNLOCK_ALWAYS},
+    {224, 110, {3, 11, 6, 7}, 7, MM_CHARACTER_UNLOCK_ALWAYS},
+    {32, 149, {4, 8, 8, 9}, 12, 0x5},
+    {96, 149, {5, 9, 8, 10}, 8, 0xA},
+    {160, 149, {6, 10, 9, 11}, 10, 0x7},
+    {224, 149, {7, 11, 10, 11}, 9, 0x8},
+    {32, 32, {12, 0, 12, 13}, 11, 0x9},
+    {96, 32, {13, 1, 12, 14}, 13, 0x6},
+    {160, 32, {14, 2, 13, 15}, 14, 0xB},
+    {224, 32, {15, 3, 14, 15}, 15, GAME_UNLOCK_BIT_OXIDE},
+};
+
+static struct CharacterSelectMeta s_oxideCharacterSelectMeta4P[MM_CHARACTER_SELECT_ICON_COUNT] = {
+    {128, 71, {0, 4, 10, 1}, 0, MM_CHARACTER_UNLOCK_ALWAYS},
+    {192, 71, {14, 5, 0, 2}, 1, MM_CHARACTER_UNLOCK_ALWAYS},
+    {256, 71, {15, 6, 1, 3}, 2, MM_CHARACTER_UNLOCK_ALWAYS},
+    {320, 71, {3, 7, 2, 11}, 3, MM_CHARACTER_UNLOCK_ALWAYS},
+    {128, 110, {0, 4, 12, 5}, 4, MM_CHARACTER_UNLOCK_ALWAYS},
+    {192, 110, {1, 8, 4, 6}, 5, MM_CHARACTER_UNLOCK_ALWAYS},
+    {256, 110, {2, 9, 5, 7}, 6, MM_CHARACTER_UNLOCK_ALWAYS},
+    {320, 110, {3, 7, 6, 13}, 7, MM_CHARACTER_UNLOCK_ALWAYS},
+    {192, 149, {5, 8, 8, 9}, 12, 0x5},
+    {256, 149, {6, 9, 8, 9}, 14, 0xB},
+    {64, 71, {10, 12, 10, 0}, 10, 0x7},
+    {384, 71, {11, 13, 3, 11}, 9, 0x8},
+    {64, 110, {10, 12, 12, 4}, 11, 0x9},
+    {384, 110, {11, 13, 7, 13}, 8, 0xA},
+    {192, 32, {14, 1, 14, 15}, 13, 0x6},
+    {256, 32, {15, 2, 14, 15}, 15, GAME_UNLOCK_BIT_OXIDE},
+};
+
+static struct Model *s_oxideCharacterSelectModel;
+
+internal struct Model *MM_Characters_GetOxideMenuModel(void)
+{
+	if (s_oxideCharacterSelectModel == NULL)
+	{
+		u8 *fileBuf = s_oxideMenuModelFile;
+		s32 ptrMapOffset = (s32)CTR_ReadU32LE(fileBuf);
+		u8 *modelBuf = fileBuf + sizeof(u32);
+		struct DramPointerMap *ptrMap = (struct DramPointerMap *)(modelBuf + ptrMapOffset);
+
+		LOAD_RunPtrMap((char *)modelBuf, DRAM_GETOFFSETS(ptrMap), ptrMap->numBytes >> DRAM_POINTER_MAP_WORD_SHIFT);
+
+		s_oxideCharacterSelectModel = (struct Model *)modelBuf;
+
+		// the menu model was extracted at a slightly different scale than this screen expects
+		if ((s_oxideCharacterSelectModel->headers != NULL) && (s_oxideCharacterSelectModel->numHeaders > 0))
+		{
+			struct ModelHeader *header = &s_oxideCharacterSelectModel->headers[0];
+			header->scale.x = (header->scale.x * 5) >> 3;
+			header->scale.y = (header->scale.y * 5) >> 3;
+			header->scale.z = (header->scale.z * 5) >> 3;
+		}
+	}
+
+	return s_oxideCharacterSelectModel;
+}
+
+internal struct CharacterSelectMeta *MM_Characters_GetOxideMetaForLayout(s32 layoutIndex)
+{
+	switch (layoutIndex)
+	{
+	case 0:
+	case 1:
+		return s_oxideCharacterSelectMeta1P2P;
+	case MM_CHARACTER_SELECT_LAYOUT_3P:
+		return s_oxideCharacterSelectMeta3P;
+	case MM_CHARACTER_SELECT_LAYOUT_4P:
+		return s_oxideCharacterSelectMeta4P;
+	default:
+		// 1P/2P "few unlocked" layouts: unreachable now that SetMenuLayout always expands the
+		// roster, kept only as a safety net if that ever changes.
+		return D230.characterSelectMetaByLayout[layoutIndex];
+	}
+}
+#endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 overlay 230 0x800ad98c-0x800ada4c.
 void MM_Characters_AnimateColors(u8 *colorData, s16 playerID, s16 flag)
@@ -169,7 +297,7 @@ b32 MM_Characters_boolIsInvalid(s16 *iconPerPlayer, s16 characterID, s16 player)
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 overlay 230 0x800adb64-0x800adc0c.
 // Search for character model by string,
-// specific to main menu lev, altered in oxide mod
+// specific to main menu lev; the CTR_NATIVE branch below is that mod
 struct Model *MM_Characters_GetModelByName(const char *name)
 {
 	struct Model **models;
@@ -199,6 +327,19 @@ struct Model *MM_Characters_GetModelByName(const char *name)
 			return model;
 		}
 	}
+
+#if defined(CTR_NATIVE)
+	// Oxide's model is not part of LEV230's model set (see the comment above
+	// MM_Characters_GetOxideMenuModel); the loop above never finds it there.
+	if ((ModelName_ReadWord(name, 0) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 0)) &&
+	    (ModelName_ReadWord(name, 1) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 1)) &&
+	    (ModelName_ReadWord(name, 2) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 2)) &&
+	    (ModelName_ReadWord(name, 3) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 3)))
+	{
+		return MM_Characters_GetOxideMenuModel();
+	}
+#endif
+
 	return NULL;
 }
 
@@ -310,6 +451,11 @@ void MM_Characters_DrawWindows(b32 boolShowDrivers)
 
 		s16 *currCharacterID = &D230.characterSelectPlayerState.currentCharacterID[playerIndex];
 
+#if defined(CTR_NATIVE)
+		// Oxide's model has no wheel bones at this screen; matches GhostReplay.c's identical guard.
+		gGT->drivers[playerIndex]->wheelSize = (*currCharacterID == NITROS_OXIDE) ? 0 : MM_CHARACTER_SELECT_WHEEL_SIZE;
+#endif
+
 		driverInst->animFrame = 0;
 		driverInst->vertSplit = 0;
 
@@ -398,6 +544,12 @@ void MM_Characters_SetMenuLayout(void)
 	s32 numPlyrNextGame = sdata->gGT->numPlyrNextGame;
 	s32 layoutIndex = numPlyrNextGame - 1;
 
+#if defined(CTR_NATIVE)
+	// Oxide's slot lives past retail's 15-entry characterSelectMeta1P2P, so the loop below cannot
+	// see it; the "few unlocked" limited layouts (4/5) have no Oxide-aware tables of their own
+	// (see MM_Characters_GetOxideMetaForLayout), so always take the expanded layout instead.
+	expandRoster = true;
+#else
 	// Loop through bottom characters,
 	// if any are unlocked, use expanded
 	for (s32 iconIndex = MM_CHARACTER_SELECT_EXPANSION_ICON_FIRST; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
@@ -411,6 +563,7 @@ void MM_Characters_SetMenuLayout(void)
 			break;
 		}
 	}
+#endif
 
 	if (
 	    // if 1P2P (0 or 1)
@@ -435,7 +588,11 @@ void MM_Characters_SetMenuLayout(void)
 
 	D230.activeCharacterSelectWindowPos = D230.characterSelectWindowPosByLayout[layoutIndex];
 
+#if defined(CTR_NATIVE)
+	D230.activeCharacterSelectMeta = MM_Characters_GetOxideMetaForLayout(layoutIndex);
+#else
 	D230.activeCharacterSelectMeta = D230.characterSelectMetaByLayout[layoutIndex];
+#endif
 
 	D230.characterSelectNameTextY = D230.characterSelectLayout.textY[layoutIndex];
 
