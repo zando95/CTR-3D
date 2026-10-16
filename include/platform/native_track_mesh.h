@@ -124,12 +124,14 @@ int NativeTrackMesh_LeafIndexForBsp(unsigned bspIndex);
 // renderer shows whichever frame happened to be active when the level loaded,
 // for the whole race.
 //
-// MUST be called on the thread that WALKS, at the head of a walk --
-// platform/native_libgpu.c calls it from CtrGpu_ExecDrawOTag. That call site
-// is not a style choice: the buffer it writes is the same single linearAlloc
-// block the core-2 render worker draws from, and the render queue being FIFO
-// with one worker is what guarantees the previous walk has finished and the
-// next has not begun. Calling it from the game thread instead would need
+// MUST be called on the thread that WALKS, after that walk's
+// Platform_BeginScene -- platform/native_libgpu.c calls it from
+// CtrGpu_ExecDrawOTag. The buffer it writes is the same single linearAlloc
+// block the GPU reads, and the previous frame's command list keeps reading it
+// until BeginScene has waited for that frame's GPU work; a finished CPU walk is
+// not a finished GPU frame. The render queue being FIFO with one worker is what
+// keeps the next walk from starting meanwhile. Calling it from the game thread
+// instead would need
 // either a fence (which costs the render thread's whole win) or a second copy
 // of the vertex block.
 //

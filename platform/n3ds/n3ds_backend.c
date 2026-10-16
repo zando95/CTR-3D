@@ -2590,9 +2590,9 @@ void N3DS_TrackGeom_Free(void)
  *     count. The staging buffer the upload copied from is freed, so this block
  *     is the only copy of the level's geometry that exists.
  *
- * THREAD: called on the walk thread at the head of a walk (see
- * NativeTrackAnim_PatchFrame's comment), never concurrently with a draw out of
- * this same block.
+ * THREAD: called on the walk thread after that walk's frame begin has waited
+ * for the previous frame's GPU work (see NativeTrackAnim_PatchFrame's
+ * comment), never concurrently with a draw out of this same block.
  */
 void N3DS_TrackGeom_PatchUV(const unsigned short *vertIndices, const short *uvPairs, int count)
 {

@@ -528,32 +528,37 @@ uint32_t DrawSyncCallback(void (*func)(void))
 	return 0;
 }
 
-void CtrGpu_ExecDrawOTag(void *p)
-{
 #if defined(CTR_NATIVE) && defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
-	// Advance animated track textures (turbo pads, waterfalls, lava) to
-	// the frame the game has cycled to. Deliberately HERE and not next to the
-	// PublishForWalk above -- this writes into the GPU-resident vertex block
-	// that the core-2 worker draws from, and this function IS the walk. The
-	// render queue being FIFO with a single worker is what makes "previous
-	// walk finished, next one not started" true by construction.
-	//
-	// Outside the retry loop below: it is idempotent (the per-chain frame latch
-	// makes a repeat a no-op), so running it once per walk rather than once per
-	// paused-emulator repaint costs nothing and claims less.
+// Advances animated track geometry (water, turbo pads, waterfalls, lava) to the
+// frame the game has cycled to, by writing into the GPU-resident track vertex
+// block. That block is still being read by the previous frame's command list
+// until Platform_BeginScene has waited for it, so this must run after
+// BeginScene and never before. It lives in the walk rather than next to the
+// game-thread publishes in DrawOTag because the walk is the only thread that
+// knows the GPU is done with the block.
+static void CtrGpu_PatchTrackAnimForWalk(void)
+{
 #ifdef CTR_INTERNAL
-	{
-		const u64 patchStart = SDL_GetPerformanceCounter();
-		u64 patchDelta;
+	const u64 patchStart = SDL_GetPerformanceCounter();
+	u64 patchDelta;
 
-		NativeTrackAnim_PatchFrame();
-		patchDelta = SDL_GetPerformanceCounter() - patchStart;
-		s_otagPatchTicks += patchDelta;
-		s_otagPatchCum += patchDelta;
-	}
+	NativeTrackAnim_PatchFrame();
+	patchDelta = SDL_GetPerformanceCounter() - patchStart;
+	s_otagPatchTicks += patchDelta;
+	s_otagPatchCum += patchDelta;
 #else
 	NativeTrackAnim_PatchFrame();
 #endif
+}
+#endif
+
+void CtrGpu_ExecDrawOTag(void *p)
+{
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
+	// Once per walk, not once per paused-emulator repaint: the patch is
+	// idempotent per game frame (the per-chain frame latch makes a repeat a
+	// no-op), so a repeat would cost time and buy nothing.
+	int trackAnimPatched = 0;
 #endif
 
 #ifdef CTR_INTERNAL
@@ -574,6 +579,14 @@ void CtrGpu_ExecDrawOTag(void *p)
 		{
 			ClearSplits();
 		}
+
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
+		if (!trackAnimPatched)
+		{
+			trackAnimPatched = 1;
+			CtrGpu_PatchTrackAnimForWalk();
+		}
+#endif
 
 #ifdef CTR_INTERNAL
 		{

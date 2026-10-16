@@ -112,7 +112,7 @@ enum NativePerfBucket
 	 * reads it. Measured because the flush cost is range-proportional and the
 	 * whole resident renderer is only worth ~6% -- a patch that quietly spends
 	 * a millisecond a frame would be eating most of the feature it decorates.
-	 * Sits INSIDE the walk (draw_otag_ms), at its head. Appended, never
+	 * Sits INSIDE the walk (draw_otag_ms), right after its BeginScene. Appended, never
 	 * inserted: s_bucketInfo is indexed by this enum.
 	 */
 	NATIVE_PERF_BUCKET_TRACK_ANIM,

@@ -1326,11 +1326,12 @@ static u32 NativeTrackAnim_PatchVertices(s32 camX, s32 camZ)
  * WHERE THIS RUNS MATTERS. It writes into the single linearAlloc block
  * N3DS_TrackGeom_Upload handed the GPU, and on render-thread builds core 2
  * draws out of that block. It is therefore called from CtrGpu_ExecDrawOTag --
- * i.e. on the WALK thread, whichever that is, at the head of a walk. The
- * render queue is FIFO with one worker, so the previous frame's walk has
- * already finished by then and the next one has not started: no fence, no
- * double buffer, and no argument about whether some other call site happens to
- * be a barrier today.
+ * i.e. on the WALK thread, whichever that is -- after Platform_BeginScene,
+ * which is where the previous frame's GPU work is awaited. Before that point
+ * the PICA may still be reading this block for the previous frame (both eyes),
+ * so patching earlier tears water and pad UVs for a frame. The render queue is
+ * FIFO with one worker, so the next walk cannot start meanwhile: no fence, no
+ * double buffer.
  *
  * The game-state it reads (AnimTex.frameCurr, and the frame's own
  * TextureLayout) is written by CTR_CycleTex_LEV on the game thread early in
