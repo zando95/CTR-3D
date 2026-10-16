@@ -67,7 +67,43 @@ struct NativeDiscImageFile
 	u32 size;
 };
 
+/* What NativeDiscImage_Init made of the image in the assets directory. Only
+ * STATUS_OK makes the image readable; every other status names a reason it
+ * was refused, for the startup error screen. */
+enum NativeDiscImageStatus
+{
+	NATIVE_DISC_IMAGE_STATUS_NOT_FOUND,   /* no ctr-u.bin in the assets directory */
+	NATIVE_DISC_IMAGE_STATUS_OPEN_FAILED, /* ctr-u.bin exists but could not be opened */
+	NATIVE_DISC_IMAGE_STATUS_COOKED_ISO,  /* 2048-byte sectors: the XA and STR sectors are gone */
+	NATIVE_DISC_IMAGE_STATUS_NO_VOLUME,   /* no ISO9660 volume in the raw MODE2/2352 layout */
+	NATIVE_DISC_IMAGE_STATUS_TRUNCATED,   /* the file ends before the volume the PVD describes */
+	NATIVE_DISC_IMAGE_STATUS_OK,
+};
+
+struct NativeDiscImageInfo
+{
+	int status;
+	u64 imageBytes;    /* size of the image file; 0 if it could not be measured */
+	u32 volumeSectors; /* PVD volume space size, once the PVD has been read */
+	char path[1024];   /* the image file found, empty for STATUS_NOT_FOUND */
+};
+
+/* Why the last read through an owner's role failed. Each role has one writer
+ * thread, so a role's own thread may read its entry without a lock. */
+enum NativeDiscImageReadError
+{
+	NATIVE_DISC_IMAGE_READ_OK,
+	NATIVE_DISC_IMAGE_READ_OUTSIDE_FILE,   /* request runs past the file's directory record */
+	NATIVE_DISC_IMAGE_READ_PAST_IMAGE_END, /* the image file ends before the requested sector */
+	NATIVE_DISC_IMAGE_READ_IO_FAILED,      /* the host seek or read failed */
+	NATIVE_DISC_IMAGE_READ_BAD_SECTOR,     /* the raw sector's sync/mode header is wrong */
+};
+
 int NativeDiscImage_Init(const char *assetsDir);
+const struct NativeDiscImageInfo *NativeDiscImage_GetInfo(void);
+/* 1 when every sector of file lies inside the image file. */
+int NativeDiscImage_FileFitsImage(const struct NativeDiscImageFile *file);
+int NativeDiscImage_LastReadError(int owner);
 int NativeDiscImage_FindFile(const char *path, struct NativeDiscImageFile *fileOut);
 
 /*

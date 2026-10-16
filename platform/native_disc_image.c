@@ -3,6 +3,7 @@
 #include <platform/native_path.h>
 #include <platform/native_perf.h>
 
+#include <errno.h>
 #include <limits.h>
 #if !defined(_WIN32)
 #include <dirent.h>
@@ -22,8 +23,13 @@
 #define NATIVE_DISC_IMAGE_MODE2_USER_OFFSET 16u
 #define NATIVE_DISC_IMAGE_MODE2_USER_SIZE   2336u
 #define NATIVE_DISC_IMAGE_PVD_LBA           16u
+#define NATIVE_DISC_IMAGE_PVD_VOLUME_SIZE   80u
 #define NATIVE_DISC_IMAGE_PVD_ROOT_RECORD   156u
 #define NATIVE_DISC_IMAGE_DIRECTORY_FLAG    0x02u
+/* The 2-second postgap a mastered data track ends with. It is inside the PVD's
+ * volume size but holds no file data, and some rippers leave it off, so an
+ * image may end this far short of the volume and still be complete. */
+#define NATIVE_DISC_IMAGE_POSTGAP_SECTORS   150u
 
 // NOTE(aalhendi): This hardcodes only the common NTSC-U raw BIN layout:
 // one MODE2/2352 data track at byte zero. The user still supplies all disc
@@ -58,6 +64,8 @@ global_variable FILE *s_nativeDiscImageFile;
 #endif
 global_variable struct NativeDiscImageFile s_nativeDiscImageRoot;
 global_variable int s_nativeDiscImageAvailable;
+global_variable struct NativeDiscImageInfo s_nativeDiscImageInfo;
+global_variable int s_nativeDiscImageReadError[NATIVE_DISC_IMAGE_OWNER_COUNT];
 
 /*
  * Scratch for every main-thread read path (level loads via NativeCD, STR,
@@ -318,6 +326,17 @@ internal int NativeDiscImage_CheckRawSectorHeader(const u8 *sector)
 	return 1;
 }
 
+internal int NativeDiscImage_OwnerIndex(int owner)
+{
+	return (owner == NATIVE_DISC_IMAGE_OWNER_AUDIO) ? NATIVE_DISC_IMAGE_OWNER_AUDIO : NATIVE_DISC_IMAGE_OWNER_MAIN;
+}
+
+internal int NativeDiscImage_FailRead(int owner, int error)
+{
+	s_nativeDiscImageReadError[NativeDiscImage_OwnerIndex(owner)] = error;
+	return 0;
+}
+
 /*
  * THE choke point: every byte the game reads off the disc image arrives
  * through here, and each call is one seek plus one read. Reading a whole run
@@ -338,7 +357,7 @@ internal int NativeDiscImage_ReadRawRun(u32 lba, u32 count, u8 *raw, int owner)
 
 	if (!NativeDiscImage_ImageIsOpen() || (count == 0))
 	{
-		return 0;
+		return NativeDiscImage_FailRead(owner, NATIVE_DISC_IMAGE_READ_IO_FAILED);
 	}
 
 	offset = (u64)lba * NATIVE_DISC_IMAGE_RAW_SECTOR_SIZE;
@@ -363,7 +382,7 @@ internal int NativeDiscImage_ReadRawRun(u32 lba, u32 count, u8 *raw, int owner)
 #if CTR_NATIVE_DISC_IO_PROFILE
 		prof->ioFails++;
 #endif
-		return 0;
+		return NativeDiscImage_FailRead(owner, NATIVE_DISC_IMAGE_READ_PAST_IMAGE_END);
 	}
 
 	/*
@@ -399,7 +418,7 @@ internal int NativeDiscImage_ReadRawRun(u32 lba, u32 count, u8 *raw, int owner)
 			prof->ioFails++;
 			NativeDiscImage_ProfAccumulate(prof, beginTick);
 #endif
-			return 0;
+			return NativeDiscImage_FailRead(owner, NATIVE_DISC_IMAGE_READ_IO_FAILED);
 		}
 
 		int readOk;
@@ -426,7 +445,11 @@ internal int NativeDiscImage_ReadRawRun(u32 lba, u32 count, u8 *raw, int owner)
 			prof->readTicks += NativeDiscImage_ProfTick() - midTick;
 			NativeDiscImage_ProfAccumulate(prof, beginTick);
 #endif
-			return 0;
+			if ((s_nativeDiscImageInfo.imageBytes != 0) && (offset + bytes > s_nativeDiscImageInfo.imageBytes))
+			{
+				return NativeDiscImage_FailRead(owner, NATIVE_DISC_IMAGE_READ_PAST_IMAGE_END);
+			}
+			return NativeDiscImage_FailRead(owner, NATIVE_DISC_IMAGE_READ_IO_FAILED);
 		}
 
 #if CTR_NATIVE_DISC_IO_PROFILE
@@ -457,10 +480,11 @@ internal int NativeDiscImage_ReadRawRun(u32 lba, u32 count, u8 *raw, int owner)
 #if CTR_NATIVE_DISC_IO_PROFILE
 			prof->headerFails++;
 #endif
-			return 0;
+			return NativeDiscImage_FailRead(owner, NATIVE_DISC_IMAGE_READ_BAD_SECTOR);
 		}
 	}
 
+	s_nativeDiscImageReadError[NativeDiscImage_OwnerIndex(owner)] = NATIVE_DISC_IMAGE_READ_OK;
 	return 1;
 }
 
@@ -700,15 +724,77 @@ internal int NativeDiscImage_LoadRoot(void)
 
 	s_nativeDiscImageRoot.lba = root.lba;
 	s_nativeDiscImageRoot.size = root.size;
+	s_nativeDiscImageInfo.volumeSectors = NativeDiscImage_ReadLE32(&sector[NATIVE_DISC_IMAGE_FORM1_DATA_OFFSET + NATIVE_DISC_IMAGE_PVD_VOLUME_SIZE]);
 	return 1;
+}
+
+/* Size of the open image file in bytes, or 0 when it cannot be measured. */
+internal u64 NativeDiscImage_ImageSizeBytes(void)
+{
+#if defined(__3DS__)
+	off_t end = lseek(s_nativeDiscImageFd[NATIVE_DISC_IMAGE_OWNER_MAIN], 0, SEEK_END);
+
+	return (end > 0) ? (u64)end : 0;
+#else
+	long end;
+
+	if (fseek(s_nativeDiscImageFile, 0, SEEK_END) != 0)
+	{
+		return 0;
+	}
+
+	end = ftell(s_nativeDiscImageFile);
+	return (end > 0) ? (u64)end : 0;
+#endif
+}
+
+internal int NativeDiscImage_ReadImageBytes(u64 offset, u8 *dst, size_t bytes)
+{
+	if (offset > (u64)LONG_MAX)
+	{
+		return 0;
+	}
+
+#if defined(__3DS__)
+	{
+		int fd = s_nativeDiscImageFd[NATIVE_DISC_IMAGE_OWNER_MAIN];
+
+		return (lseek(fd, (off_t)offset, SEEK_SET) >= 0) && NativeDiscImage_FdReadFull(fd, dst, bytes);
+	}
+#else
+	return (fseek(s_nativeDiscImageFile, (long)offset, SEEK_SET) == 0) && (fread(dst, 1, bytes, s_nativeDiscImageFile) == bytes);
+#endif
+}
+
+/* A cooked 2048-byte-sector image keeps its PVD at byte 16 * 2048. */
+internal int NativeDiscImage_LooksLikeCookedIso(void)
+{
+	u8 header[7];
+
+	if (!NativeDiscImage_ReadImageBytes((u64)NATIVE_DISC_IMAGE_PVD_LBA * NATIVE_DISC_IMAGE_FORM1_DATA_SIZE, header, sizeof(header)))
+	{
+		return 0;
+	}
+
+	return (header[0] == 1) && (memcmp(&header[1], "CD001", 5) == 0) && (header[6] == 1);
+}
+
+internal int NativeDiscImage_Refuse(int status)
+{
+	s_nativeDiscImageInfo.status = status;
+	NativeDiscImage_ImageClose();
+	return 0;
 }
 
 int NativeDiscImage_Init(const char *assetsDir)
 {
 	char path[NATIVE_DISC_IMAGE_PATH_MAX];
+	u64 imageSectors;
 
 	s_nativeDiscImageAvailable = 0;
 	s_nativeDiscImagePath[0] = '\0';
+	memset(&s_nativeDiscImageInfo, 0, sizeof(s_nativeDiscImageInfo));
+	s_nativeDiscImageInfo.status = NATIVE_DISC_IMAGE_STATUS_NOT_FOUND;
 
 	/* A re-Init can point at a different image, so entries from the old one
 	 * must not survive it. Cheap: this runs once in practice. */
@@ -724,23 +810,63 @@ int NativeDiscImage_Init(const char *assetsDir)
 
 	if (!NativeDiscImage_ImageOpen(path))
 	{
+		/* Windows names the image without listing the directory, so a missing
+		 * file only shows up here. */
+		if (errno != ENOENT)
+		{
+			NativePath_NormalizeSlashes(s_nativeDiscImageInfo.path, sizeof(s_nativeDiscImageInfo.path), NativeStr8_FromCString(path));
+			s_nativeDiscImageInfo.status = NATIVE_DISC_IMAGE_STATUS_OPEN_FAILED;
+		}
 		return 0;
 	}
 
+	NativePath_NormalizeSlashes(s_nativeDiscImageInfo.path, sizeof(s_nativeDiscImageInfo.path), NativeStr8_FromCString(path));
+	s_nativeDiscImageInfo.imageBytes = NativeDiscImage_ImageSizeBytes();
+
 	if (!NativeDiscImage_LoadRoot())
 	{
-		NativeDiscImage_ImageClose();
-		return 0;
+		return NativeDiscImage_Refuse(NativeDiscImage_LooksLikeCookedIso() ? NATIVE_DISC_IMAGE_STATUS_COOKED_ISO : NATIVE_DISC_IMAGE_STATUS_NO_VOLUME);
+	}
+
+	/* A short copy otherwise boots and only fails when a load first reaches
+	 * past the cut, so it is refused before anything starts. */
+	imageSectors = s_nativeDiscImageInfo.imageBytes / NATIVE_DISC_IMAGE_RAW_SECTOR_SIZE;
+	if ((s_nativeDiscImageInfo.imageBytes != 0) && (imageSectors + NATIVE_DISC_IMAGE_POSTGAP_SECTORS < s_nativeDiscImageInfo.volumeSectors))
+	{
+		return NativeDiscImage_Refuse(NATIVE_DISC_IMAGE_STATUS_TRUNCATED);
 	}
 
 	if (!NativePath_NormalizeSlashes(s_nativeDiscImagePath, sizeof(s_nativeDiscImagePath), NativeStr8_FromCString(path)))
 	{
-		NativeDiscImage_ImageClose();
-		return 0;
+		return NativeDiscImage_Refuse(NATIVE_DISC_IMAGE_STATUS_OPEN_FAILED);
 	}
 
+	s_nativeDiscImageInfo.status = NATIVE_DISC_IMAGE_STATUS_OK;
 	s_nativeDiscImageAvailable = 1;
 	return 1;
+}
+
+const struct NativeDiscImageInfo *NativeDiscImage_GetInfo(void)
+{
+	return &s_nativeDiscImageInfo;
+}
+
+int NativeDiscImage_FileFitsImage(const struct NativeDiscImageFile *file)
+{
+	u64 endSector;
+
+	if ((file == NULL) || (s_nativeDiscImageInfo.imageBytes == 0))
+	{
+		return 1;
+	}
+
+	endSector = (u64)file->lba + NativeDiscImage_DataSectorCount(file->size);
+	return endSector * NATIVE_DISC_IMAGE_RAW_SECTOR_SIZE <= s_nativeDiscImageInfo.imageBytes;
+}
+
+int NativeDiscImage_LastReadError(int owner)
+{
+	return s_nativeDiscImageReadError[NativeDiscImage_OwnerIndex(owner)];
 }
 
 /*
@@ -908,7 +1034,7 @@ int NativeDiscImage_ReadDataSectorsScratch(const struct NativeDiscImageFile *fil
 	fileSectorCount = NativeDiscImage_DataSectorCount(file->size);
 	if ((sector > fileSectorCount) || (sectorCount > fileSectorCount - sector))
 	{
-		return 0;
+		return NativeDiscImage_FailRead(scratch->owner, NATIVE_DISC_IMAGE_READ_OUTSIDE_FILE);
 	}
 
 	while (sectorCount != 0)
@@ -948,7 +1074,7 @@ int NativeDiscImage_ReadRawSectorsScratch(const struct NativeDiscImageFile *file
 	fileSectorCount = NativeDiscImage_RawSectorCount(file->size);
 	if ((sector > fileSectorCount) || (sectorCount > fileSectorCount - sector))
 	{
-		return 0;
+		return NativeDiscImage_FailRead(scratch->owner, NATIVE_DISC_IMAGE_READ_OUTSIDE_FILE);
 	}
 
 	while (sectorCount != 0)

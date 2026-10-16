@@ -31,6 +31,7 @@
 #endif
 
 #include "platform/native_assets.h"
+#include "platform/native_fatal.h"
 #include "platform/native_log.h"
 #include "platform/native_memory.h"
 #include "platform/native_offscreen_capture.h"
@@ -253,7 +254,7 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "[CTR 3D] Failed to initialize asset paths.\n");
 #if defined(__3DS__)
 		N3DS_DebugLog("[CTR-3DS] FAIL: NativeAssets_Init");
-		N3DS_ShowFatalAssetScreen(NULL);
+		NativePlatform_ShowFatal(NativeAssets_GetFailureMessage());
 #endif
 		return NativeConsole_Return(1);
 	}
@@ -292,8 +293,9 @@ int main(int argc, char *argv[])
 	if (!NativeAssets_Validate())
 	{
 #if defined(__3DS__)
-		N3DS_DebugLog("[CTR-3DS] FAIL: NativeAssets_Validate (disc image missing?)");
-		N3DS_ShowFatalAssetScreen(NativeAssets_GetAssetDir());
+		N3DS_DebugLog("[CTR-3DS] FAIL: NativeAssets_Validate");
+		N3DS_DebugLog(NativeAssets_GetFailureMessage());
+		NativePlatform_ShowFatal(NativeAssets_GetFailureMessage());
 #endif
 		return NativeConsole_Return(1);
 	}

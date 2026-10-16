@@ -437,34 +437,50 @@ void N3DS_SleepMs(unsigned int ms)
  * console left on a shelf still powers down rather than sitting lit. */
 #define N3DS_FATAL_SCREEN_VBLANKS 3600
 
-void N3DS_ShowFatalAssetScreen(const char *assetDir)
+/* Whether gfxInitDefault (N3DS_GfxInit) and C3D_Init (N3DS_C3DInit) are
+ * currently in force. The fatal screen can be reached after either succeeded
+ * and a later step failed, and must release them before taking the screen. */
+static int s_n3dsGfxActive;
+static int s_n3dsC3DActive;
+
+void N3DS_ShowFatalScreen(const char *message)
 {
 	unsigned int vblanks = 0;
+	const char *line;
 
 	/*
-	 * Owns the whole gfx lifecycle: this runs before Platform_Init, so no
-	 * screen exists yet and the process exits as soon as the panel is
-	 * dismissed. The failure messages themselves go to stderr, which
-	 * N3DS_EarlyInit pointed at svcOutputDebugString -- invisible on a console
-	 * with no debugger attached, which is why the panel exists at all.
+	 * The failure text also went to stderr, which N3DS_EarlyInit pointed at
+	 * svcOutputDebugString -- invisible on a console with no debugger
+	 * attached, which is why the panel exists at all.
 	 */
+	if (s_n3dsC3DActive)
+	{
+		C3D_Fini();
+		s_n3dsC3DActive = 0;
+	}
+	if (s_n3dsGfxActive)
+	{
+		gfxExit();
+		s_n3dsGfxActive = 0;
+	}
+
 	gfxInitDefault();
 	consoleInit(GFX_TOP, NULL);
 
 	printf("\n  CTR 3D\n\n");
-	printf("  Could not find the game's disc image.\n\n");
-	printf("  This port ships no game data. Copy your\n");
-	printf("  own NTSC-U Crash Team Racing disc dump to\n");
-	printf("  the SD card as:\n\n");
-	printf("    /3ds/ctr_native/assets/ctr-u.bin\n\n");
-	printf("  It must be a raw MODE2/2352 .bin dump. A\n");
-	printf("  2048-byte .iso will not work: it drops the\n");
-	printf("  sectors the music and FMV are stored in.\n\n");
-	if (assetDir != NULL)
+	for (line = (message != NULL) ? message : ""; *line != '\0';)
 	{
-		printf("  Looked in: %s\n\n", assetDir);
+		const char *end = strchr(line, '\n');
+		int len = (end != NULL) ? (int)(end - line) : (int)strlen(line);
+
+		printf("  %.*s\n", len, line);
+		line += len;
+		if (*line == '\n')
+		{
+			line++;
+		}
 	}
-	printf("  Press START to exit.\n");
+	printf("\n  Press any button to exit.\n");
 
 	while (aptMainLoop() && (vblanks < N3DS_FATAL_SCREEN_VBLANKS))
 	{
@@ -497,6 +513,7 @@ void N3DS_GfxInit(void)
 	osSetSpeedupEnable(true);
 
 	gfxInitDefault();
+	s_n3dsGfxActive = 1;
 
 	/*
 	 * Stereoscopic 3D: double-buffer the top screen's RIGHT framebuffer too.
@@ -519,7 +536,11 @@ void N3DS_GfxInit(void)
 
 void N3DS_GfxExit(void)
 {
-	gfxExit();
+	if (s_n3dsGfxActive)
+	{
+		gfxExit();
+		s_n3dsGfxActive = 0;
+	}
 }
 
 /*
@@ -1612,6 +1633,7 @@ int N3DS_C3DInit(void)
 	{
 		return 0;
 	}
+	s_n3dsC3DActive = 1;
 
 	/*
 	 * Arm the gxguard wake source (see g_dbg_gxGuard's comment) before
@@ -1883,6 +1905,7 @@ void N3DS_C3DExit(void)
 	}
 
 	C3D_Fini();
+	s_n3dsC3DActive = 0;
 }
 
 /*

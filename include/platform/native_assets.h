@@ -43,5 +43,8 @@ int NativeAssets_OpenHostRange(const char *relativePath, struct NativeAssetsHost
 int NativeAssets_ReadHostRange(struct NativeAssetsHostRange *range, long offset, void *dst, size_t size);
 void NativeAssets_CloseHostRange(struct NativeAssetsHostRange *range);
 int NativeAssets_Validate(void);
+/* Why Init or Validate refused the assets, in words for the player: multi-line,
+ * at most 44 columns per line, no trailing newline. */
+const char *NativeAssets_GetFailureMessage(void);
 
 #endif

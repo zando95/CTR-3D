@@ -32,13 +32,15 @@ void N3DS_SleepMs(unsigned int ms);
 /* ------------------------------------------------------------- graphics --- */
 void N3DS_GfxInit(void);
 
-/* Full-screen "no disc image" panel for the startup asset failures, which
- * happen before N3DS_GfxInit and would otherwise exit to the Homebrew Launcher
- * with nothing on screen. Brings up its own console, waits for a button or
- * ~60s, and tears the screen back down; the caller exits straight after.
- * assetDir may be NULL. Lives in this TU because the console and HID calls are
+/* Full-screen error panel for failures that end the run: startup asset and
+ * graphics failures, an Old 3DS, a disc read that cannot succeed. Without it
+ * the app would exit to the Homebrew Launcher with nothing on screen. Tears
+ * down whatever gfx/citro3d state is still up, brings up its own console on
+ * the top screen, waits for any button or ~60s, and releases the screen; the
+ * caller exits straight after. message is plain text, '\n'-separated lines of
+ * at most 44 columns. Lives in this TU because the console and HID calls are
  * libctru, which the unity TU cannot see. */
-void N3DS_ShowFatalAssetScreen(const char *assetDir);
+void N3DS_ShowFatalScreen(const char *message);
 void N3DS_GfxExit(void);
 /* Push the current framebuffer to the screen. Does NOT wait for vblank --
  * frame pacing belongs to VSync() in the platform layer. */

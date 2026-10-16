@@ -3,6 +3,7 @@
 #include <macros.h>
 
 #include "platform/native_audio.h"
+#include "platform/native_fatal.h"
 #include "platform/native_glad.h"
 #include "platform/native_gpu.h"
 #include "platform/native_input.h"
@@ -549,6 +550,45 @@ internal void Platform_HandleKey(int key, char down)
 		}
 	}
 #endif
+}
+
+internal void NativePlatform_PresentFatal(const char *message)
+{
+#if defined(__3DS__)
+	N3DS_ShowFatalScreen(message);
+#else
+	// SDL allows this before SDL_Init and after SDL_Quit, so it serves every
+	// failure point; a NULL window only means the box has no parent.
+	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CTR 3D", message, g_window);
+#endif
+}
+
+void NativePlatform_ShowFatal(const char *message)
+{
+	fprintf(stderr, "[CTR 3D] Fatal error:\n%s\n", message);
+	fflush(stderr);
+	NativePlatform_PresentFatal(message);
+}
+
+void NativePlatform_FatalExit(const char *message)
+{
+	// The log echoes to stderr, so this one line reaches both.
+	Platform_LogError("[CTR 3D] Fatal error:\n%s\n", message);
+	Platform_LogFlush();
+
+#if defined(__3DS__)
+	// The error screen needs the displays citro3d holds, so the platform goes
+	// first. Platform_Shutdown is the same teardown a HOME-menu exit runs.
+	Platform_Shutdown();
+	NativePlatform_PresentFatal(message);
+#else
+	// Shown while the window still exists so the box is parented to it and
+	// cannot open behind it.
+	NativePlatform_PresentFatal(message);
+	Platform_Shutdown();
+#endif
+
+	exit(1);
 }
 
 void Platform_Init(const char *title, int width, int height)

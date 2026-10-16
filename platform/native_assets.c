@@ -11,6 +11,7 @@
 #include <dirent.h>
 #endif
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -812,6 +813,47 @@ void NativeAssets_FreeBytes(struct NativeAssetsByteBuffer *bytes)
 	bytes->size = 0;
 }
 
+/*
+ * Startup failure reporting. Validate leaves one player-facing explanation in
+ * s_nativeAssetsFailure for the platform's fatal screen. Lines stay within 44
+ * columns so the 3DS console (50 columns, indented 2) never wraps mid-word.
+ */
+#define NATIVE_ASSETS_FAILURE_MAX 1536
+#define NATIVE_ASSETS_RETAIL_BOOT "SCUS_944.26"
+
+enum NativeAssetsImageHint
+{
+	NATIVE_ASSETS_HINT_NONE,
+	NATIVE_ASSETS_HINT_CUE,
+	NATIVE_ASSETS_HINT_COMPRESSED,
+	NATIVE_ASSETS_HINT_ISO,
+	NATIVE_ASSETS_HINT_RAW_OUTSIDE,
+	NATIVE_ASSETS_HINT_RAW,
+	NATIVE_ASSETS_HINT_MISPLACED,
+};
+
+global_variable char s_nativeAssetsFailure[NATIVE_ASSETS_FAILURE_MAX];
+
+internal void NativeAssets_SetFailure(const char *fmt, ...) CTR_PRINTF_FORMAT(1, 2);
+internal void NativeAssets_SetFailure(const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	vsnprintf(s_nativeAssetsFailure, sizeof(s_nativeAssetsFailure), fmt, args);
+	va_end(args);
+}
+
+const char *NativeAssets_GetFailureMessage(void)
+{
+	if (s_nativeAssetsFailure[0] == '\0')
+	{
+		return "Could not set up the game's asset folder.";
+	}
+
+	return s_nativeAssetsFailure;
+}
+
 internal void NativeAssets_PrintHeader(void)
 {
 	fprintf(stderr, "[CTR 3D] Missing or incomplete assets.\n");
@@ -823,6 +865,407 @@ internal void NativeAssets_PrintFooter(void)
 	fprintf(stderr, "[CTR 3D] Provide either raw NTSC-U disc image %s, or extracted files:\n", NATIVE_ASSETS_DISC_PATH);
 	fprintf(stderr, "[CTR 3D]   %s, %s, %s, %s, plus XA files referenced by %s\n", NATIVE_ASSETS_BIGFILE_PATH, NATIVE_ASSETS_KART_HWL_PATH,
 	        NATIVE_ASSETS_TEST_STR_PATH, NATIVE_ASSETS_XNF_PATH, NATIVE_ASSETS_XNF_PATH);
+}
+
+internal int NativeAssets_NameHasExtension(const char *name, const char *ext)
+{
+	NativeStr8 nameStr = NativeStr8_FromCString(name);
+	NativeStr8 extStr = NativeStr8_FromCString(ext);
+
+	return (nameStr.len > extStr.len) && NativeStr8_EqualsIgnoreCaseAscii(NativeStr8_Skip(nameStr, nameStr.len - extStr.len), extStr);
+}
+
+internal int NativeAssets_ClassifyImageName(const char *name, int inAssetsDir)
+{
+	if (NativeStr8_EqualsIgnoreCaseAscii(NativeStr8_FromCString(name), NATIVE_STR8_LIT(NATIVE_ASSETS_DISC_PATH)))
+	{
+		return inAssetsDir ? NATIVE_ASSETS_HINT_NONE : NATIVE_ASSETS_HINT_MISPLACED;
+	}
+	if (NativeAssets_NameHasExtension(name, ".bin") || NativeAssets_NameHasExtension(name, ".img"))
+	{
+		return inAssetsDir ? NATIVE_ASSETS_HINT_RAW : NATIVE_ASSETS_HINT_RAW_OUTSIDE;
+	}
+	if (NativeAssets_NameHasExtension(name, ".iso"))
+	{
+		return NATIVE_ASSETS_HINT_ISO;
+	}
+	if (NativeAssets_NameHasExtension(name, ".chd") || NativeAssets_NameHasExtension(name, ".pbp") || NativeAssets_NameHasExtension(name, ".ecm") ||
+	    NativeAssets_NameHasExtension(name, ".zip") || NativeAssets_NameHasExtension(name, ".7z") || NativeAssets_NameHasExtension(name, ".rar"))
+	{
+		return NATIVE_ASSETS_HINT_COMPRESSED;
+	}
+	if (NativeAssets_NameHasExtension(name, ".cue"))
+	{
+		return NATIVE_ASSETS_HINT_CUE;
+	}
+
+	return NATIVE_ASSETS_HINT_NONE;
+}
+
+internal void NativeAssets_ConsiderImageName(const char *name, int inAssetsDir, int *bestHint, char *bestName, size_t bestNameSize)
+{
+	int hint = NativeAssets_ClassifyImageName(name, inAssetsDir);
+
+	if (hint > *bestHint)
+	{
+		*bestHint = hint;
+		snprintf(bestName, bestNameSize, "%s", name);
+	}
+}
+
+/* The likeliest thing the player meant as the disc image, from one directory:
+ * a misplaced ctr-u.bin beats a misnamed raw dump beats an .iso, and so on. */
+internal void NativeAssets_ScanForImageHint(const char *dirPath, int inAssetsDir, int *bestHint, char *bestName, size_t bestNameSize)
+{
+#if defined(_WIN32)
+	char searchPath[NATIVE_ASSETS_PATH_MAX];
+	WIN32_FIND_DATAA findData;
+	HANDLE findHandle;
+
+	if (!NativePath_Join(searchPath, sizeof(searchPath), NativeStr8_FromCString(dirPath), NATIVE_STR8_LIT("*")))
+		return;
+
+	findHandle = FindFirstFileA(searchPath, &findData);
+	if (findHandle == INVALID_HANDLE_VALUE)
+		return;
+
+	do
+	{
+		if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+			NativeAssets_ConsiderImageName(findData.cFileName, inAssetsDir, bestHint, bestName, bestNameSize);
+	} while (FindNextFileA(findHandle, &findData) != 0);
+
+	FindClose(findHandle);
+#else
+	DIR *dir = opendir(dirPath);
+	struct dirent *entry;
+
+	if (dir == NULL)
+	{
+		return;
+	}
+
+	while ((entry = readdir(dir)) != NULL)
+	{
+		NativeAssets_ConsiderImageName(entry->d_name, inAssetsDir, bestHint, bestName, bestNameSize);
+	}
+
+	closedir(dir);
+#endif
+}
+
+internal void NativeAssets_FailNotFound(void)
+{
+	char hintName[260]; /* Win32 MAX_PATH, the widest entry name either scan returns */
+	char hint[512];
+	int hintKind = NATIVE_ASSETS_HINT_NONE;
+
+	hintName[0] = '\0';
+	NativeAssets_ScanForImageHint(s_nativeAssetsDir, 1, &hintKind, hintName, sizeof(hintName));
+	NativeAssets_ScanForImageHint(s_nativeAssetsBaseDir, 0, &hintKind, hintName, sizeof(hintName));
+
+	switch (hintKind)
+	{
+	case NATIVE_ASSETS_HINT_MISPLACED:
+	{
+		snprintf(hint, sizeof(hint), "Found %s outside the assets\nfolder. Move it into the assets folder.\n\n", hintName);
+		break;
+	}
+	case NATIVE_ASSETS_HINT_RAW:
+	{
+		snprintf(hint, sizeof(hint), "Found %s. If that is your\nCTR dump, rename it to ctr-u.bin.\n\n", hintName);
+		break;
+	}
+	case NATIVE_ASSETS_HINT_RAW_OUTSIDE:
+	{
+		snprintf(hint, sizeof(hint), "Found %s outside the assets\nfolder. If that is your CTR dump, move it\ninto the assets folder as ctr-u.bin.\n\n",
+		         hintName);
+		break;
+	}
+	case NATIVE_ASSETS_HINT_ISO:
+	{
+		snprintf(hint, sizeof(hint),
+		         "Found %s, but a 2048-byte .iso\nwill not work: it drops the sectors the\nmusic and FMV are stored in. Dump the\n"
+		         "disc again as .bin/.cue.\n\n",
+		         hintName);
+		break;
+	}
+	case NATIVE_ASSETS_HINT_COMPRESSED:
+	{
+		snprintf(hint, sizeof(hint), "Found %s. Compressed images\n(.chd, .pbp, archives) will not work.\nConvert it back to .bin/.cue first.\n\n",
+		         hintName);
+		break;
+	}
+	case NATIVE_ASSETS_HINT_CUE:
+	{
+		snprintf(hint, sizeof(hint), "Found %s. The .cue only\ndescribes the dump: copy the .bin it\nlists, renamed to ctr-u.bin.\n\n", hintName);
+		break;
+	}
+	default:
+	{
+		snprintf(hint, sizeof(hint), "A 2048-byte .iso will not work: it drops\nthe sectors the music and FMV are stored\nin.\n\n");
+		break;
+	}
+	}
+
+	NativeAssets_SetFailure("Could not find the game's disc image.\n\n"
+	                        "This port ships no game data. Copy your\n"
+	                        "own NTSC-U Crash Team Racing disc dump\n"
+#if defined(__3DS__)
+	                        "to the SD card as:\n\n"
+	                        "  /3ds/ctr_native/assets/ctr-u.bin\n\n"
+#else
+	                        "into the assets folder as:\n\n"
+	                        "  assets/ctr-u.bin\n\n"
+#endif
+	                        "It must be a raw MODE2/2352 .bin dump.\n"
+	                        "%s"
+	                        "Looked in: %s",
+	                        hint, s_nativeAssetsDir);
+}
+
+internal void NativeAssets_FailTruncated(const char *what, u64 haveBytes, u64 needBytes)
+{
+	NativeAssets_SetFailure("The game data is incomplete.\n\n"
+	                        "%s is %llu bytes\n"
+	                        "but needs at least %llu.\n\n"
+	                        "The copy was cut short. Copy the .bin\n"
+	                        "again and check that the sizes match.",
+	                        what, (unsigned long long)haveBytes, (unsigned long long)needBytes);
+}
+
+internal void NativeAssets_FailDiscImage(const struct NativeDiscImageInfo *disc)
+{
+	switch (disc->status)
+	{
+	case NATIVE_DISC_IMAGE_STATUS_OPEN_FAILED:
+	{
+		NativeAssets_SetFailure("Found the disc image but could not open\nit:\n\n  %s\n\nCopy it again; the file may be damaged.", disc->path);
+		break;
+	}
+	case NATIVE_DISC_IMAGE_STATUS_COOKED_ISO:
+	{
+		NativeAssets_SetFailure("The disc image is a 2048-byte .iso.\n\n"
+		                        "ctr-u.bin has 2048-byte sectors, so the\n"
+		                        "sectors the music and FMV are stored in\n"
+		                        "are missing. Dump the disc again as a\n"
+		                        "raw MODE2/2352 .bin/.cue and copy the\n"
+		                        ".bin as ctr-u.bin.");
+		break;
+	}
+	case NATIVE_DISC_IMAGE_STATUS_NO_VOLUME:
+	{
+		NativeAssets_SetFailure("The disc image is not a PlayStation dump.\n\n"
+		                        "ctr-u.bin has no disc header in the raw\n"
+		                        "MODE2/2352 layout. Use the .bin from a\n"
+		                        ".bin/.cue dump, not a .cue, .chd, .pbp or\n"
+		                        "archive renamed to .bin.");
+		break;
+	}
+	case NATIVE_DISC_IMAGE_STATUS_TRUNCATED:
+	{
+		NativeAssets_FailTruncated("ctr-u.bin", disc->imageBytes, (u64)disc->volumeSectors * NATIVE_DISC_IMAGE_RAW_SECTOR_SIZE);
+		break;
+	}
+	default:
+	{
+		NativeAssets_SetFailure("Could not read the disc image.");
+		break;
+	}
+	}
+}
+
+/* "SCES_021.05" -> "SCES-02105", the form printed on the disc. */
+internal void NativeAssets_FormatSerial(char *dst, size_t dstSize, const char *bootName)
+{
+	size_t out = 0;
+	size_t i;
+
+	for (i = 0; (bootName[i] != '\0') && (out + 1 < dstSize); i++)
+	{
+		if (bootName[i] == '.')
+		{
+			continue;
+		}
+		dst[out++] = (bootName[i] == '_') ? '-' : bootName[i];
+	}
+	dst[out] = '\0';
+}
+
+internal const char *NativeAssets_RegionOfSerial(const char *bootName)
+{
+	if ((strncmp(bootName, "SCES", 4) == 0) || (strncmp(bootName, "SLES", 4) == 0))
+	{
+		return "the European (PAL) release";
+	}
+	if ((strncmp(bootName, "SCPS", 4) == 0) || (strncmp(bootName, "SLPS", 4) == 0) || (strncmp(bootName, "SCPM", 4) == 0) ||
+	    (strncmp(bootName, "SLPM", 4) == 0))
+	{
+		return "the Japanese release";
+	}
+
+	return "not the USA release";
+}
+
+/* The boot executable SYSTEM.CNF names ("BOOT = cdrom:" then the file name). */
+internal int NativeAssets_ParseBootName(const u8 *cnf, int cnfSize, char *dst, size_t dstSize)
+{
+	const NativeStr8 key = NATIVE_STR8_LIT("cdrom:");
+	int i;
+
+	for (i = 0; i + (int)key.len <= cnfSize; i++)
+	{
+		NativeStr8 here = {&cnf[i], key.len};
+		size_t out = 0;
+		int at;
+
+		if (!NativeStr8_EqualsIgnoreCaseAscii(here, key))
+		{
+			continue;
+		}
+
+		at = i + (int)key.len;
+		while ((at < cnfSize) && ((cnf[at] == '\\') || (cnf[at] == '/')))
+		{
+			at++;
+		}
+		while ((at < cnfSize) && (cnf[at] != ';') && (cnf[at] > ' ') && (out + 1 < dstSize))
+		{
+			dst[out++] = (char)NativeStr8_ToUpperAscii(cnf[at++]);
+		}
+		dst[out] = '\0';
+		return out != 0;
+	}
+
+	return 0;
+}
+
+/* Other regions use the same file names with different contents and layout,
+ * so they pass every file check and then fail somewhere mid-game. */
+internal int NativeAssets_ValidateDiscRegion(void)
+{
+	u8 *cnf;
+	int cnfSize;
+	char bootName[32];
+	char serial[32];
+	int parsed;
+
+	if (!NativeDiscImage_ReadFileBytes("SYSTEM.CNF", 0, &cnf, &cnfSize))
+	{
+		NativeAssets_SetFailure("The disc image is not a PlayStation game\ndisc: it has no SYSTEM.CNF.\n\n"
+		                        "CTR 3D needs the USA (NTSC-U) release of\nCrash Team Racing, SCUS-94426.");
+		return 0;
+	}
+
+	parsed = NativeAssets_ParseBootName(cnf, cnfSize, bootName, sizeof(bootName));
+	free(cnf);
+
+	if (parsed && (strcmp(bootName, NATIVE_ASSETS_RETAIL_BOOT) == 0))
+	{
+		return 1;
+	}
+
+	NativeAssets_FormatSerial(serial, sizeof(serial), parsed ? bootName : "unknown");
+	NativeAssets_SetFailure("This is not the USA (NTSC-U) disc.\n\n"
+	                        "ctr-u.bin is %s,\n"
+	                        "%s.\n\n"
+	                        "CTR 3D needs the USA release of Crash\n"
+	                        "Team Racing, SCUS-94426. Other regions\n"
+	                        "lay their data out differently.",
+	                        serial, NativeAssets_RegionOfSerial(parsed ? bootName : ""));
+	return 0;
+}
+
+/* Reads the first `size` bytes of the copy of BIGFILE.BIG the game will use
+ * (an extracted override first, as NativeCD_OpenFile does) and its size. */
+internal int NativeAssets_ReadBigfileHead(u8 *dst, u32 size, u64 *fileSizeOut)
+{
+	struct NativeAssetsHostRange range;
+	struct NativeDiscImageFile discFile;
+	int ok;
+
+	if (NativeAssets_OpenHostRange(NATIVE_ASSETS_BIGFILE_PATH, &range))
+	{
+		*fileSizeOut = (u64)range.size;
+		ok = ((u64)size <= *fileSizeOut) && NativeAssets_ReadHostRange(&range, 0, dst, size);
+		NativeAssets_CloseHostRange(&range);
+		return ok;
+	}
+
+	if (!NativeDiscImage_FindFile(NATIVE_ASSETS_BIGFILE_PATH, &discFile))
+	{
+		return 0;
+	}
+
+	*fileSizeOut = discFile.size;
+	return NativeDiscImage_ReadDataSectors(&discFile, 0, size / LOAD_CD_DATA_SECTOR_SIZE, dst);
+}
+
+/* BIGFILE.BIG's own directory (a count, then a {sector offset, byte size}
+ * pair per entry) must stay inside the file, or the level loads that follow
+ * it read past the end. */
+internal int NativeAssets_ValidateBigfile(void)
+{
+	const u32 headerBytes = LOAD_BIGFILE_HEADER_SECTORS * LOAD_CD_DATA_SECTOR_SIZE;
+	const u32 maxEntries = (headerBytes - 8u) / 8u;
+	u8 *header = (u8 *)malloc(headerBytes);
+	u64 bigSize = 0;
+	u32 numEntry;
+	u32 i;
+
+	if (header == NULL)
+	{
+		return 1;
+	}
+
+	if (!NativeAssets_ReadBigfileHead(header, headerBytes, &bigSize))
+	{
+		free(header);
+		NativeAssets_SetFailure("BIGFILE.BIG could not be read.\n\nThe game data is damaged or cut short.\nCopy the .bin again.");
+		return 0;
+	}
+
+	numEntry = NativeAssets_ReadLE32(&header[4]);
+	if ((numEntry == 0) || (numEntry > maxEntries))
+	{
+		free(header);
+		NativeAssets_SetFailure("BIGFILE.BIG is damaged: its directory is\nunreadable (%u entries).\n\nCopy the .bin again.", (unsigned int)numEntry);
+		return 0;
+	}
+
+	for (i = 0; i < numEntry; i++)
+	{
+		const u64 offset = (u64)NativeAssets_ReadLE32(&header[8u + i * 8u]) * LOAD_CD_DATA_SECTOR_SIZE;
+		const u64 end = offset + NativeAssets_ReadLE32(&header[12u + i * 8u]);
+
+		if (end > bigSize)
+		{
+			free(header);
+			NativeAssets_FailTruncated("BIGFILE.BIG", bigSize, end);
+			return 0;
+		}
+	}
+
+	free(header);
+	return 1;
+}
+
+internal int NativeAssets_CheckDiscFileFits(const char *path, const struct NativeDiscImageFile *discFile)
+{
+	u64 needBytes;
+
+	if (NativeDiscImage_FileFitsImage(discFile))
+	{
+		return 1;
+	}
+
+	fprintf(stderr, "[CTR 3D] asset runs past the end of the disc image: %s\n", path);
+	if (s_nativeAssetsFailure[0] == '\0')
+	{
+		needBytes = ((u64)discFile->lba + ((discFile->size + LOAD_CD_DATA_SECTOR_SIZE - 1u) / LOAD_CD_DATA_SECTOR_SIZE)) * NATIVE_DISC_IMAGE_RAW_SECTOR_SIZE;
+		NativeAssets_FailTruncated("ctr-u.bin", NativeDiscImage_GetInfo()->imageBytes, needBytes);
+	}
+	return 0;
 }
 
 internal int NativeAssets_CheckRequiredFile(const char *path)
@@ -843,7 +1286,7 @@ internal int NativeAssets_CheckRequiredFile(const char *path)
 
 	if (NativeDiscImage_FindFile(path, &discFile))
 	{
-		return 1;
+		return NativeAssets_CheckDiscFileFits(path, &discFile);
 	}
 
 	fprintf(stderr, "[CTR 3D] missing asset: %s\n", assetPath);
@@ -878,6 +1321,7 @@ internal int NativeAssets_ValidateXA(void)
 	{
 		NativeAssets_FreeBytes(&xnf);
 		fprintf(stderr, "[CTR 3D] invalid XA manifest: %s\n", NATIVE_ASSETS_XNF_PATH);
+		NativeAssets_SetFailure("The music index (XA/ENG.XNF) is damaged.\n\nCopy the .bin again.");
 		return 0;
 	}
 
@@ -939,9 +1383,18 @@ internal int NativeAssets_ValidateXA(void)
 				continue;
 			}
 
-			if (!NativeAssets_ResolvePath(relativePath, path, sizeof(path)) && !NativeDiscImage_FindFile(relativePath, &discFile))
+			if (NativeAssets_ResolvePath(relativePath, path, sizeof(path)))
+			{
+				continue;
+			}
+
+			if (!NativeDiscImage_FindFile(relativePath, &discFile))
 			{
 				fprintf(stderr, "[CTR 3D] missing XA asset: %s\n", path);
+				missing++;
+			}
+			else if (!NativeAssets_CheckDiscFileFits(relativePath, &discFile))
+			{
 				missing++;
 			}
 		}
@@ -952,7 +1405,26 @@ internal int NativeAssets_ValidateXA(void)
 
 int NativeAssets_Validate(void)
 {
+	const struct NativeDiscImageInfo *disc = NativeDiscImage_GetInfo();
 	int ok = 1;
+
+	s_nativeAssetsFailure[0] = '\0';
+
+	/* An image that is present but unusable is reported as itself, even if
+	 * extracted files could stand in for it: the player supplied that file,
+	 * and "not found" would send them looking for the wrong problem. */
+	if ((disc->status != NATIVE_DISC_IMAGE_STATUS_NOT_FOUND) && (disc->status != NATIVE_DISC_IMAGE_STATUS_OK))
+	{
+		NativeAssets_FailDiscImage(disc);
+		fprintf(stderr, "[CTR 3D] Startup failed:\n%s\n", NativeAssets_GetFailureMessage());
+		return 0;
+	}
+
+	if ((disc->status == NATIVE_DISC_IMAGE_STATUS_OK) && !NativeAssets_ValidateDiscRegion())
+	{
+		fprintf(stderr, "[CTR 3D] Startup failed:\n%s\n", NativeAssets_GetFailureMessage());
+		return 0;
+	}
 
 	ok &= NativeAssets_CheckRequiredFile(NATIVE_ASSETS_BIGFILE_PATH);
 	ok &= NativeAssets_CheckRequiredFile(NATIVE_ASSETS_KART_HWL_PATH);
@@ -964,10 +1436,31 @@ int NativeAssets_Validate(void)
 		ok &= NativeAssets_ValidateXA();
 	}
 
+	if (ok)
+	{
+		ok &= NativeAssets_ValidateBigfile();
+	}
+
 	if (!ok)
 	{
+		if (s_nativeAssetsFailure[0] == '\0')
+		{
+			if (disc->status == NATIVE_DISC_IMAGE_STATUS_NOT_FOUND)
+			{
+				NativeAssets_FailNotFound();
+			}
+			else
+			{
+				NativeAssets_SetFailure("The disc image is missing game files.\n\n"
+				                        "It is not an unmodified USA (NTSC-U)\n"
+				                        "Crash Team Racing dump. Dump the disc\n"
+				                        "again as a raw MODE2/2352 .bin.");
+			}
+		}
+
 		NativeAssets_PrintHeader();
 		NativeAssets_PrintFooter();
+		fprintf(stderr, "[CTR 3D] Startup failed:\n%s\n", NativeAssets_GetFailureMessage());
 	}
 
 	return ok;

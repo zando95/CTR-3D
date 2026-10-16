@@ -2,6 +2,7 @@
 #include <platform/native_assets.h>
 #include <platform/native_cd.h>
 #include <platform/native_disc_image.h>
+#include <platform/native_fatal.h>
 #include <platform/native_path.h>
 #include <psx/libcd.h>
 
@@ -15,6 +16,7 @@
 #define NATIVE_CD_SECTOR_WORDS   512
 #define NATIVE_CD_MAX_OPEN_FILES 8
 #define NATIVE_CD_SECTOR_SIZE    0x800
+#define NATIVE_CD_FILE_NAME_MAX  64
 
 enum NativeCDFileSource
 {
@@ -28,6 +30,14 @@ struct NativeCDOpenFile
 	int source;
 	FILE *hostFile;
 	struct NativeDiscImageFile discFile;
+	char name[NATIVE_CD_FILE_NAME_MAX];
+};
+
+enum NativeCDHostReadError
+{
+	NATIVE_CD_HOST_READ_OK,
+	NATIVE_CD_HOST_READ_PAST_END,
+	NATIVE_CD_HOST_READ_IO_FAILED,
 };
 
 global_variable s32 s_cdDebugLevel;
@@ -40,6 +50,7 @@ global_variable struct NativeCDOpenFile s_nativeCdFiles[NATIVE_CD_MAX_OPEN_FILES
 global_variable s32 s_nativeCdFileCount;
 global_variable s32 s_nativeCdCurrentFile;
 global_variable s32 s_nativeCdCurrentSector;
+global_variable s32 s_nativeCdHostReadError;
 
 int boolDecodeXaDuringVsyncCallback;
 
@@ -114,6 +125,7 @@ internal s32 NativeCD_OpenFile(const char *filename, s32 *outSize)
 		memset(&s_nativeCdFiles[fileIndex], 0, sizeof(s_nativeCdFiles[fileIndex]));
 		s_nativeCdFiles[fileIndex].source = NATIVE_CD_FILE_DISC;
 		s_nativeCdFiles[fileIndex].discFile = discFile;
+		NativeStr8_CopyToCString(s_nativeCdFiles[fileIndex].name, sizeof(s_nativeCdFiles[fileIndex].name), rootless);
 		*outSize = (s32)discFile.size;
 		return fileIndex;
 	}
@@ -141,6 +153,7 @@ internal s32 NativeCD_OpenFile(const char *filename, s32 *outSize)
 	memset(&s_nativeCdFiles[fileIndex], 0, sizeof(s_nativeCdFiles[fileIndex]));
 	s_nativeCdFiles[fileIndex].source = NATIVE_CD_FILE_HOST;
 	s_nativeCdFiles[fileIndex].hostFile = file;
+	NativeStr8_CopyToCString(s_nativeCdFiles[fileIndex].name, sizeof(s_nativeCdFiles[fileIndex].name), rootless);
 	*outSize = (s32)fileSize;
 	return fileIndex;
 }
@@ -491,7 +504,89 @@ internal s32 NativeCD_ReadSectors(s32 sectors, void *dst)
 		return 1;
 	}
 
-	return fread(dst, 1, byteCount, s_nativeCdFiles[s_nativeCdCurrentFile].hostFile) == byteCount;
+	{
+		FILE *hostFile = s_nativeCdFiles[s_nativeCdCurrentFile].hostFile;
+		size_t got = fread(dst, 1, byteCount, hostFile);
+
+		if (got == byteCount)
+		{
+			return 1;
+		}
+		if ((got != 0) && !ferror(hostFile))
+		{
+			// The last sector of an extracted file whose size is not a whole
+			// number of sectors. A disc read returns the rest of that sector,
+			// which belongs to no file, so zeros stand in for it.
+			memset((u8 *)dst + got, 0, byteCount - got);
+			return 1;
+		}
+
+		s_nativeCdHostReadError = ferror(hostFile) ? NATIVE_CD_HOST_READ_IO_FAILED : NATIVE_CD_HOST_READ_PAST_END;
+		return 0;
+	}
+}
+
+internal const char *NativeCD_ReadFailureCause(void)
+{
+	if ((s_nativeCdCurrentFile < 0) || (s_nativeCdCurrentFile >= s_nativeCdFileCount) || (s_nativeCdFiles[s_nativeCdCurrentFile].source == NATIVE_CD_FILE_NONE))
+	{
+		return "no file was open for the read";
+	}
+
+	if (s_nativeCdFiles[s_nativeCdCurrentFile].source == NATIVE_CD_FILE_HOST)
+	{
+		return (s_nativeCdHostReadError == NATIVE_CD_HOST_READ_PAST_END) ? "the extracted file ends\nbefore this sector" : "the extracted file could not\nbe read";
+	}
+
+	switch (NativeDiscImage_LastReadError(NATIVE_DISC_IMAGE_OWNER_MAIN))
+	{
+	case NATIVE_DISC_IMAGE_READ_OUTSIDE_FILE:
+	{
+		return "the read runs past the end of\nthe file";
+	}
+	case NATIVE_DISC_IMAGE_READ_PAST_IMAGE_END:
+	{
+		return "ctr-u.bin ends before this\nsector";
+	}
+	case NATIVE_DISC_IMAGE_READ_BAD_SECTOR:
+	{
+		return "the sector is damaged in\nctr-u.bin";
+	}
+	default:
+	{
+#if defined(__3DS__)
+		return "the SD card read failed";
+#else
+		return "the read from disk failed";
+#endif
+	}
+	}
+}
+
+// The game answers a failed read by retrying it forever (LOAD_ReadFile_ex
+// loops until CdRead succeeds; the async callback requeues on CdlDiskError),
+// so a read that cannot succeed is never handed back to it. It ends the run
+// on a screen that says which file and why instead.
+internal void NativeCD_FailRead(s32 sectors)
+{
+	char message[512];
+	const char *name = "(none)";
+
+	if ((s_nativeCdCurrentFile >= 0) && (s_nativeCdCurrentFile < s_nativeCdFileCount) && (s_nativeCdFiles[s_nativeCdCurrentFile].name[0] != '\0'))
+	{
+		name = s_nativeCdFiles[s_nativeCdCurrentFile].name;
+	}
+
+	snprintf(message, sizeof(message),
+	         "Could not read the game data.\n\n"
+	         "File: %s\n"
+	         "Sectors: %d to %d\n"
+	         "Cause: %s.\n\n"
+	         "The disc image is damaged or incomplete.\n"
+	         "Copy the .bin again and check that its\n"
+	         "size matches the original.",
+	         name, (int)s_nativeCdCurrentSector, (int)(s_nativeCdCurrentSector + sectors - 1), NativeCD_ReadFailureCause());
+	NativePlatform_FatalExit(message);
 }
 
 internal void NativeCD_SetLastCom(int com)
@@ -637,7 +732,16 @@ int CdRead(int sectors, uint32_t *buf, int mode)
 {
 	(void)mode;
 
-	NativeCD_ReadSectors(sectors, buf);
+	if (!NativeCD_ReadSectors(sectors, buf))
+	{
+		// One retry for a transient SD error. Only the disc path leaves the
+		// read position where it was on failure; a host stream has moved.
+		if ((s_nativeCdCurrentFile < 0) || (s_nativeCdCurrentFile >= s_nativeCdFileCount) || (s_nativeCdFiles[s_nativeCdCurrentFile].source != NATIVE_CD_FILE_DISC) ||
+		    !NativeCD_ReadSectors(sectors, buf))
+		{
+			NativeCD_FailRead(sectors);
+		}
+	}
 
 	if (s_nativeCdReadCallback != 0)
 	{
