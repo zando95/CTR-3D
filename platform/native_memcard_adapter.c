@@ -127,34 +127,72 @@ int MEMCARD_HandleEvent(void)
 	return MC_RETURN_TIMEOUT;
 }
 
-u8 MEMCARD_Load(int slotIdx, char *name, u8 *ptrMemcard, int memcardFileSize, u32 loadFlags)
+static int MEMCARD_NativeChecksumMatches(u8 *saveBytes, int memcardFileSize)
 {
-	char nativeName[64];
-	enum NativeMemcardResult nativeResult;
 	int checksumResult;
-
-	(void)loadFlags;
-
-	MEMCARD_StringSet(nativeName, slotIdx, name);
-	nativeResult = NativeMemcard_ReadSaveData(nativeName, ptrMemcard, memcardFileSize, 0x100);
-	if (nativeResult == NATIVE_MEMCARD_NOT_FOUND)
-	{
-		return MC_RETURN_NODATA;
-	}
-
-	if (nativeResult != NATIVE_MEMCARD_OK)
-	{
-		return MC_RETURN_TIMEOUT;
-	}
 
 	sdata->crc16_checkpoint_byteIndex = 0;
 	sdata->crc16_checkpoint_status = 0;
 	do
 	{
-		checksumResult = MEMCARD_ChecksumLoad(ptrMemcard, memcardFileSize);
+		checksumResult = MEMCARD_ChecksumLoad(saveBytes, memcardFileSize);
 	} while (checksumResult == MC_RETURN_PENDING);
 
-	return checksumResult == MC_RETURN_IOE ? MC_RETURN_IOE : MC_RETURN_TIMEOUT;
+	return checksumResult == MC_RETURN_IOE;
+}
+
+// Reads the backup copy into a scratch buffer and copies it out only if its
+// checksum holds, so a bad backup leaves ptrMemcard exactly as the primary
+// read left it and the game sees the same failure it would have without one.
+static int MEMCARD_NativeLoadBackup(const char *nativeName, u8 *ptrMemcard, int memcardFileSize)
+{
+	u8 *backup = (u8 *)malloc((size_t)memcardFileSize);
+	int ok;
+
+	if (backup == NULL)
+	{
+		return 0;
+	}
+
+	ok = (NativeMemcard_ReadBackupSaveData(nativeName, backup, memcardFileSize, 0x100) == NATIVE_MEMCARD_OK) &&
+	     MEMCARD_NativeChecksumMatches(backup, memcardFileSize);
+	if (ok)
+	{
+		memcpy(ptrMemcard, backup, (size_t)memcardFileSize);
+	}
+
+	free(backup);
+	return ok;
+}
+
+u8 MEMCARD_Load(int slotIdx, char *name, u8 *ptrMemcard, int memcardFileSize, u32 loadFlags)
+{
+	char nativeName[64];
+	enum NativeMemcardResult nativeResult;
+
+	(void)loadFlags;
+
+	MEMCARD_StringSet(nativeName, slotIdx, name);
+	nativeResult = NativeMemcard_ReadSaveData(nativeName, ptrMemcard, memcardFileSize, 0x100);
+	if ((nativeResult == NATIVE_MEMCARD_OK) && MEMCARD_NativeChecksumMatches(ptrMemcard, memcardFileSize))
+	{
+		return MC_RETURN_IOE;
+	}
+
+	// The primary is missing, short or corrupt: a write cut off mid-save. The
+	// save it was replacing survives as the backup.
+	if (MEMCARD_NativeLoadBackup(nativeName, ptrMemcard, memcardFileSize))
+	{
+		Platform_LogWarn("[CTR 3D] memcard: %s unreadable, loaded its backup\n", nativeName);
+		return MC_RETURN_IOE;
+	}
+
+	if (nativeResult == NATIVE_MEMCARD_NOT_FOUND)
+	{
+		return MC_RETURN_NODATA;
+	}
+
+	return MC_RETURN_TIMEOUT;
 }
 
 u8 MEMCARD_Save(int slotIdx, char *name, char *icon, u8 *ptrMemcard, int memcardFileSize, u32 saveFlags)

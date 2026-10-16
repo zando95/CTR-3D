@@ -7,6 +7,7 @@
 #include <errno.h>
 #if defined(_WIN32)
 #include "platform/native_win32.h"
+#include <io.h>
 #else
 #include <dirent.h>
 #include <sys/stat.h>
@@ -21,6 +22,13 @@
 #define NATIVE_MEMCARD_COPY_BUFFER     8192
 #define NATIVE_MEMCARD_DEFAULT_ROOT    "memcards"
 #define NATIVE_MEMCARD_SLOT_COUNT      2
+
+// A save is written to <name>.tmp and renamed into place; the copy it replaces
+// is kept as <name>.bak. Neither suffix is ever a save name of its own: a .bak
+// stands in for its primary when the primary is missing or corrupt, and a .tmp
+// is an unfinished write that nothing reads.
+#define NATIVE_MEMCARD_TEMP_SUFFIX   ".tmp"
+#define NATIVE_MEMCARD_BACKUP_SUFFIX ".bak"
 
 struct NativeMemcardFindState
 {
@@ -88,9 +96,63 @@ internal int NativeMemcard_CopyString(char *dst, int dst_size, const char *src)
 	return src[i] == '\0';
 }
 
-internal int NativeMemcard_IsCtrSaveName(const char *name)
+internal int NativeMemcard_HasSuffix(const char *name, const char *suffix)
+{
+	size_t name_len = strlen(name);
+	size_t suffix_len = strlen(suffix);
+
+	return (name_len > suffix_len) && (strcmp(name + name_len - suffix_len, suffix) == 0);
+}
+
+// Copies name into dst without its .bak suffix. Returns 0 when name is not a backup.
+internal int NativeMemcard_StripBackupSuffix(char *dst, int dst_size, const char *name)
+{
+	int base_len;
+
+	if (!NativeMemcard_HasSuffix(name, NATIVE_MEMCARD_BACKUP_SUFFIX))
+	{
+		return 0;
+	}
+
+	base_len = (int)(strlen(name) - strlen(NATIVE_MEMCARD_BACKUP_SUFFIX));
+	if (base_len >= dst_size)
+	{
+		return 0;
+	}
+
+	memcpy(dst, name, (size_t)base_len);
+	dst[base_len] = '\0';
+	return 1;
+}
+
+internal int NativeMemcard_IsCtrSaveBaseName(const char *name)
 {
 	return (strcmp(name, "BASCUS-94426-SLOTS") == 0) || (strncmp(name, "BASCUS-94426G", 13) == 0);
+}
+
+// Saves and their backups travel together when a root is cloned, so a replay
+// sees exactly the fallback state the real card had. Unfinished .tmp writes stay behind.
+internal int NativeMemcard_IsCtrSaveName(const char *name)
+{
+	char base[NATIVE_MEMCARD_MAX_NAME];
+
+	if (NativeMemcard_HasSuffix(name, NATIVE_MEMCARD_TEMP_SUFFIX))
+	{
+		return 0;
+	}
+	if (NativeMemcard_StripBackupSuffix(base, sizeof(base), name))
+	{
+		return NativeMemcard_IsCtrSaveBaseName(base);
+	}
+
+	return NativeMemcard_IsCtrSaveBaseName(name);
+}
+
+internal int NativeMemcard_SuffixPath(char *dst, int dst_size, const char *path, const char *suffix)
+{
+	int written = snprintf(dst, (size_t)dst_size, "%s%s", path, suffix);
+
+	return (path[0] != '\0') && (written >= 0) && (written < dst_size);
 }
 
 internal int NativeMemcard_JoinPath(char *dst, int dst_size, const char *left, const char *right)
@@ -476,6 +538,10 @@ internal void NativeMemcard_AddFoundName(const char *name)
 	insert = s_memcardFind.count;
 	for (i = 0; i < s_memcardFind.count; i++)
 	{
+		if (strcmp(s_memcardFind.names[i], name) == 0)
+		{
+			return;
+		}
 		if (NativeMemcard_CompareNames(s_memcardFind.names[i], name) != 0)
 		{
 			insert = i;
@@ -490,6 +556,29 @@ internal void NativeMemcard_AddFoundName(const char *name)
 
 	NativeMemcard_CopyString(s_memcardFind.names[insert], sizeof(s_memcardFind.names[insert]), name);
 	s_memcardFind.count++;
+}
+
+// Lists a directory entry under the save name it stands for. A .bak lists its
+// primary's name, so a save whose rename into place was interrupted is still
+// found (the load then falls back to the backup); a .tmp is never listed.
+internal void NativeMemcard_AddFoundEntry(const char *name, const char *file_pattern)
+{
+	char base[NATIVE_MEMCARD_MAX_NAME];
+
+	if (NativeMemcard_HasSuffix(name, NATIVE_MEMCARD_TEMP_SUFFIX))
+	{
+		return;
+	}
+	if (NativeMemcard_StripBackupSuffix(base, sizeof(base), name))
+	{
+		if (NativeMemcard_MatchesPattern(base, file_pattern) != 0)
+		{
+			NativeMemcard_AddFoundName(base);
+		}
+		return;
+	}
+
+	NativeMemcard_AddFoundName(name);
 }
 
 internal void NativeMemcard_BuildFindList(const char *pattern)
@@ -519,7 +608,7 @@ internal void NativeMemcard_BuildFindList(const char *pattern)
 		do
 		{
 			if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
-				NativeMemcard_AddFoundName(find_data.cFileName);
+				NativeMemcard_AddFoundEntry(find_data.cFileName, file_pattern);
 		} while (FindNextFileA(find_handle, &find_data) != 0);
 
 		FindClose(find_handle);
@@ -538,7 +627,7 @@ internal void NativeMemcard_BuildFindList(const char *pattern)
 		{
 			if (NativeMemcard_MatchesPattern(entry->d_name, file_pattern) != 0)
 			{
-				NativeMemcard_AddFoundName(entry->d_name);
+				NativeMemcard_AddFoundEntry(entry->d_name, file_pattern);
 			}
 		}
 
@@ -766,9 +855,8 @@ int NativeMemcard_FindNextFile(char *dst_name, int dst_size)
 	return 1;
 }
 
-int NativeMemcard_FileExists(const char *save_name)
+internal int NativeMemcard_FileExistsAtPath(const char *path)
 {
-	const char *path = NativeMemcard_PathFromDeviceName(save_name, 0);
 	FILE *file = fopen(path, "rb");
 
 	if (file == NULL)
@@ -780,16 +868,54 @@ int NativeMemcard_FileExists(const char *save_name)
 	return 1;
 }
 
-enum NativeMemcardResult NativeMemcard_RemoveFile(const char *save_name)
+// A save whose primary is gone but whose backup survives still exists: the
+// load falls back to the backup, so it must be reported present or the game
+// treats the card as holding no save at all.
+int NativeMemcard_FileExists(const char *save_name)
 {
-	const char *path = NativeMemcard_PathFromDeviceName(save_name, 0);
+	char path[NATIVE_MEMCARD_MAX_PATH];
+	char backup_path[NATIVE_MEMCARD_MAX_PATH];
 
-	return remove(path) == 0 ? NATIVE_MEMCARD_OK : NATIVE_MEMCARD_NOT_FOUND;
+	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0))
+	{
+		return 0;
+	}
+	if (NativeMemcard_FileExistsAtPath(path))
+	{
+		return 1;
+	}
+
+	return NativeMemcard_SuffixPath(backup_path, sizeof(backup_path), path, NATIVE_MEMCARD_BACKUP_SUFFIX) && NativeMemcard_FileExistsAtPath(backup_path);
 }
 
-enum NativeMemcardResult NativeMemcard_ReadSaveData(const char *save_name, unsigned char *dst, int byte_count, int data_offset)
+// Erasing a save erases its backup and any unfinished write too, or the erased
+// save would come back through the backup fallback.
+enum NativeMemcardResult NativeMemcard_RemoveFile(const char *save_name)
 {
-	const char *path = NativeMemcard_PathFromDeviceName(save_name, 0);
+	char path[NATIVE_MEMCARD_MAX_PATH];
+	char side_path[NATIVE_MEMCARD_MAX_PATH];
+	int removed;
+
+	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0))
+	{
+		return NATIVE_MEMCARD_NOT_FOUND;
+	}
+
+	removed = (remove(path) == 0);
+	if (NativeMemcard_SuffixPath(side_path, sizeof(side_path), path, NATIVE_MEMCARD_BACKUP_SUFFIX) && (remove(side_path) == 0))
+	{
+		removed = 1;
+	}
+	if (NativeMemcard_SuffixPath(side_path, sizeof(side_path), path, NATIVE_MEMCARD_TEMP_SUFFIX))
+	{
+		remove(side_path);
+	}
+
+	return removed ? NATIVE_MEMCARD_OK : NATIVE_MEMCARD_NOT_FOUND;
+}
+
+internal enum NativeMemcardResult NativeMemcard_ReadFileAt(const char *path, unsigned char *dst, int byte_count, int data_offset)
+{
 	FILE *file;
 	size_t read_bytes;
 
@@ -811,25 +937,110 @@ enum NativeMemcardResult NativeMemcard_ReadSaveData(const char *save_name, unsig
 	return read_bytes == (size_t)byte_count ? NATIVE_MEMCARD_OK : NATIVE_MEMCARD_IO_ERROR;
 }
 
+enum NativeMemcardResult NativeMemcard_ReadSaveData(const char *save_name, unsigned char *dst, int byte_count, int data_offset)
+{
+	char path[NATIVE_MEMCARD_MAX_PATH];
+
+	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0))
+	{
+		return NATIVE_MEMCARD_NOT_FOUND;
+	}
+
+	return NativeMemcard_ReadFileAt(path, dst, byte_count, data_offset);
+}
+
+enum NativeMemcardResult NativeMemcard_ReadBackupSaveData(const char *save_name, unsigned char *dst, int byte_count, int data_offset)
+{
+	char path[NATIVE_MEMCARD_MAX_PATH];
+	char backup_path[NATIVE_MEMCARD_MAX_PATH];
+
+	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0) ||
+	    !NativeMemcard_SuffixPath(backup_path, sizeof(backup_path), path, NATIVE_MEMCARD_BACKUP_SUFFIX))
+	{
+		return NATIVE_MEMCARD_NOT_FOUND;
+	}
+
+	return NativeMemcard_ReadFileAt(backup_path, dst, byte_count, data_offset);
+}
+
+// Pushes the file's bytes past the C library and the OS cache to the device,
+// so a rename that follows can never publish a file whose data is still in RAM.
+internal int NativeMemcard_FlushToDevice(FILE *file)
+{
+	if (fflush(file) != 0)
+	{
+		return 0;
+	}
+
+#if defined(_WIN32)
+	return _commit(_fileno(file)) == 0;
+#else
+	return fsync(fileno(file)) == 0;
+#endif
+}
+
+// Never rewrites the live save in place. The new bytes go to <path>.tmp and
+// are flushed to the device; the live save then becomes <path>.bak and the
+// .tmp is renamed into its place. C's rename() is not required to replace an
+// existing file and Windows' does not, hence the two-step swap. At every instant one complete copy is on the card: before the swap
+// the old primary, between the two renames the .bak, after it the new
+// primary. A crash or power cut costs at most the save being written.
 enum NativeMemcardResult NativeMemcard_WriteSaveData(const char *save_name, const void *icon, int icon_byte_count, const unsigned char *src, int byte_count)
 {
-	const char *path = NativeMemcard_PathFromDeviceName(save_name, 1);
+	char path[NATIVE_MEMCARD_MAX_PATH];
+	char temp_path[NATIVE_MEMCARD_MAX_PATH];
+	char backup_path[NATIVE_MEMCARD_MAX_PATH];
 	FILE *file;
-	size_t wrote_icon;
-	size_t wrote_data;
+	int written;
+	int kept_backup = 0;
 
-	file = fopen(path, "wb");
+	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 1))
+	{
+		return NATIVE_MEMCARD_OPEN_FAILED;
+	}
+	if (!NativeMemcard_SuffixPath(temp_path, sizeof(temp_path), path, NATIVE_MEMCARD_TEMP_SUFFIX) ||
+	    !NativeMemcard_SuffixPath(backup_path, sizeof(backup_path), path, NATIVE_MEMCARD_BACKUP_SUFFIX))
+	{
+		return NATIVE_MEMCARD_IO_ERROR;
+	}
+
+	file = fopen(temp_path, "wb");
 	if (file == NULL)
 	{
 		return NATIVE_MEMCARD_OPEN_FAILED;
 	}
 
-	wrote_icon = fwrite(icon, 1, icon_byte_count, file);
-	wrote_data = fwrite(src, 1, byte_count, file);
-	fclose(file);
+	written = (fwrite(icon, 1, icon_byte_count, file) == (size_t)icon_byte_count);
+	written = written && (fwrite(src, 1, byte_count, file) == (size_t)byte_count);
+	written = written && NativeMemcard_FlushToDevice(file);
+	written = (fclose(file) == 0) && written;
 
-	if ((wrote_icon != (size_t)icon_byte_count) || (wrote_data != (size_t)byte_count))
+	if (!written)
 	{
+		remove(temp_path);
+		return NATIVE_MEMCARD_IO_ERROR;
+	}
+
+	// With no primary, an existing .bak is the last good save (a previous swap
+	// was cut between its renames) and stays the backup.
+	if (NativeMemcard_FileExistsAtPath(path))
+	{
+		remove(backup_path);
+		if (rename(path, backup_path) != 0)
+		{
+			remove(temp_path);
+			return NATIVE_MEMCARD_IO_ERROR;
+		}
+		kept_backup = 1;
+	}
+
+	if (rename(temp_path, path) != 0)
+	{
+		if (kept_backup)
+		{
+			rename(backup_path, path);
+		}
+		remove(temp_path);
 		return NATIVE_MEMCARD_IO_ERROR;
 	}
 
