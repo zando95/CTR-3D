@@ -513,6 +513,10 @@ endif()
 
 target_compile_options(ctr_native PRIVATE -O2)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    # The decompiled game type-puns pervasively (u32 reads over narrower
+    # structs, pointer-to-int casts), and GCC miscompiles that silently under
+    # strict aliasing; -Wstrict-aliasing below only sees the cases it can prove.
+    target_compile_options(ctr_native PRIVATE -fno-strict-aliasing)
     target_compile_options(ctr_native PRIVATE -Wenum-conversion -Wenum-compare -Wswitch-enum -Wformat -Wparentheses)
 endif()
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
