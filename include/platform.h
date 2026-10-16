@@ -10,7 +10,8 @@ struct PlatformMempackArena
 	int backingSize;
 };
 
-void Platform_Init(const char *title, int width, int height);
+// Returns 0 when the platform could not start; the game must not run then.
+int Platform_Init(const char *title, int width, int height);
 void Platform_Shutdown(void);
 void Platform_InitScratchpad(void);
 const struct PlatformMempackArena *Platform_InitMempackArena(void);

@@ -41,6 +41,10 @@ void N3DS_GfxInit(void);
  * at most 44 columns. Lives in this TU because the console and HID calls are
  * libctru, which the unity TU cannot see. */
 void N3DS_ShowFatalScreen(const char *message);
+
+/* 1 on a New 3DS / New 3DS XL / New 2DS XL. The port needs that model's memory
+ * and CPU; an original 3DS fails its boot-time allocations. */
+int N3DS_IsNew3DS(void);
 void N3DS_GfxExit(void);
 /* Push the current framebuffer to the screen. Does NOT wait for vblank --
  * frame pacing belongs to VSync() in the platform layer. */

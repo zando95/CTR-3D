@@ -240,6 +240,19 @@ int main(int argc, char *argv[])
 	}
 
 	N3DS_DebugLog("[CTR-3DS] main() entered");
+
+	// An original 3DS fails the renderer's boot-time allocations partway
+	// through, so it is turned away before any of them run.
+	if (!N3DS_IsNew3DS())
+	{
+		N3DS_DebugLog("[CTR-3DS] FAIL: not a New 3DS");
+		NativePlatform_ShowFatal("This console is not a New Nintendo 3DS.\n\n"
+		                         "CTR 3D needs a New Nintendo 3DS,\n"
+		                         "New 3DS XL or New 2DS XL. The original\n"
+		                         "3DS, 3DS XL and 2DS do not have the\n"
+		                         "memory or CPU speed it needs.");
+		return 1;
+	}
 #endif
 
 	printf("[CTR 3D] Starting...\n");
@@ -312,11 +325,20 @@ int main(int argc, char *argv[])
 
 #ifdef USE_16BY9
 	printf("[CTR 3D] Widescreen\n");
-	Platform_Init("Crash Team Racing", 1280, 720);
+	const int platformReady = Platform_Init("Crash Team Racing", 1280, 720);
 #else
 	printf("[CTR 3D] 4:3\n");
-	Platform_Init("Crash Team Racing", 800, 600);
+	const int platformReady = Platform_Init("Crash Team Racing", 800, 600);
 #endif
+
+	if (!platformReady)
+	{
+#if defined(__3DS__)
+		N3DS_DebugLog("[CTR-3DS] FAIL: Platform_Init");
+#endif
+		NativePlatform_ShowFatal(NativePlatform_InitFailure());
+		return NativeConsole_Return(1);
+	}
 
 #if defined(CTR_INTERNAL)
 	if (NativePerf_ConfigureFromArgs(argc, argv) != 0)

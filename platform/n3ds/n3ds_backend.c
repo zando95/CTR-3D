@@ -443,6 +443,13 @@ void N3DS_SleepMs(unsigned int ms)
 static int s_n3dsGfxActive;
 static int s_n3dsC3DActive;
 
+int N3DS_IsNew3DS(void)
+{
+	bool isNew3DS = false;
+
+	return R_SUCCEEDED(APT_CheckNew3DS(&isNew3DS)) && isNew3DS;
+}
+
 void N3DS_ShowFatalScreen(const char *message)
 {
 	unsigned int vblanks = 0;

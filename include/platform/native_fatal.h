@@ -16,4 +16,7 @@ void NativePlatform_ShowFatal(const char *message);
  * down, shows the message and exits. Never returns. */
 void NativePlatform_FatalExit(const char *message);
 
+/* Why the last Platform_Init failed, as a player-facing message. */
+const char *NativePlatform_InitFailure(void);
+
 #endif

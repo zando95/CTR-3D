@@ -552,6 +552,23 @@ internal void Platform_HandleKey(int key, char down)
 #endif
 }
 
+// Every Platform_Init failure is the renderer failing to come up, so one
+// message per platform covers them.
+const char *NativePlatform_InitFailure(void)
+{
+#if defined(__3DS__)
+	return "Could not start the graphics system.\n\n"
+	       "The console may be short of memory.\n"
+	       "Close other software, restart the\n"
+	       "console and launch CTR 3D again.";
+#else
+	return "Could not open the game window.\n\n"
+	       "CTR 3D needs a graphics driver with\n"
+	       "OpenGL 3.3. Update the graphics driver\n"
+	       "and try again.";
+#endif
+}
+
 internal void NativePlatform_PresentFatal(const char *message)
 {
 #if defined(__3DS__)
@@ -591,7 +608,7 @@ void NativePlatform_FatalExit(const char *message)
 	exit(1);
 }
 
-void Platform_Init(const char *title, int width, int height)
+int Platform_Init(const char *title, int width, int height)
 {
 	char windowName[128];
 
@@ -604,7 +621,7 @@ void Platform_Init(const char *title, int width, int height)
 	{
 		Platform_LogError("[CTR 3D] Failed to initialise SDL\n");
 		Platform_LogShutdown();
-		return;
+		return 0;
 	}
 
 	s_platformInitialized = 1;
@@ -613,14 +630,14 @@ void Platform_Init(const char *title, int width, int height)
 	{
 		Platform_LogError("[CTR 3D] Failed to initialise window\n");
 		Platform_Shutdown();
-		return;
+		return 0;
 	}
 
 	if (!NativeRenderer_InitialisePSX())
 	{
 		Platform_LogError("[CTR 3D] Failed to initialise PSX renderer state\n");
 		Platform_Shutdown();
-		return;
+		return 0;
 	}
 
 	// After the renderer is fully initialised (init stays on this thread; the
@@ -630,6 +647,7 @@ void Platform_Init(const char *title, int width, int height)
 	atexit(Platform_Shutdown);
 	Platform_UpdateCursorVisibility();
 	Platform_InputInit();
+	return 1;
 }
 
 void Platform_Shutdown(void)
