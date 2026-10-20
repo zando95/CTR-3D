@@ -445,3 +445,14 @@ void NativeOptions_BootLanguage(void)
 	}
 #endif
 }
+
+/* LOAD_Assets.c sizes the language buffer for a mid-game language file re-read only where the
+ * OPTIONS menu can trigger one. */
+int NativeOptions_RuntimeLanguageSwitch(void)
+{
+#ifdef __3DS__
+	return 1;
+#else
+	return 0;
+#endif
+}

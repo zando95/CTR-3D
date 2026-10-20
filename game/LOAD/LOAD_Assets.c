@@ -4,6 +4,13 @@
 #include <platform/native_checkpoint.h>
 #endif
 
+#if defined(CTR_NATIVE)
+#include <platform/native_audio.h>
+// platform/native_options.c -- nonzero when the platform re-reads a language file at runtime
+// (local-extern idiom).
+extern int NativeOptions_RuntimeLanguageSwitch(void);
+#endif
+
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800326b4-0x80032700.
 void LOAD_RunPtrMap(char *origin, int *patchArr, int numPtrs)
 {
@@ -221,25 +228,28 @@ void LOAD_LangFile(int bigfilePtr, int lang)
 
 	if (sdata->lngFile == 0)
 	{
-#if defined(CTR_NATIVE) && defined(__3DS__)
-		// NOTE: the PAL language files (en2, fr, de, it, es, nl) can be larger than the
-		// NTSC-U English buffer (sdata->langBufferSize == 0x3F04). Size the buffer for the
-		// largest of the 8 language files so a runtime language switch cannot overflow it.
-		struct BigEntry *langEntries = BIG_GETENTRY((struct BigHeader *)bigfilePtr);
-		u32 langBufferSize = (u32)sdata->langBufferSize;
-
-		for (int langIndex = 0; langIndex < (BI_RACERMODELHI - BI_LANGUAGEFILE); langIndex++)
+#if defined(CTR_NATIVE)
+		// A runtime language switch re-reads a language file into this buffer, and a CD read
+		// fills whole sectors: the buffer must hold the sector-rounded size of the largest of the
+		// 8 language files (the NTSC-U English size in langBufferSize is smaller than that).
+		if (NativeOptions_RuntimeLanguageSwitch())
 		{
-			u32 fileSize = (u32)langEntries[BI_LANGUAGEFILE + langIndex].size;
-			u32 readSize = (fileSize + LOAD_CD_DATA_SECTOR_ROUND_MASK) & ~LOAD_CD_DATA_SECTOR_ROUND_MASK;
+			struct BigEntry *langEntries = BIG_GETENTRY((struct BigHeader *)bigfilePtr);
+			u32 langBufferSize = (u32)sdata->langBufferSize;
 
-			if (langBufferSize < readSize)
+			for (int langIndex = 0; langIndex < (BI_RACERMODELHI - BI_LANGUAGEFILE); langIndex++)
 			{
-				langBufferSize = readSize;
-			}
-		}
+				u32 fileSize = (u32)langEntries[BI_LANGUAGEFILE + langIndex].size;
+				u32 readSize = (fileSize + LOAD_CD_DATA_SECTOR_ROUND_MASK) & ~LOAD_CD_DATA_SECTOR_ROUND_MASK;
 
-		sdata->langBufferSize = (int)langBufferSize;
+				if (langBufferSize < readSize)
+				{
+					langBufferSize = readSize;
+				}
+			}
+
+			sdata->langBufferSize = (int)langBufferSize;
+		}
 #endif
 		sdata->lngFile = MEMPACK_AllocMem(sdata->langBufferSize /* "lang buffer" */);
 	}

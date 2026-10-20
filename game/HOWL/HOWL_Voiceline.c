@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include <platform/native_audio.h>
+#endif
+
 // does not really touch voiceline
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8002c918-0x8002caa8
 void Voiceline_PoolInit(void)

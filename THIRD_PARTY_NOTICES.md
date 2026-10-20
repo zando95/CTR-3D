@@ -144,3 +144,20 @@ freely, subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
+
+## Crash Team Racing High Octane (PS Vita port)
+
+Source: <https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane>
+
+High Octane is a PS Vita port by Rinnegatamante, itself a fork of CTR Native.
+CTR 3D uses these pieces of it:
+
+- `tools/extract_pal_voices.py`, the PAL voice-pack extractor, unchanged apart
+  from its closing message.
+- The table that maps NTSC-U voice line IDs to PAL voice line IDs
+  (`NativeAudio_ResolvePalVoiceXaID` in `platform/native_audio.c`).
+- The icon positions and D-pad neighbours of the 16-slot character-select grid
+  with Nitros Oxide (`game/230/MM_Characters.c`).
+
+License: GPL-3.0, the same license as CTR 3D (see `LICENSE`). No game data from
+High Octane is included.
