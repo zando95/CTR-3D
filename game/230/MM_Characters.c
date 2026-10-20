@@ -1,12 +1,5 @@
 #include <common.h>
 
-#if defined(CTR_NATIVE)
-// Extracted from the retail PS1 disc (same struct/pointer-map format LOAD_RunPtrMap already
-// uses for every other model in this codebase) by the PS Vita port
-// (Rinnegatamante/Crash-Team-Racing-High-Octane, GPL-3.0), which first made Oxide selectable.
-#include "OxideMenuModel.h"
-#endif
-
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
 // Register the diorama backdrop strips' packet span so the 3DS walk pins them
 // to the far depth plane (they are screen-space quads with no captured depth,
@@ -24,10 +17,9 @@ enum
 	MM_CHARACTER_SELECT_MODEL_MOVE_FP_SHIFT = 0xc,
 	MM_CHARACTER_SELECT_MODEL_MOVE_NEXT = 1,
 	MM_CHARACTER_SELECT_MODEL_MOVE_PREV = -1,
-#if defined(CTR_NATIVE)
-	MM_CHARACTER_SELECT_ICON_COUNT = 0x10, // 15 retail + Oxide
-#else
 	MM_CHARACTER_SELECT_ICON_COUNT = 0xf,
+#if defined(CTR_NATIVE)
+	MM_CHARACTER_SELECT_ICON_COUNT_OXIDE = 0x10, // the 15 retail racers plus Oxide
 #endif
 	MM_CHARACTER_SELECT_EXPANSION_ICON_FIRST = 0xc,
 	MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT = 8,
@@ -40,6 +32,7 @@ enum
 	MM_CHARACTER_SELECT_ANGLE_OFFSET = 400,
 	MM_CHARACTER_SELECT_SPIN_STEP = 0x40,
 	MM_CHARACTER_SELECT_WHEEL_SIZE = 0xccc, // matches GhostReplay.c's driver->wheelSize
+	MM_CHARACTER_SELECT_OXIDE_MODEL_SLACK = 0x1000, // low mempack that must stay free after Oxide's model is read
 	MM_CHARACTER_SELECT_LAYOUT_3P = 2,
 	MM_CHARACTER_SELECT_LAYOUT_4P = 3,
 	MM_CHARACTER_SELECT_LAYOUT_1P_LIMITED = 4,
@@ -86,17 +79,17 @@ enum
 
 #if defined(CTR_NATIVE)
 /*
- * Nitrous Oxide as a playable character (native-only): retail's character-select screen and its
- * LEV230 menu-level model set were both built for exactly 15 racers, with no 16th slot and no
- * select-screen model for Oxide -- the only racer retail never intended to be selectable outside
- * a cheat device. Unlocked via the SOAR cheat, see MM_Cheat_UnlockOxide.
+ * Nitros Oxide as a playable character (native-only). Retail's character-select screen and its
+ * LEV230 model set hold exactly 15 racers: no 16th slot, no select-screen model for Oxide.
+ * Once the ROSWELL cheat has set GAME_UNLOCK_BIT_OXIDE (see MM_Cheat_UnlockOxide), the 16-entry
+ * tables below replace D230's own; until then the retail tables and the 15-icon loops stay in force.
  *
- * The three tables below are the geometry the Vita port uses for icon position and D-pad
- * neighbours (plain UI layout numbers, not game assets) with a 16th entry added for Oxide;
- * everything else is unchanged from D230's own retail tables. unlockFlags values are
- * GameProgressUnlockBitIndex bit numbers (MM_CHARACTER_UNLOCK_ALWAYS = always shown).
+ * The tables hold icon positions and D-pad neighbours (UI layout numbers only). unlockFlags values
+ * are GameProgressUnlockBitIndex numbers (MM_CHARACTER_UNLOCK_ALWAYS = always shown).
+ * Oxide's select-screen model is not in the repository: it is read from his racer-model entry in
+ * BIGFILE (BI_RACERMODELHI + NITROS_OXIDE).
  */
-static struct CharacterSelectMeta s_oxideCharacterSelectMeta1P2P[MM_CHARACTER_SELECT_ICON_COUNT] = {
+static struct CharacterSelectMeta s_oxideCharacterSelectMeta1P2P[MM_CHARACTER_SELECT_ICON_COUNT_OXIDE] = {
     {128, 96, {0, 4, 8, 1}, 0, MM_CHARACTER_UNLOCK_ALWAYS},
     {192, 96, {1, 5, 0, 2}, 1, MM_CHARACTER_UNLOCK_ALWAYS},
     {256, 96, {2, 6, 1, 3}, 2, MM_CHARACTER_UNLOCK_ALWAYS},
@@ -115,7 +108,7 @@ static struct CharacterSelectMeta s_oxideCharacterSelectMeta1P2P[MM_CHARACTER_SE
     {320, 174, {7, 15, 14, 11}, 15, GAME_UNLOCK_BIT_OXIDE},
 };
 
-static struct CharacterSelectMeta s_oxideCharacterSelectMeta3P[MM_CHARACTER_SELECT_ICON_COUNT] = {
+static struct CharacterSelectMeta s_oxideCharacterSelectMeta3P[MM_CHARACTER_SELECT_ICON_COUNT_OXIDE] = {
     {32, 71, {12, 4, 0, 1}, 0, MM_CHARACTER_UNLOCK_ALWAYS},
     {96, 71, {13, 5, 0, 2}, 1, MM_CHARACTER_UNLOCK_ALWAYS},
     {160, 71, {14, 6, 1, 3}, 2, MM_CHARACTER_UNLOCK_ALWAYS},
@@ -134,7 +127,7 @@ static struct CharacterSelectMeta s_oxideCharacterSelectMeta3P[MM_CHARACTER_SELE
     {224, 32, {15, 3, 14, 15}, 15, GAME_UNLOCK_BIT_OXIDE},
 };
 
-static struct CharacterSelectMeta s_oxideCharacterSelectMeta4P[MM_CHARACTER_SELECT_ICON_COUNT] = {
+static struct CharacterSelectMeta s_oxideCharacterSelectMeta4P[MM_CHARACTER_SELECT_ICON_COUNT_OXIDE] = {
     {128, 71, {0, 4, 10, 1}, 0, MM_CHARACTER_UNLOCK_ALWAYS},
     {192, 71, {14, 5, 0, 2}, 1, MM_CHARACTER_UNLOCK_ALWAYS},
     {256, 71, {15, 6, 1, 3}, 2, MM_CHARACTER_UNLOCK_ALWAYS},
@@ -153,51 +146,116 @@ static struct CharacterSelectMeta s_oxideCharacterSelectMeta4P[MM_CHARACTER_SELE
     {256, 32, {15, 2, 14, 15}, 15, GAME_UNLOCK_BIT_OXIDE},
 };
 
-static struct Model *s_oxideCharacterSelectModel;
+// The model's file block in low mempack. A level load releases that memory without telling us,
+// so the block is reusable only while it lies inside allocated memory and still holds the model.
+static struct Model *s_mcOxideModel;
+static u8 *s_mcOxideFile;
+static u32 s_mcOxideFileBytes;
 
+internal b32 MM_Characters_OxideUnlocked(void)
+{
+	return CHECK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_OXIDE) != 0;
+}
+
+// Number of icons in the grid that SetMenuLayout selected: Oxide's tables hold 16, retail's 15.
+internal s32 MM_Characters_IconCount(void)
+{
+	struct CharacterSelectMeta *meta = D230.activeCharacterSelectMeta;
+
+	if ((meta == s_oxideCharacterSelectMeta1P2P) || (meta == s_oxideCharacterSelectMeta3P) || (meta == s_oxideCharacterSelectMeta4P))
+	{
+		return MM_CHARACTER_SELECT_ICON_COUNT_OXIDE;
+	}
+
+	return MM_CHARACTER_SELECT_ICON_COUNT;
+}
+
+internal b32 MM_Characters_ModelNameIs(const struct Model *model, const char *name)
+{
+	return (ModelName_ReadWord(model->name, 0) == ModelName_ReadWord(name, 0)) && (ModelName_ReadWord(model->name, 1) == ModelName_ReadWord(name, 1)) &&
+	       (ModelName_ReadWord(model->name, 2) == ModelName_ReadWord(name, 2)) && (ModelName_ReadWord(model->name, 3) == ModelName_ReadWord(name, 3));
+}
+
+internal b32 MM_Characters_OxideModelResident(void)
+{
+	struct Mempack *pack = sdata->PtrMempack;
+
+	if ((s_mcOxideModel == NULL) || (s_mcOxideFile < (u8 *)pack->start) || ((s_mcOxideFile + s_mcOxideFileBytes) > (u8 *)pack->firstFreeByte))
+	{
+		return false;
+	}
+
+	return MM_Characters_ModelNameIs(s_mcOxideModel, data.MetaDataCharacters[NITROS_OXIDE].name_Debug);
+}
+
+// Reads Oxide's racer model from BIGFILE on first use per menu level. Returns NULL when it cannot
+// be loaded: a read allocates at the top of low mempack, which a queued load may own, and
+// MEMPACK_AllocMem stops the game when the request does not fit.
 internal struct Model *MM_Characters_GetOxideMenuModel(void)
 {
-	if (s_oxideCharacterSelectModel == NULL)
+	if (!MM_Characters_OxideModelResident())
 	{
-		u8 *fileBuf = s_oxideMenuModelFile;
-		s32 ptrMapOffset = (s32)CTR_ReadU32LE(fileBuf);
-		u8 *modelBuf = fileBuf + sizeof(u32);
-		struct DramPointerMap *ptrMap = (struct DramPointerMap *)(modelBuf + ptrMapOffset);
+		struct BigEntry *entries = BIG_GETENTRY(sdata->ptrBigfile1);
+		u32 fileBytes = 0;
+		u32 readBytes = ((u32)entries[BI_RACERMODELHI + NITROS_OXIDE].size + LOAD_CD_DATA_SECTOR_ROUND_MASK) & ~LOAD_CD_DATA_SECTOR_ROUND_MASK;
+		u8 *file;
 
-		LOAD_RunPtrMap((char *)modelBuf, DRAM_GETOFFSETS(ptrMap), ptrMap->numBytes >> DRAM_POINTER_MAP_WORD_SHIFT);
+		s_mcOxideModel = NULL;
+		s_mcOxideFile = NULL;
 
-		s_oxideCharacterSelectModel = (struct Model *)modelBuf;
-
-		// the menu model was extracted at a slightly different scale than this screen expects
-		if ((s_oxideCharacterSelectModel->headers != NULL) && (s_oxideCharacterSelectModel->numHeaders > 0))
+		if ((sdata->queueLength != 0) || ((u32)MEMPACK_GetFreeBytes() < (readBytes + MM_CHARACTER_SELECT_OXIDE_MODEL_SLACK)))
 		{
-			struct ModelHeader *header = &s_oxideCharacterSelectModel->headers[0];
+			return NULL;
+		}
+
+		// the file starts with its pointer-map offset; the model follows it, already relocated
+		file = (u8 *)LOAD_DramFile(sdata->ptrBigfile1, BI_RACERMODELHI + NITROS_OXIDE, NULL, &fileBytes, -1);
+		if (file == NULL)
+		{
+			return NULL;
+		}
+
+		s_mcOxideFile = file;
+		s_mcOxideFileBytes = fileBytes;
+		s_mcOxideModel = (struct Model *)(file + sizeof(u32));
+
+		// the racer model's scale is larger than this screen expects
+		if ((s_mcOxideModel->headers != NULL) && (s_mcOxideModel->numHeaders > 0))
+		{
+			struct ModelHeader *header = &s_mcOxideModel->headers[0];
 			header->scale.x = (header->scale.x * 5) >> 3;
 			header->scale.y = (header->scale.y * 5) >> 3;
 			header->scale.z = (header->scale.z * 5) >> 3;
 		}
 	}
 
-	return s_oxideCharacterSelectModel;
+	return s_mcOxideModel;
 }
 
-internal struct CharacterSelectMeta *MM_Characters_GetOxideMetaForLayout(s32 layoutIndex)
+// The grid tables for this layout. Oxide's slot exists on the expanded layouts only, which
+// SetMenuLayout forces once he is unlocked.
+internal struct CharacterSelectMeta *MM_Characters_GetMetaForLayout(s32 layoutIndex)
 {
-	switch (layoutIndex)
+	if (MM_Characters_OxideUnlocked())
 	{
-	case 0:
-	case 1:
-		return s_oxideCharacterSelectMeta1P2P;
-	case MM_CHARACTER_SELECT_LAYOUT_3P:
-		return s_oxideCharacterSelectMeta3P;
-	case MM_CHARACTER_SELECT_LAYOUT_4P:
-		return s_oxideCharacterSelectMeta4P;
-	default:
-		// 1P/2P "few unlocked" layouts: unreachable now that SetMenuLayout always expands the
-		// roster, kept only as a safety net if that ever changes.
-		return D230.characterSelectMetaByLayout[layoutIndex];
+		switch (layoutIndex)
+		{
+		case 0:
+		case 1:
+			return s_oxideCharacterSelectMeta1P2P;
+		case MM_CHARACTER_SELECT_LAYOUT_3P:
+			return s_oxideCharacterSelectMeta3P;
+		case MM_CHARACTER_SELECT_LAYOUT_4P:
+			return s_oxideCharacterSelectMeta4P;
+		default:
+			break;
+		}
 	}
+
+	return D230.characterSelectMetaByLayout[layoutIndex];
 }
+#else
+#define MM_Characters_IconCount() MM_CHARACTER_SELECT_ICON_COUNT
 #endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 overlay 230 0x800ad98c-0x800ada4c.
@@ -329,14 +387,16 @@ struct Model *MM_Characters_GetModelByName(const char *name)
 	}
 
 #if defined(CTR_NATIVE)
-	// Oxide's model is not part of LEV230's model set (see the comment above
-	// MM_Characters_GetOxideMenuModel); the loop above never finds it there.
+	// Oxide's model is not part of LEV230's model set; the loop above never finds it there.
 	if ((ModelName_ReadWord(name, 0) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 0)) &&
 	    (ModelName_ReadWord(name, 1) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 1)) &&
 	    (ModelName_ReadWord(name, 2) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 2)) &&
 	    (ModelName_ReadWord(name, 3) == ModelName_ReadWord(data.MetaDataCharacters[NITROS_OXIDE].name_Debug, 3)))
 	{
-		return MM_Characters_GetOxideMenuModel();
+		model = MM_Characters_GetOxideMenuModel();
+
+		// the instance cannot take a NULL model: show Crash until Oxide's can be read
+		return (model != NULL) ? model : MM_Characters_GetModelByName(data.MetaDataCharacters[CRASH_BANDICOOT].name_Debug);
 	}
 #endif
 
@@ -464,6 +524,17 @@ void MM_Characters_DrawWindows(b32 boolShowDrivers)
 		// set modelPtr in Instance
 		driverInst->model = model;
 
+#if defined(CTR_NATIVE)
+		// Oxide's racer model has no menu pose: frame 0 of his "turn" animation is full steering
+		// lock, so show the straight-ahead frame in the middle of it.
+		if ((model == s_mcOxideModel) && (model != NULL) && (model->headers != NULL) && (model->headers[0].numAnimations != 0) &&
+		    (model->headers[0].ptrAnimations[0]->numFrames < 0x8000))
+		{
+			driverInst->animIndex = 0;
+			driverInst->animFrame = (s16)(model->headers[0].ptrAnimations[0]->numFrames >> 1);
+		}
+#endif
+
 		// CameraDC, freecam mode
 		gGT->cameraDC[playerIndex].cameraMode = CAMERA_MODE_FREECAM;
 
@@ -544,12 +615,6 @@ void MM_Characters_SetMenuLayout(void)
 	s32 numPlyrNextGame = sdata->gGT->numPlyrNextGame;
 	s32 layoutIndex = numPlyrNextGame - 1;
 
-#if defined(CTR_NATIVE)
-	// Oxide's slot lives past retail's 15-entry characterSelectMeta1P2P, so the loop below cannot
-	// see it; the "few unlocked" limited layouts (4/5) have no Oxide-aware tables of their own
-	// (see MM_Characters_GetOxideMetaForLayout), so always take the expanded layout instead.
-	expandRoster = true;
-#else
 	// Loop through bottom characters,
 	// if any are unlocked, use expanded
 	for (s32 iconIndex = MM_CHARACTER_SELECT_EXPANSION_ICON_FIRST; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
@@ -562,6 +627,13 @@ void MM_Characters_SetMenuLayout(void)
 			expandRoster = true;
 			break;
 		}
+	}
+
+#if defined(CTR_NATIVE)
+	// the limited layouts (4/5) have no slot for Oxide
+	if (MM_Characters_OxideUnlocked())
+	{
+		expandRoster = true;
 	}
 #endif
 
@@ -589,7 +661,7 @@ void MM_Characters_SetMenuLayout(void)
 	D230.activeCharacterSelectWindowPos = D230.characterSelectWindowPosByLayout[layoutIndex];
 
 #if defined(CTR_NATIVE)
-	D230.activeCharacterSelectMeta = MM_Characters_GetOxideMetaForLayout(layoutIndex);
+	D230.activeCharacterSelectMeta = MM_Characters_GetMetaForLayout(layoutIndex);
 #else
 	D230.activeCharacterSelectMeta = D230.characterSelectMetaByLayout[layoutIndex];
 #endif
@@ -687,7 +759,7 @@ void MM_Characters_RestoreIDs(void)
 
 	MM_Characters_SetMenuLayout();
 
-	for (s32 iconIndex = 0; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
+	for (s32 iconIndex = 0; iconIndex < MM_Characters_IconCount(); iconIndex++)
 	{
 		// would not need this if CSM was sorted
 		// by order of character ID
@@ -704,6 +776,14 @@ void MM_Characters_RestoreIDs(void)
 
 		// get character ID
 		s16 *currID = &data.characterIDs[playerIndex];
+
+#if defined(CTR_NATIVE)
+		// the last-used character can be Oxide while the retail 15-icon grid is active
+		if (*currID >= MM_Characters_IconCount())
+		{
+			*currID = CRASH_BANDICOOT;
+		}
+#endif
 
 		// get unlock requirement for this character
 		s16 unlocked = D230.activeCharacterSelectMeta[(s32)*currID].unlockFlags;
@@ -1164,7 +1244,7 @@ dontDrawSelectCharacter:
 	struct CharacterSelectMeta *iconDrawMeta = D230.activeCharacterSelectMeta;
 
 	// loop through character icons
-	for (s32 iconIndex = 0; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
+	for (s32 iconIndex = 0; iconIndex < MM_Characters_IconCount(); iconIndex++)
 	{
 		s16 unlockRequirement = iconDrawMeta->unlockFlags;
 		if (
@@ -1287,7 +1367,7 @@ dontDrawSelectCharacter:
 	activeCharacterSelectMeta = D230.activeCharacterSelectMeta;
 
 	// loop through all icons
-	for (s32 iconIndex = 0; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
+	for (s32 iconIndex = 0; iconIndex < MM_Characters_IconCount(); iconIndex++)
 	{
 		s16 unlockRequirement = activeCharacterSelectMeta[iconIndex].unlockFlags;
 

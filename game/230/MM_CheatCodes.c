@@ -34,16 +34,13 @@ void MM_Cheat_SpyroFlag(void)
 }
 
 /*
- * Retail's SOAR chain-loaded the Spyro 2 demo, the one legitimate way to play as Nitrous Oxide
- * (a GameShark was the only other route). The PS Vita port (Rinnegatamante's
- * Crash-Team-Racing-High-Octane) repoints the very same cheat at unlocking Oxide instead, closer
- * to what SOAR was for than the flag-color easter egg above. This keeps both: the flag toggle
- * stays (nothing regresses for people used to it) and the unlock is added on top.
+ * ROSWELL: Nitros Oxide joins the character-select grid (MM_Characters.c). Native-only, so it is
+ * matched in MM_ParseCheatCodes next to WONDER rather than added to D230.cheats.
  */
 void MM_Cheat_UnlockOxide(void)
 {
 	UNLOCK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_OXIDE);
-	MM_Cheat_SpyroFlag(); // plays MM_CHEAT_SUCCESS_SFX
+	OtherFX_Play(MM_CHEAT_SUCCESS_SFX, 1);
 }
 #endif
 
@@ -269,28 +266,42 @@ void MM_ParseCheatCodes(void)
 	 * Same matching rule as the retail loop above: cheatButtonHistory is
 	 * newest-first, so the table is indexed backwards.
 	 *
-	 * WONDER = Left(W) Circle(O) Up(N) Down(D) Right(E) Right(R) -- the letter
-	 * scheme is retail's own (game/230/D230.c's CHEAT_* defines); spelled with
-	 * BTN_* here because those defines are local to that file.
+	 * WONDER  = Left(W) Circle(O) Up(N) Down(D) Right(E) Right(R)
+	 * ROSWELL = Right(R) Circle(O) Down(S) Left(W) Right(E) Left(L) Left(L)
+	 * The letter scheme is retail's own (game/230/D230.c's CHEAT_* defines); spelled
+	 * with BTN_* here because those defines are local to that file. A code must not
+	 * end with another code's buttons (here or in D230.cheats), or one tap fires both.
 	 */
 	{
 		static const u32 nativeCheatWonder[6] = {BTN_LEFT, BTN_CIRCLE, BTN_UP, BTN_DOWN, BTN_RIGHT, BTN_RIGHT};
-		const s32 wonderLen = (s32)(sizeof(nativeCheatWonder) / sizeof(nativeCheatWonder[0]));
-		b32 wonderMatches = true;
-		s32 buttonIndex;
-
-		for (buttonIndex = 0; buttonIndex < wonderLen; buttonIndex++)
+		static const u32 nativeCheatRoswell[7] = {BTN_RIGHT, BTN_CIRCLE, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_LEFT, BTN_LEFT};
+		static const struct
 		{
-			if ((D230.cheatButtonHistory[buttonIndex] & nativeCheatWonder[wonderLen - buttonIndex - 1]) == 0)
+			const u32 *buttons;
+			s32 buttonCount;
+			void (*handler)(void);
+		} nativeCheats[2] = {
+		    {nativeCheatWonder, 6, MM_Cheat_PrideFlag},
+		    {nativeCheatRoswell, 7, MM_Cheat_UnlockOxide},
+		};
+
+		for (s32 nativeIndex = 0; nativeIndex < 2; nativeIndex++)
+		{
+			b32 nativeMatches = true;
+
+			for (s32 buttonIndex = 0; buttonIndex < nativeCheats[nativeIndex].buttonCount; buttonIndex++)
 			{
-				wonderMatches = false;
-				break;
+				if ((D230.cheatButtonHistory[buttonIndex] & nativeCheats[nativeIndex].buttons[nativeCheats[nativeIndex].buttonCount - buttonIndex - 1]) == 0)
+				{
+					nativeMatches = false;
+					break;
+				}
 			}
-		}
 
-		if (wonderMatches)
-		{
-			MM_Cheat_PrideFlag();
+			if (nativeMatches)
+			{
+				nativeCheats[nativeIndex].handler();
+			}
 		}
 	}
 #endif

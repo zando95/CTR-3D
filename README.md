@@ -8,6 +8,10 @@ As far as we can determine, this is the first PlayStation decompilation ported t
 
 The PC port is still here and still builds; see [PC builds](#pc-builds-windows-and-linux) at the bottom. Everything above that section is about the 3DS.
 
+## Play as Nitros Oxide
+
+Enter the code **ROSWELL** on the main menu to unlock Nitros Oxide, the final boss, as a racer. Hold **L** and **R**, then press on the D-Pad and face buttons, in order: **Right, A, Down, Left, Right, Left, Left**. A chime confirms it, and he gets a 16th portrait on the character-select grid in Arcade. His model is read from your own disc when you pick him, like every other model in the game. Until the code is entered, the character-select screen is the retail one.
+
 ## Philosophy
 
 The goal is a game that could pass for a retail 3DS port: faithful to the original where it counts, and willing to leave PlayStation hardware quirks behind where the 3DS can do better.
@@ -93,10 +97,10 @@ Everything here is on by default unless it says otherwise. The toggles are the O
 - **Ice reflections no longer merge each kart's mirrored wheel pairs onto its centreline.** That is a bug in the shipped PS1 game.
 - **The full-screen feedback blur** used by the clock item and the intro flyby's ghost trail is removed. The clock's flash and slowdown remain.
 - **The close-up "mosaic" texture tier is not rendered.** Near surfaces use the standard texture.
-- **The Spyro 2 demo cheat code does something else now**, since a native build cannot launch the demo off the disc. One new cheat code has been added.
+- **The Spyro 2 demo cheat code (SOAR) does something else now**: it toggles a purple-and-white finish flag, since a native build cannot launch the demo off the disc. Two new cheat codes have been added: ROSWELL (see the top of this page) and one more easter egg.
 - **Language selection** (English, French, German, Italian, Spanish, Dutch), using the localized text files that are already on the NTSC-U disc. The n-tilde, inverted `¡` `¿`, the ordinal `º` and quotation marks that those files rely on are drawn from existing font icons, because the NTSC-U font code does not know them. Remembered between launches.
 - **Voices in the selected language** (French, German, Italian, Spanish, Dutch) from PAL voice packs on the SD card. English keeps the NTSC-U disc's own voices.
-- **Nitros Oxide as a playable character.** Enter SOAR (originally the code for the Spyro 2 demo, which this port cannot chain-load) at the cheat-code screen to unlock him for Arcade and Versus. His character-select model and icon slot come from the PS Vita port ([Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0), since the retail NTSC-U disc was never built with a 16th racer in mind. Unlocking him also still cycles the flag-color easter egg SOAR already triggered; both happen together.
+- **Nitros Oxide as a playable character**, unlocked with the cheat code ROSWELL (see the top of this page). The retail select screen was built for 15 racers, so entering the code switches it to a 16-slot layout (the slot layout follows the PS Vita port, [Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0). His select-screen model is read from the disc's own files at runtime; nothing of the game is included in this repository.
 - **VS and Battle modes** are not offered.
 
 The PC build from this repository carries the changes that are not 3DS-specific: PAL Penta, the reserves meter, the ice-reflection fix and the cheat codes. On PC they are always on; only the 3DS build has the OPTIONS menu.
