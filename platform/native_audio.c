@@ -56,10 +56,6 @@
 #define NATIVE_AUDIO_HW_DECODE_CHUNK_SAMPLES 4096
 #define NATIVE_AUDIO_HW_DECODE_PUMP_SAMPLES 16384
 
-/* dumpreq `syncdecode`: kill switch back to full synchronous decode at
- * key-on (the pre-chunking behavior), for A/B on hardware. */
-int g_dbg_hwSyncDecode = 0;
-
 /*
  * Keyed on the SPU address alone. NativeAudio_DecodeSpuSample and the extent
  * scan both walk from addr to the first ADPCM_LOOP_END, so the decoded PCM
@@ -2787,7 +2783,7 @@ internal int NativeAudio_UpdateVoiceSample(struct NativeAudioVoice *voice)
 			 * silence. One whole-range flush covers zeros and head both;
 			 * the pump flushes its own chunks as they land. */
 			memset(entry->pcm, 0, (size_t)scanCount * sizeof(s16));
-			NativeAudio_HwDecodeChunk(entry, g_dbg_hwSyncDecode ? scanCount : NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES);
+			NativeAudio_HwDecodeChunk(entry, NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES);
 			N3DS_HwVoiceStoreCommit(entry->pcm, scanCount);
 
 			NativeAudio_FreeVoicePcm(voice);

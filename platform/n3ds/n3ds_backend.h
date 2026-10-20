@@ -313,15 +313,10 @@ int N3DS_C3DFrameVertexHighWater(void);
  * cells that a queued draw still pointed at. Cell count was the binding
  * constraint on both the corruption and the decode cost.
  *
- * 11, not 12, when CTR_NATIVE_TRACK_RENDERER is compiled in: the dedicated
- * track-atlas pool (N3DS_TrackAtlas_Alloc, below) competes with these
- * atlases for the same linear heap, and 12 leaves too little free for a
- * typical level's track-atlas units. */
-#ifdef CTR_NATIVE_TRACK_RENDERER
+ * 11, not 12: the dedicated track-atlas pool (N3DS_TrackAtlas_Alloc, below)
+ * competes with these atlases for the same linear heap, and 12 leaves too
+ * little free for a typical level's track-atlas units. */
 #define N3DS_ATLAS_COUNT           11
-#else
-#define N3DS_ATLAS_COUNT           12
-#endif
 #define N3DS_ATLAS_DIM             1024
 #define N3DS_ATLAS_CELLS_PER_ROW   (N3DS_ATLAS_DIM / N3DS_DECODE_TEXTURE_DIM)
 #define N3DS_ATLAS_CELLS_PER_ATLAS (N3DS_ATLAS_CELLS_PER_ROW * N3DS_ATLAS_CELLS_PER_ROW)

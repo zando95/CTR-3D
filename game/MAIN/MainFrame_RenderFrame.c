@@ -1165,10 +1165,10 @@ static s32 RenderAllLevelGeometry_ScaleDistanceShift8(s32 distToScreen, s32 scal
 #endif
 
 #if defined(CTR_NATIVE) && CTR_NATIVE_LOD_BIAS
-// Runtime A/B, same pattern as dumpreq 'drawmerge': flipping mid-race brackets
-// [PERF]/[OTPROF] windows by state on identical content. Cross-run comparison
-// is not an option here -- this project's fps numbers have confounded on track,
-// game mode and AI count often enough that only a mid-run flip is trusted.
+// Runtime A/B: flipping mid-race brackets [PERF]/[OTPROF] windows by state on
+// identical content. Cross-run comparison is not an option here -- this
+// project's fps numbers have confounded on track, game mode and AI count often
+// enough that only a mid-run flip is trusted.
 int g_ctrLodGeoScale = 100;
 int g_ctrLodTexScale = 100;
 

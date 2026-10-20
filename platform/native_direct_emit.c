@@ -4,8 +4,8 @@
  * the GrVertex/split path. Byte-parity with the normal path is the design
  * invariant (see DirectEmit_WalkNode). A node with any draw-env prim,
  * non-poly prim, semi-trans poly, TF_16_BIT textured poly (framebuffer
- * feedback), or malformed tiling stays on the normal path. PC: count-only,
- * TryNode always returns 0.
+ * feedback), or malformed tiling stays on the normal path. 3DS only: the PC
+ * build does not compile this file's body.
  *
  * This file is part of the main.c unity TU and is included AFTER
  * native_gpu.c and platform/n3ds/native_renderer_3ds.c so it can see their
@@ -18,25 +18,6 @@
 #endif
 
 #if defined(CTR_NATIVE) && CTR_NATIVE_DIRECT_EMIT
-
-/*
- * Runtime A/B toggle: dumpreq 'directemit'. Read live per node rather than
- * latched at BeginScene: unlike 'drawmerge' (whose flip changes barrier
- * semantics), both legs here produce byte-identical bins, so a mid-frame
- * flip just splits one frame's content between two equivalent paths.
- *
- * PC defaults 0: with the gate promoted to a default-ON build option,
- * a PC default of 1 would put the count-only
- * scan and a [DEMIT] line in every PC user's run for no benefit -- the win
- * is 3DS-only. Flip to 1 in source when a PC replay needs the eligibility
- * counts (edit-and-build diagnostic, same convention as
- * g_dbg_disableSubPage).
- */
-#ifdef __3DS__
-int g_dbg_directEmit = 1;
-#else
-int g_dbg_directEmit = 0;
-#endif
 
 /* Node-skip reasons, one per node (first disqualifier wins). */
 enum
@@ -89,7 +70,6 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 {
 	u32 w = 0;
 
-#ifdef __3DS__
 	float ofsX = 0.0f, ofsY = 0.0f;
 
 	if (emit)
@@ -100,9 +80,6 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 		 * beats saving two VFP converts per vertex. */
 		DrawEnvOffset(&ofsX, &ofsY);
 	}
-#else
-	(void)emit;
-#endif
 
 	while (w < len)
 	{
@@ -167,7 +144,6 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 					s_demit.frameTris += quadPrim ? 2u : 1u;
 				}
 			}
-#ifdef __3DS__
 			else
 			{
 				const s16 rawTPage = (s16)(uvw[1] >> 16);
@@ -295,7 +271,7 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 						 * native_gpu.c) accumulates into its own buffer so N3DS_DrawSkyPass can
 						 * draw it before the track pass -- otherwise, binned as ordinary opaque,
 						 * it flushes after the track and paints over the depth-less waterfall. */
-						if (g_dbg_skyFirst && s_skyNodeActive)
+						if (s_skyNodeActive)
 						{
 							if ((s_skyVertUsed + 3) > N3DS_SKY_VERT_CAP)
 							{
@@ -387,7 +363,7 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 							}
 						}
 						/* Advance whichever buffer this tri went to. */
-						if (g_dbg_skyFirst && s_skyNodeActive)
+						if (s_skyNodeActive)
 						{
 							s_skyVertUsed += 3;
 						}
@@ -399,13 +375,11 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 					}
 				}
 			}
-#endif /* __3DS__ */
 
 			w += primLen;
 		}
 	}
 
-#ifdef __3DS__
 	if (emit)
 	{
 		/* Every fast-path prim is non-feedback, and AddSplit's non-feedback
@@ -413,7 +387,6 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 		 * machine seeing the same sequence it would have. */
 		s_gpu.framebufferFeedbackRunActive = false;
 	}
-#endif
 
 	return DEMIT_OK;
 }
@@ -430,16 +403,7 @@ internal int NativeDirectEmit_TryNode(const u8 *packet, u32 tagLength)
 	int active;
 	int scan;
 
-	/* OFF leg of the A/B (and the PC default) stays truly zero-cost: no
-	 * scan, no counters. */
-	if (!g_dbg_directEmit)
-	{
-		return 0;
-	}
-
-#ifdef __3DS__
-	active = s_mergeActive && (s_gpu.overrideTexture == 0) && !s_gpu.drawPrimMode && !g_dbg_texturelessMode && !g_dbg_forceSingleTexture &&
-	         (g_dbg_atlasView == 0);
+	active = (s_gpu.overrideTexture == 0) && !s_gpu.drawPrimMode && !g_dbg_texturelessMode && !g_dbg_forceSingleTexture && (g_dbg_atlasView == 0);
 #ifdef CTR_INTERNAL
 	/* An armed triangle dump observes the normal path's DrawTriangles loop;
 	 * fall back for that frame so its record set stays complete. */
@@ -473,10 +437,6 @@ internal int NativeDirectEmit_TryNode(const u8 *packet, u32 tagLength)
 		active = 0;
 	}
 #endif
-#else
-	/* PC: the renderer consumes splits, not bins -- measure, never emit. */
-	active = 0;
-#endif
 
 	scan = DirectEmit_WalkNode(words, tagLength, 0);
 	s_demit.frameNodes++;
@@ -492,7 +452,6 @@ internal int NativeDirectEmit_TryNode(const u8 *packet, u32 tagLength)
 		return 0;
 	}
 
-#ifdef __3DS__
 	/* One scope per handled node (~1-1.5k/frame in a race) under the same
 	 * runtime flag as the other per-call scopes: splits the moved emit work
 	 * out of draw_otag_parse_ms (the finding this bucket exists for). */
@@ -503,7 +462,6 @@ internal int NativeDirectEmit_TryNode(const u8 *packet, u32 tagLength)
 		NativePerf_EndScope(NATIVE_PERF_BUCKET_DIRECT_EMIT);
 		return 1;
 	}
-#endif
 
 	DirectEmit_WalkNode(words, tagLength, 1);
 	return 1;
@@ -552,7 +510,6 @@ internal void DirectEmit_FoldFrame(void)
 		return;
 	}
 
-#ifdef __3DS__
 	/* N3DS_DebugLog, NOT Platform_Log: on real hardware the Platform_Log app
 	 * log file never gets created (netloaded runs have no writable cwd for
 	 * the relative fopen), so its lines exist nowhere pullable -- measured on
@@ -570,15 +527,6 @@ internal void DirectEmit_FoldFrame(void)
 		         (unsigned long)s_demit.winSkip[DEMIT_SKIP_MALFORMED]);
 		N3DS_DebugLog(line);
 	}
-#else
-	Platform_LogInstrument("[DEMIT] f=%lu nodes=%lu elig=%lu (%lu%%) prims=%lu tris=%lu null=%lu emit=%lu skip env=%lu poly=%lu blend=%lu fmt16=%lu mal=%lu\n",
-	             (unsigned long)s_demit.winFrames, (unsigned long)s_demit.winNodes, (unsigned long)s_demit.winElig,
-	             (unsigned long)((s_demit.winNodes != 0) ? ((s_demit.winElig * 100u) / s_demit.winNodes) : 0u), (unsigned long)s_demit.winPrims,
-	             (unsigned long)s_demit.winTris, (unsigned long)s_demit.winNullPrims, (unsigned long)s_demit.winEmitTris,
-	             (unsigned long)s_demit.winSkip[DEMIT_SKIP_ENV], (unsigned long)s_demit.winSkip[DEMIT_SKIP_NONPOLY],
-	             (unsigned long)s_demit.winSkip[DEMIT_SKIP_BLEND], (unsigned long)s_demit.winSkip[DEMIT_SKIP_FMT16],
-	             (unsigned long)s_demit.winSkip[DEMIT_SKIP_MALFORMED]);
-#endif
 
 	memset(&s_demit, 0, sizeof(s_demit));
 }

@@ -19,13 +19,6 @@
 
 int g_dbg_modelRender = CTR_NATIVE_RENDERER_DEFAULT_ON;
 
-/* Route HUD-model instances (UI pushbuffer) down the retail packet path so the
- * UI-band rules see them -- full argument on the test in
- * NativeModelEmit_BeginInstance. Default ON: OFF is the owner-reported
- * "ST 1"/pop-out/track-intersection behaviour, kept only as the A/B.
- * dumpreq `hudui`. */
-int g_dbg_hudModelsAsUi = 1;
-
 /*
  * CAPS. Measured via [MODELFRAME] on hardware: ~1500 triangles/frame across ~9 instances in
  * Arcade on N. Gin Labs, ~440 across ~5 in Time Trial. That figure is the topology maximum of
@@ -222,24 +215,13 @@ global_variable int s_modelEmitDropWarned;
  * native_platform.c, which precedes this file in the unity TU. */
 int g_dbg_modelDepthCheck;
 
-/* The depth-axis unscale fix (see NativeModelEmitInstance.depthShift). Not static: the 3DS
- * dumpreq handler ('axisfix', n3ds_backend.c -- a separate TU) flips it for the hardware A/B. */
-int g_dbg_modelAxisFix = 1;
-
-/* Replays the normal writer's gte_dpct on captured colours (see NativeModelEmitInstance.
- * alphaScale). Default ON: OFF shows fading instances at full brightness on the native path.
- * dumpreq 'modelfade'. */
-int g_dbg_modelFade = 1;
-
 /* Writer lighting for the two specular primitive writers (KEY_TOKEN / LIT_TEXTURE) on the
  * native model path: the capture site runs the writer's own lcir + far-colour dpcs + glint
  * ramp and hands this file pre-lit colours plus a per-face blend override (additive lit
- * front faces). OFF restores the raw-colour capture as the A/B baseline. dumpreq 'spec'. */
-int g_dbg_modelSpecular = 1;
-
+ * front faces). */
 int NativeModelEmit_SpecularEnabled(void)
 {
-	return g_dbg_modelSpecular;
+	return 1;
 }
 
 /*
@@ -388,7 +370,6 @@ int NativeModelEmit_BeginInstance(const struct InstDrawPerPlayer *idpp, const st
 	 * is also set on menu instances born through Birth3D, which must NOT be dropped to the retail
 	 * path.
 	 */
-	if (g_dbg_hudModelsAsUi)
 	{
 		const struct GameTracker *gGT = sdata->gGT;
 
@@ -743,7 +724,7 @@ int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const in
 			 * Air Skyway's barriers) applies a colour change retail never
 			 * makes. Its captured colours stay pre-fade -- the remaining
 			 * known gap recorded in the field comment above. */
-			if (g_dbg_modelFade && (mi->alphaScale != 0) && (!mi->forceSemiTrans || mi->ghostComposite))
+			if ((mi->alphaScale != 0) && (!mi->forceSemiTrans || mi->ghostComposite))
 			{
 				v[i].r = NativeModelEmit_FadeComponent(v[i].r, mi->fcR, mi->alphaScale);
 				v[i].g = NativeModelEmit_FadeComponent(v[i].g, mi->fcG, mi->alphaScale);
@@ -1177,19 +1158,15 @@ internal void NativeModelDraw_ComposeRows(const struct NativeModelEmitInstance *
 	 * Depth-axis correction (see the depthShift field comment). The shader recovers depth as
 	 * viewZ = hParam.x * dp4(qw, v); handing the draw side h scaled by the inverse regime factor
 	 * puts this instance's depth on the track's view.z axis while leaving screen position
-	 * bit-identical. Toggle for the hardware A/B (dumpreq `axisfix`); default ON because OFF is
-	 * the sink.
+	 * bit-identical.
 	 */
-	if (g_dbg_modelAxisFix)
+	if (inst->depthShift > 0)
 	{
-		if (inst->depthShift > 0)
-		{
-			*outH = h / (float)(1 << inst->depthShift);
-		}
-		else if (inst->depthShift < 0)
-		{
-			*outH = h * (float)(1 << -inst->depthShift);
-		}
+		*outH = h / (float)(1 << inst->depthShift);
+	}
+	else if (inst->depthShift < 0)
+	{
+		*outH = h * (float)(1 << -inst->depthShift);
 	}
 	/* Paint-under: depth reads NATIVE_MODEL_PAINT_UNDER_SCALE farther than
 	 * honest (multiplicative -- the member is a shell around its cover, so a

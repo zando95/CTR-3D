@@ -825,20 +825,6 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 
 		ElimBG_Deactivate(gGT);
 
-#ifdef CTR_NATIVE
-		// Load-screen texture pre-warm (platform/native_model_texwarm.c): both
-		// this level's scenery models (gGT->level1->ptrModelsPtrArray) and the
-		// kart/driver library (gGT->modelPtr[]) are fully populated by this
-		// point, and this is the last stage before the first rendered frame —
-		// decode/upload every texture the crate-intro's kart spawn would
-		// otherwise hit cold on the draw path. __3DS__-only, no-op on PC.
-		// dumpreq `texwarm` kill switch (default ON).
-		{
-			extern void NativeModelTexWarm_OnLevelLoad(struct GameTracker *gGT, struct Level *level);
-			NativeModelTexWarm_OnLevelLoad(gGT, gGT->level1);
-		}
-#endif
-
 		// signify end of load
 		return -2;
 	}

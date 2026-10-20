@@ -189,15 +189,6 @@ void N3DS_NdspGetFlushCounts(int *fullFlushes, int *earlyFlushes);
 int N3DS_NdspGetDspEmptyEvents(void);
 
 /*
- * Runtime aggregate handoff target, dumpreq `aggsize N` (1..8). The A/B lever
- * for the XA-pop hunt: 1 hands every parcel to the DSP immediately (no gaps,
- * max resampler seams); 8 (default) yields the fewest seams but lets the DSP
- * run dry between handoffs under a worker stall. <1 resets to the default.
- * Returns the target now in effect.
- */
-int N3DS_AudioSetAggTarget(int parcels);
-
-/*
  * Hardware voices (plan B): the PS1's 24 SPU voices play on ndsp channels
  * 0..22, dynamically mapped -- a voice holds a channel from key-on until it
  * stops or the DSP consumes its last buffer, and a key-on with no channel of

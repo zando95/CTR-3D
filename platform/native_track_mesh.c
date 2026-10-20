@@ -245,15 +245,11 @@ struct NativeTrackMeshState
 	 * LevVertex.pos/.color_hi every frame for 1P regardless of which renderer draws.
 	 *
 	 * srcVert is parallel to verts (not a field on it -- NativeTrackVert is pinned at 16 bytes).
-	 * TRACK_SRCVERT_NONE covers both non-animated vertices and WELDED ones: the emit loop may
-	 * replace a vertex's position with an edge's canonical mid to close a T-junction crack, and
-	 * re-copying the raw source every frame would undo that repair and reopen the crack on exactly
-	 * the water edges this feature animates.
+	 * TRACK_SRCVERT_NONE marks a vertex with no animated source to re-read.
 	 */
 	u16 *srcVert;
 	u32 *animVerts; /* indices into verts[] that need a per-frame refresh */
 	u32 animVertCount;
-	u32 animVertWelded; /* animated in the source but frozen by the weld above */
 	const struct LevVertex *animSrcArray;
 	/* animSrcArray's element count, latched with the pointer. The build-time
 	 * filter already bounds every srcVert against it, but the PATCH re-reads
@@ -386,26 +382,6 @@ static const u8 sTrackFaceCorners[4][4] = {
 };
 
 /*
- * Weld-at-load (design INST-1 closure): the census measured 0-86 edges per
- * level where two quadblocks share an edge (same endpoint positions) but
- * carry different edge-mid positions -- genuine T-junction crack candidates
- * in the authored data. Since we build the mesh, they are repaired here: a
- * pre-pass records one canonical mid per matched edge (first sighting wins),
- * and the emit loop snaps any divergent mid onto it. Load-time only.
- */
-#define TRACK_WELD_SLOTS 32768
-
-struct NativeTrackWeldTable
-{
-	u64 keys[TRACK_WELD_SLOTS];
-	u64 mid[TRACK_WELD_SLOTS]; /* packed 48-bit position + 1 */
-};
-
-/* Outer edges of the 3x3 grid: corner pair + the mid between them (same
- * table as the census edge-matcher). */
-static const u8 sTrackOuterEdges[4][3] = {{0, 1, 4}, {0, 2, 5}, {1, 3, 7}, {2, 3, 8}};
-
-/*
  * Per-face UV rotation/flip (design risk #4). faceFlags per face =
  * (draw_order_low >> (8 + 5*face)) & 0x1f: low 3 bits are a RotateFlipType,
  * next 2 bits faceMode. The eight permutations below are derived by
@@ -489,128 +465,6 @@ static const u8 sTrackModeTriIdx[16][3] = {
     {1, 3, 2}, /* v=22 */
     {1, 0, 3}, /* v=23 */
 };
-
-static u64 NativeTrackMesh_PackPos(const struct LevVertex *v)
-{
-	return (((u64)(u16)v->pos.x << 32) | ((u64)(u16)v->pos.y << 16) | (u64)(u16)v->pos.z) + 1;
-}
-
-static u64 NativeTrackMesh_EdgeKey(u64 ka, u64 kb)
-{
-	u64 lo = (ka < kb) ? ka : kb;
-	u64 hi = (ka < kb) ? kb : ka;
-	u64 key = lo * 0x9e3779b97f4a7c15ull ^ (hi + 0x517cc1b727220a95ull);
-
-	return key ? key : 1;
-}
-
-/* Probe for an edge key; returns the slot, or -1 when the table is full.
- * Insert semantics live at the call sites. */
-static int NativeTrackMesh_WeldSlot(struct NativeTrackWeldTable *table, u64 key)
-{
-	u32 slot = (u32)((key ^ (key >> 31)) % TRACK_WELD_SLOTS);
-	int probes = 0;
-
-	while ((table->keys[slot] != 0) && (table->keys[slot] != key))
-	{
-		slot = (slot + 1) % TRACK_WELD_SLOTS;
-		if (++probes >= TRACK_WELD_SLOTS)
-		{
-			return -1;
-		}
-	}
-
-	return (int)slot;
-}
-
-/*
- * Weld displacement census. The snap only ever moves an edge-mid vertex, so a
- * surface it deforms shows the same shape every time: a kink at the middle of
- * one edge with straight runs to both corners, which lands in the upper
- * buckets here. A repair doing only what it claims stays in the lowest one.
- * Magnitude is the largest single-axis delta -- no float, and it separates
- * rounding slop from a visible move as well as a true length does.
- */
-#define TRACK_WELD_MAG_BUCKETS 6
-#define TRACK_WELD_TOP 8
-
-struct NativeTrackWeldDiag
-{
-	int mag[TRACK_WELD_MAG_BUCKETS]; /* |d| under 1, 4, 16, 64, 256, then the rest */
-	int topMag[TRACK_WELD_TOP];
-	s16 topPos[TRACK_WELD_TOP][3];
-	int topCount;
-};
-
-static struct NativeTrackWeldDiag s_trkWeldDiag;
-
-/*
- * T-junction weld. DEFAULT OFF, and a candidate for deletion rather than a
- * feature waiting to be re-enabled.
- *
- * Adjacent quadblocks index the SAME LevVertex entry for a shared edge mid, so
- * wherever two blocks genuinely meet the two mids are one number and the snap
- * below cannot fire. Every firing is therefore a pair that does NOT share the
- * entry -- surfaces whose edge endpoints merely coincide, such as a plank face
- * abutting the wall behind it -- and snapping one onto the other bends the
- * geometry instead of repairing it. Measured displacements are 64-255 units
- * against a ~578-unit median face edge, and no level has ever produced a
- * sub-unit correction, which is what a real crack repair would look like.
- *
- * dumpreq 'weld' flips it. The flag is read only while a level mesh is being
- * built, so a flip takes effect on the next level load and never on the current
- * one; the mesh is cached per level, so reloading the SAME track after a flip
- * rebuilds nothing and shows the previous geometry. [TRKWELD] reports the count
- * and the displacement histogram either way.
- */
-int g_dbg_trackWeld = 0;
-
-static void NativeTrackMesh_WeldNote(const struct LevVertex *src, s16 nx, s16 ny, s16 nz)
-{
-	int dx = (int)nx - (int)src->pos.x;
-	int dy = (int)ny - (int)src->pos.y;
-	int dz = (int)nz - (int)src->pos.z;
-	int mag = (dx < 0) ? -dx : dx;
-	int ay = (dy < 0) ? -dy : dy;
-	int az = (dz < 0) ? -dz : dz;
-	int bucket;
-	int i;
-
-	if (ay > mag)
-	{
-		mag = ay;
-	}
-
-	if (az > mag)
-	{
-		mag = az;
-	}
-
-	bucket = (mag < 1) ? 0 : (mag < 4) ? 1 : (mag < 16) ? 2 : (mag < 64) ? 3 : (mag < 256) ? 4 : 5;
-	s_trkWeldDiag.mag[bucket]++;
-
-	/* Largest movers kept insertion-sorted: their positions are what a bend
-	 * report gets checked against, so the list has to carry where, not just
-	 * how far. */
-	if ((s_trkWeldDiag.topCount < TRACK_WELD_TOP) || (mag > s_trkWeldDiag.topMag[TRACK_WELD_TOP - 1]))
-	{
-		i = (s_trkWeldDiag.topCount < TRACK_WELD_TOP) ? s_trkWeldDiag.topCount++ : (TRACK_WELD_TOP - 1);
-
-		while ((i > 0) && (s_trkWeldDiag.topMag[i - 1] < mag))
-		{
-			s_trkWeldDiag.topMag[i] = s_trkWeldDiag.topMag[i - 1];
-			s_trkWeldDiag.topPos[i][0] = s_trkWeldDiag.topPos[i - 1][0];
-			s_trkWeldDiag.topPos[i][1] = s_trkWeldDiag.topPos[i - 1][1];
-			s_trkWeldDiag.topPos[i][2] = s_trkWeldDiag.topPos[i - 1][2];
-			i--;
-		}
-
-		s_trkWeldDiag.topMag[i] = mag;
-		s_trkWeldDiag.topPos[i][0] = nx;
-		s_trkWeldDiag.topPos[i][1] = ny;
-		s_trkWeldDiag.topPos[i][2] = nz;
-	}
-}
 
 static void NativeTrackMesh_Free(void)
 {
@@ -1154,10 +1008,7 @@ static void NativeTrackAnim_QueueVertexPos(u32 vertIndex, const struct NativeTra
  * This is the reason animated-vertex leaves are kept at all now instead of
  * being dropped whole (which is what put the holes in Polar Pass). srcVert
  * carries provenance per resident vertex and is TRACK_SRCVERT_NONE for anything
- * the weld pass moved -- re-copying one of those would reopen the T-junction
- * crack the weld exists to close, on exactly the water edges this animates. So
- * "frozen but welded" is chosen deliberately for those, and counted
- * (animWelded) rather than left to be discovered.
+ * with no animated source.
  *
  * Position AND color: AnimateQuadVertex writes both (LevVertex.pos and
  * .color_hi), so patching position alone would animate the shape of a water
@@ -1974,7 +1825,7 @@ static int NativeTrackAtlas_UploadToBackend(struct mesh_info *mesh, int numQuadB
  * mechanism above, same reasoning): a persistently full linear heap makes a
  * bare "return 0 on failure" retry FOREVER, since nothing frees the heap
  * between frames on its own -- every one of those retries reruns the WHOLE
- * build this function is only the tail of (weld pass, per-face emit over up
+ * build this function is only the tail of (per-face emit over up
  * to 20000 quadblocks, atlas repack, atlas decode+upload), not just this
  * upload. Same fingerprint (mesh/numQuadBlock/numVertex, reset when the level
  * changes), same 4-attempt ceiling, same distinct GIVEUP log tag. Unlike the
@@ -2723,48 +2574,6 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	BakeParity_BuildReset();
 #endif
 
-	/* Weld pre-pass: canonical mid per matched edge, over ALL quadblocks so
-	 * the choice is stable regardless of which leaves end up resident. */
-	struct NativeTrackWeldTable *weldTable = (struct NativeTrackWeldTable *)calloc(1, sizeof(struct NativeTrackWeldTable));
-
-	if (weldTable != NULL)
-	{
-		for (int qb = 0; qb < numQuadBlock; qb++)
-		{
-			for (int e = 0; e < 4; e++)
-			{
-				u16 ia = quadBlocks[qb].index[sTrackOuterEdges[e][0]];
-				u16 ib = quadBlocks[qb].index[sTrackOuterEdges[e][1]];
-				u16 im = quadBlocks[qb].index[sTrackOuterEdges[e][2]];
-
-				if ((int)ia >= numVertex || (int)ib >= numVertex || (int)im >= numVertex)
-				{
-					continue;
-				}
-
-				u64 key = NativeTrackMesh_EdgeKey(NativeTrackMesh_PackPos(&vertexArray[ia]), NativeTrackMesh_PackPos(&vertexArray[ib]));
-				int slot = NativeTrackMesh_WeldSlot(weldTable, key);
-
-				if (slot < 0)
-				{
-					continue;
-				}
-
-				if (weldTable->keys[slot] == 0)
-				{
-					weldTable->keys[slot] = key;
-					weldTable->mid[slot] = NativeTrackMesh_PackPos(&vertexArray[im]);
-				}
-			}
-		}
-	}
-
-	/* Grid slot -> outer-edge index for the emit-time snap. */
-	static const s8 sEdgeOfSlot[9] = {-1, -1, -1, -1, 0, 1, -1, 2, 3};
-	int weldCount = 0;
-
-	memset(&s_trkWeldDiag, 0, sizeof(s_trkWeldDiag));
-
 	int leavesTotal = 0, leavesExcluded = 0, facesDoubleSided = 0, facesNoTexture = 0, facesAnimTex = 0, facesModeTri = 0, facesMode3 = 0;
 	int facesWater = 0;
 	/* keptWater and keptAnim are both populations that USED to be dropped whole
@@ -2777,7 +2586,7 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	int leavesKeptWater = 0, leavesKeptAnim = 0, leavesSkippedEmpty = 0;
 	/* Both are counted now rather than silent `continue`s -- see their guard comments. */
 	int facesDroppedIndexCap = 0, facesDroppedCapacity = 0;
-	int animVertsWelded = 0, leavesEmittedNothing = 0;
+	int leavesEmittedNothing = 0;
 	/* notex classification (the water track reported 368 unclassified
 	 * faces): null pointer / AnimTex with null active frame / implausible
 	 * tpage word. Two raw samples of the bad-tpage case ride in the log. */
@@ -3096,57 +2905,13 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 					struct NativeTrackVert *dst = &s_trackMesh.verts[dstIndex];
 
 					/* Remember which LevVertex this came from, so the
-					 * per-frame patcher can re-read a moving one. Set BEFORE the
-					 * weld snap below, which may revoke it. */
+					 * per-frame patcher can re-read a moving one. */
 					s_trackMesh.srcVert[dstIndex] = block->index[gridSlot];
 
 					dst->x = src->pos.x;
 					dst->y = src->pos.y;
 					dst->z = src->pos.z;
 
-					/* Weld snap: an edge-mid whose matched edge carries a
-					 * different canonical mid takes the canonical position. */
-					if ((weldTable != NULL) && g_dbg_trackWeld && (sEdgeOfSlot[gridSlot] >= 0))
-					{
-						const u8 *edge = sTrackOuterEdges[(int)sEdgeOfSlot[gridSlot]];
-						u16 ea = block->index[edge[0]];
-						u16 eb = block->index[edge[1]];
-
-						if ((int)ea < numVertex && (int)eb < numVertex)
-						{
-							u64 key = NativeTrackMesh_EdgeKey(NativeTrackMesh_PackPos(&vertexArray[ea]), NativeTrackMesh_PackPos(&vertexArray[eb]));
-							int slot = NativeTrackMesh_WeldSlot(weldTable, key);
-
-							if ((slot >= 0) && (weldTable->keys[slot] == key))
-							{
-								u64 canon = weldTable->mid[slot];
-								u64 mine = NativeTrackMesh_PackPos(src);
-
-								if (canon != mine)
-								{
-									dst->x = (s16)(u16)((canon - 1) >> 32);
-									dst->y = (s16)(u16)((canon - 1) >> 16);
-									dst->z = (s16)(u16)(canon - 1);
-									weldCount++;
-									NativeTrackMesh_WeldNote(src, dst->x, dst->y, dst->z);
-
-									/* This vertex's position is no longer its
-									 * source's -- it is the canonical mid of a
-									 * shared edge, chosen to close a crack. A
-									 * per-frame re-copy from the source would
-									 * undo that repair, so revoke provenance.
-									 * Frozen-but-welded beats animated-and-
-									 * cracked; the count is reported so the
-									 * trade is visible rather than assumed. */
-									if (animMark[block->index[gridSlot]])
-									{
-										animVertsWelded++;
-									}
-									s_trackMesh.srcVert[dstIndex] = TRACK_SRCVERT_NONE;
-								}
-							}
-						}
-					}
 					dst->drawOrder = drawOrder;
 					/* Bits 3-4 carry which of the layout's four corners this
 					 * vertex's UV came from, so the AnimTex patcher can re-read
@@ -3178,7 +2943,7 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 					dst->texRef = texRef;
 
 #if defined(CTR_NATIVE_BAKE_PARITY) && CTR_NATIVE_BAKE_PARITY
-					/* src, not dst: the parity matcher wants the PRE-weld
+					/* src, not dst: the parity matcher wants the source
 					 * position (what retail's GTE will actually see) and
 					 * color_lo (the far-fade source the color classifier
 					 * checks against). */
@@ -3276,19 +3041,18 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 
 	/*
 	 * Collect the resident vertices that need a per-frame refresh, now
-	 * that both the emit loop (which set provenance) and the weld snap (which
-	 * revokes it) have run. Built once per level, walked per frame -- the
+	 * that the emit loop (which set provenance) has run. Built once per
+	 * level, walked per frame -- the
 	 * alternative, testing animMark inside the frame loop, would mean keeping
 	 * animMark alive for the level and re-deriving the same answer 60 times a
 	 * second from data that cannot change.
 	 *
 	 * Sized to the count, not the worst case: this is a per-level allocation
-	 * that outlives the build, unlike animMark/weldTable freed just below, and
+	 * that outlives the build, unlike animMark freed just below, and
 	 * on a 2MB retail-pressure heap the difference between "the animated ones"
 	 * and "every vertex" is worth the extra pass.
 	 */
 	s_trackMesh.animVertCount = 0;
-	s_trackMesh.animVertWelded = 0;
 	s_trackMesh.animSrcArray = vertexArray;
 	s_trackMesh.animSrcCount = (u32)numVertex;
 	{
@@ -3304,13 +3068,6 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 				needed++;
 			}
 		}
-
-		/* Counted at the weld site itself, where the source index is still
-		 * known -- these are vertices that ARE animated in the source but hold
-		 * a canonical edge mid instead. A large number would mean the crack
-		 * repair is quietly freezing most of a water surface, which is worth
-		 * knowing before anyone concludes the patcher does not work. */
-		s_trackMesh.animVertWelded = (u32)animVertsWelded;
 
 		if (needed > 0)
 		{
@@ -3335,7 +3092,6 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	}
 
 	free(animMark);
-	free(weldTable);
 
 	/* Atlas layout over the interned texture table. Plain refs
 	 * contribute their near layout; AnimTex refs contribute EVERY frame's
@@ -3508,8 +3264,8 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 
 		if (obj != NULL)
 		{
-			fprintf(obj, "# ctr-native track mesh dump: verts=%u idx=%u leaves=%u welds=%d\n", s_trackMesh.vertCount, s_trackMesh.indexCount,
-			        s_trackMesh.leafCount, weldCount);
+			fprintf(obj, "# ctr-native track mesh dump: verts=%u idx=%u leaves=%u\n", s_trackMesh.vertCount, s_trackMesh.indexCount,
+			        s_trackMesh.leafCount);
 
 			for (u32 i = 0; i < s_trackMesh.vertCount; i++)
 			{
@@ -3568,25 +3324,16 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	 * an option.
 	 */
 	Platform_Log("[TRKMESH] lvl=%d lev=%p leaves=%u/%d (excl=%d keptWater=%d keptAnim=%d empty=%d noFaces=%d) verts=%u idx=%u tex=%u dropIdxCap=%d dropCap=%d "
-	             "animVerts=%u animWelded=%u | KB verts=%u idx=%u | faces ds=%d animtex=%d notex=%d modeTri=%d mode3=%d water=%d(tpage=%04x) | welds=%d\n",
+	             "animVerts=%u | KB verts=%u idx=%u | faces ds=%d animtex=%d notex=%d modeTri=%d mode3=%d water=%d(tpage=%04x)\n",
 	             NativePerf_CurrentLevelID(), (void *)level, s_trackMesh.leafCount, leavesTotal, leavesExcluded, leavesKeptWater, leavesKeptAnim,
 	             leavesSkippedEmpty, leavesEmittedNothing,
 	             s_trackMesh.vertCount, s_trackMesh.indexCount, s_trackMesh.texCount, facesDroppedIndexCap, facesDroppedCapacity,
-	             s_trackMesh.animVertCount, s_trackMesh.animVertWelded,
+	             s_trackMesh.animVertCount,
 	             (u32)(s_trackMesh.vertCount * sizeof(struct NativeTrackVert) / 1024), (u32)(s_trackMesh.indexCount * sizeof(u16) / 1024), facesDoubleSided,
 	             facesAnimTex, facesNoTexture, facesModeTri, facesMode3, facesWater,
-	             (s_trackMesh.waterEnvLayout != NULL) ? (unsigned)CTR_ReadU16LE(&s_trackMesh.waterEnvLayout->tpage) : 0u, weldCount);
+	             (s_trackMesh.waterEnvLayout != NULL) ? (unsigned)CTR_ReadU16LE(&s_trackMesh.waterEnvLayout->tpage) : 0u);
 
 	Platform_Log("[TRKPAD] lvl=%d triggers=%d quads=%d faces=%d\n", NativePerf_CurrentLevelID(), padTrigCount, padQuads, padFaces);
-
-	Platform_Log("[TRKWELD] lvl=%d on=%d welds=%d mag[<1=%d <4=%d <16=%d <64=%d <256=%d 256+=%d]\n", NativePerf_CurrentLevelID(), g_dbg_trackWeld, weldCount,
-	             s_trkWeldDiag.mag[0], s_trkWeldDiag.mag[1], s_trkWeldDiag.mag[2], s_trkWeldDiag.mag[3], s_trkWeldDiag.mag[4], s_trkWeldDiag.mag[5]);
-
-	for (int i = 0; i < s_trkWeldDiag.topCount; i++)
-	{
-		Platform_Log("[TRKWELD] top%d mag=%d at (%d,%d,%d)\n", i, s_trkWeldDiag.topMag[i], (int)s_trkWeldDiag.topPos[i][0], (int)s_trkWeldDiag.topPos[i][1],
-		             (int)s_trkWeldDiag.topPos[i][2]);
-	}
 
 	/*
 	 * The animated-texture ledger. `chains` is how many texture chains any

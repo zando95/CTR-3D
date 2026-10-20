@@ -113,12 +113,6 @@
 // both because it looks scans up rather than producing them. Both are
 // count-only and stubbed out when CTR_NATIVE_MODEL_RENDERER is off.
 #include "platform/native_model_mesh.c"
-// Load-time texture pre-warm (the crate-intro first-frame hitch): after
-// native_renderer_3ds.c (needs its internal decode
-// cache entry points) and native_gpu.c (GetTPageFormat), before the census so
-// a level-load block reads warm-then-count in source order. __3DS__-only; a
-// no-op stub on PC.
-#include "platform/native_model_texwarm.c"
 #include "platform/native_model_census.c"
 #include "platform/native_model_frame.c"
 // Per-frame model triangle capture.

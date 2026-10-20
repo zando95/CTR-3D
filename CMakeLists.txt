@@ -201,12 +201,7 @@ endif()
 
 # The 3DS z-break substrate (PICA depth test against the per-prim emit ordinal
 # in vertex z) and the draw merge built on it (opaque binned by GPU state
-# across OT buckets, blends replayed in order) are both unconditional. They
-# were compile-time options while their ON/OFF A/B was the open question;
-# hardware accepted both and the OFF legs are gone. The merge still has a
-# runtime A/B -- dumpreq 'drawmerge' (g_dbg_drawMerge) -- which is the lever
-# to reach for, and it keeps the immediate-submission path alive as the else
-# branch of every merge decision.
+# across OT buckets, blends replayed in order) are unconditional.
 
 # Runtime percentage on CTR's own track/texture LOD switch distances, seeded
 # once per frame in RenderAllLevelGeometry, plus the [LODPROBE] counters that
@@ -262,21 +257,16 @@ if(CTR_NATIVE_TRACK_CENSUS)
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_TRACK_CENSUS=1)
 endif()
 
-# Native track renderer (s27+). Current
-# state: ladder step 1 -- load-time resident-mesh builder, count-only ([TRKMESH]
-# line per level), draws nothing on any platform yet. The 3DS draw side lands
-# behind this same gate.
-#
-# ON by default on 3DS: it is the shipping renderer there, and its OFF leg no
-# longer links (see the note at CTR_NATIVE_GTE_CAPTURE). PC keeps OFF.
+# Native track renderer: the load-time resident-mesh builder (count-only
+# [TRKMESH] line per level on PC) and the 3DS draw side. Unconditional on 3DS,
+# where it is the shipping renderer; a PC-only option, default OFF.
 if(NINTENDO_3DS)
-    set(CTR_NATIVE_TRACK_RENDERER_DEFAULT ON)
+    set(CTR_NATIVE_TRACK_RENDERER ON)
 else()
-    set(CTR_NATIVE_TRACK_RENDERER_DEFAULT OFF)
+    option(CTR_NATIVE_TRACK_RENDERER
+        "Native track renderer: resident track meshes from level data (count-only on PC)"
+        OFF)
 endif()
-option(CTR_NATIVE_TRACK_RENDERER
-    "Native track renderer: resident track meshes from level data (in progress)"
-    ${CTR_NATIVE_TRACK_RENDERER_DEFAULT})
 
 # Bake-parity diff (s38, roadmap "track bake pre-export"): PC-only diagnostic
 # that verifies the resident track mesh against retail's own emitted packets
@@ -293,7 +283,7 @@ if(CTR_NATIVE_BAKE_PARITY)
     if(NOT CTR_NATIVE_TRACK_RENDERER)
         message(STATUS "CTR_NATIVE_BAKE_PARITY implies CTR_NATIVE_TRACK_RENDERER; enabling it")
         set(CTR_NATIVE_TRACK_RENDERER ON CACHE BOOL
-            "Native track renderer: resident track meshes from level data (in progress)" FORCE)
+            "Native track renderer: resident track meshes from level data (count-only on PC)" FORCE)
     endif()
     if(NOT CTR_NATIVE_GTE_CAPTURE)
         message(STATUS "CTR_NATIVE_BAKE_PARITY implies CTR_NATIVE_GTE_CAPTURE; enabling it")
@@ -315,7 +305,7 @@ if(CTR_NATIVE_TRACK_BAKE_EXPORT)
     if(NOT CTR_NATIVE_TRACK_RENDERER)
         message(STATUS "CTR_NATIVE_TRACK_BAKE_EXPORT implies CTR_NATIVE_TRACK_RENDERER; enabling it")
         set(CTR_NATIVE_TRACK_RENDERER ON CACHE BOOL
-            "Native track renderer: resident track meshes from level data (in progress)" FORCE)
+            "Native track renderer: resident track meshes from level data (count-only on PC)" FORCE)
     endif()
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_TRACK_BAKE_EXPORT=1)
 endif()
@@ -324,32 +314,20 @@ if(CTR_NATIVE_TRACK_RENDERER)
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_TRACK_RENDERER=1)
 endif()
 
-# PICA-native model renderer (s30-s32).
-# Current state: rung 1.
-#   rung 0 -- load-time per-ModelHeader topology scan ([MODELMESH]/[MODELGATE]
-#             per level) plus a per-frame instance sampler ([MODELFRAME]).
-#   rung 1 -- per-frame capture of every model triangle the packet path draws,
-#             in model space with its instance's model->view matrix, into a
-#             double-buffered snapshot ([MDLEMIT]).
-# Still count-only on every platform: nothing draws from the snapshot, no game
-# state changes, and every hook in game/ compiles to nothing with this off. The
-# runtime toggle (g_dbg_modelRender) additionally starts at 0, so even an
-# enabled build is inert until it is switched on.
-#
-# Deliberately carries NO 3DS prerequisites yet, unlike the track renderer
-# above: nothing here reaches the GPU, so requiring OT_DEPTH/DRAW_MERGE would
-# only stop the measurement from running in configs where it is perfectly
-# valid. Rung 2's draw side will add them when it lands.
-#
-# ON by default on 3DS for the same reason as the track renderer above.
+# PICA-native model renderer: load-time per-ModelHeader topology scan, a
+# per-frame instance sampler, and per-frame capture of every model triangle the
+# packet path draws (model space, with its instance's model->view matrix) into a
+# double-buffered snapshot. On PC it is count-only: nothing draws from the
+# snapshot, and every hook in game/ compiles to nothing with it off.
+# Unconditional on 3DS, where it is the shipping renderer; a PC-only option,
+# default OFF.
 if(NINTENDO_3DS)
-    set(CTR_NATIVE_MODEL_RENDERER_DEFAULT ON)
+    set(CTR_NATIVE_MODEL_RENDERER ON)
 else()
-    set(CTR_NATIVE_MODEL_RENDERER_DEFAULT OFF)
+    option(CTR_NATIVE_MODEL_RENDERER
+        "PICA-native model renderer: instance topology, per-frame census, triangle capture (count-only on PC)"
+        OFF)
 endif()
-option(CTR_NATIVE_MODEL_RENDERER
-    "PICA-native model renderer: instance topology, per-frame census, triangle capture (in progress)"
-    ${CTR_NATIVE_MODEL_RENDERER_DEFAULT})
 if(CTR_NATIVE_MODEL_RENDERER)
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_MODEL_RENDERER=1)
 endif()
@@ -405,26 +383,14 @@ if(NINTENDO_3DS AND CTR_NATIVE_RENDER_THREAD)
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_RENDER_THREAD=1)
 endif()
 
-# Direct-emit fast path (retained-geometry campaign, transitional form). OT
-# nodes whose payload is
-# purely opaque poly prims go packet -> merge bin on the 3DS walk directly,
-# skipping the GrVertex intermediate, the split machinery, and the scratch
-# copies -- the translate/convert half the core-2 profile showed as the
-# render worker's tax. Requires DRAW_MERGE (bins) + OT_DEPTH (order freedom);
-# byte-equivalent bins by construction, runtime A/B: SELECT+D-LEFT on
-# hardware, dumpreq 'directemit' in Azahar. On PC builds the gate compiles a
-# count-only scanner ([DEMIT] window line = the eligibility ceiling; runtime
-# default 0 on PC, flip g_dbg_directEmit in source to measure) and never
-# changes PC output. Hardware-accepted 2026-07-28 (owner A/B, Labs arcade:
-# visually identical, ~1.7ms median frame win -- the deleted GrVertex/split
-# machinery, NOT the per-triangle emit work, which just moved buckets:
-# draw_all_splits 42.1->27.6ms but draw_otag_parse 2.7->15.5ms) and promoted
-# to default ON the same night. The per-triangle work itself is the full
-# retained form's target.
-option(CTR_NATIVE_DIRECT_EMIT
-    "Direct packet->bin emit for all-opaque-poly OT nodes (3DS fast path; PC counts only)"
-    ON)
-if(CTR_NATIVE_DIRECT_EMIT)
+# Direct-emit fast path (retained-geometry campaign, transitional form): OT
+# nodes whose payload is purely opaque poly prims go packet -> merge bin on the
+# 3DS walk directly, skipping the GrVertex intermediate, the split machinery,
+# and the scratch copies -- the translate/convert half the core-2 profile
+# showed as the render worker's tax. Byte-equivalent bins by construction;
+# ~1.7ms median frame win on hardware. Unconditional on 3DS; PC does not
+# compile it.
+if(NINTENDO_3DS)
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_DIRECT_EMIT=1)
 endif()
 
@@ -476,21 +442,20 @@ endif()
 
 # Populate + clear a per-frame side table of GTE sub-pixel fractions, keyed by
 # the exact truncated screen coordinate the GTE writes to the packet. No
-# visible effect alone. Shared
-# infrastructure for CTR_NATIVE_VERTEX_DESNAP and later stereo/perspective-UV.
+# visible effect alone. Shared infrastructure for CTR_NATIVE_VERTEX_DESNAP and
+# stereo 3D.
 #
-# ON by default on 3DS: stereo 3D is built on the capture table, and the 3DS
-# renderer calls into this gate's code unconditionally (NativeGpu_UiMapRetailTop
-# for the both-screens map, g_dbg_decalNearBias for the decal bracket), so the
-# OFF leg does not link there. PC keeps OFF -- nothing consumes it.
+# Unconditional on 3DS: stereo 3D and the depth stamps are built on the capture
+# table, and the 3DS renderer calls into this gate's code unconditionally
+# (NativeGpu_UiMapRetailTop, g_dbg_decalNearBias). A PC-only option, default
+# OFF -- nothing there consumes it.
 if(NINTENDO_3DS)
-    set(CTR_NATIVE_GTE_CAPTURE_DEFAULT ON)
+    set(CTR_NATIVE_GTE_CAPTURE ON)
 else()
-    set(CTR_NATIVE_GTE_CAPTURE_DEFAULT OFF)
+    option(CTR_NATIVE_GTE_CAPTURE
+        "Populate the GTE sub-pixel capture side table (infrastructure only, no visible effect)"
+        OFF)
 endif()
-option(CTR_NATIVE_GTE_CAPTURE
-    "Populate the GTE sub-pixel capture side table (infrastructure only, no visible effect)"
-    ${CTR_NATIVE_GTE_CAPTURE_DEFAULT})
 
 # Consume the capture table in the vertex builders and vertex shader to draw
 # geometry at its true sub-pixel position instead of PS1-style whole-pixel
@@ -565,67 +530,56 @@ if(NINTENDO_3DS)
     target_sources(ctr_native PRIVATE "${CTR_N3DS_SHADER_GEN}/ctr_shbin.S")
     target_include_directories(ctr_native PRIVATE "${CTR_N3DS_SHADER_GEN}")
 
-    # Native track renderer (rung 3a): sibling shader for the resident track
-    # draw path, same picasso -> bin2s -> embedded .S/.h pipeline as ctr.v.pica
-    # above. Guarded by CTR_NATIVE_TRACK_RENDERER -- step 1 only ships a
-    # minimal placeholder .pica (see the file's own header) that assembles and
-    # writes every declared output, so a plain 3DS build with the gate OFF
-    # never even looks for it and a build with the gate ON doesn't break
-    # before step 2 (a later task) writes the real shader body.
-    if(CTR_NATIVE_TRACK_RENDERER)
-        set(CTR_N3DS_TRACK_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/platform/n3ds/shaders/ctr_track.v.pica")
-        set(CTR_N3DS_TRACK_SHADER_SHBIN "${CTR_N3DS_SHADER_GEN}/ctr_track.shbin")
+    # Native track renderer: sibling shader for the resident track draw path,
+    # same picasso -> bin2s -> embedded .S/.h pipeline as ctr.v.pica above.
+    set(CTR_N3DS_TRACK_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/platform/n3ds/shaders/ctr_track.v.pica")
+    set(CTR_N3DS_TRACK_SHADER_SHBIN "${CTR_N3DS_SHADER_GEN}/ctr_track.shbin")
 
-        add_custom_command(
-            OUTPUT "${CTR_N3DS_TRACK_SHADER_SHBIN}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CTR_N3DS_SHADER_GEN}"
-            COMMAND ${CTR_PICASSO_EXE} -o "${CTR_N3DS_TRACK_SHADER_SHBIN}" "${CTR_N3DS_TRACK_SHADER_SRC}"
-            DEPENDS "${CTR_N3DS_TRACK_SHADER_SRC}"
-            COMMENT "picasso: ctr_track.v.pica -> ctr_track.shbin"
-        )
-        add_custom_command(
-            OUTPUT "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S" "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.h"
-            COMMAND ${DKP_BIN2S} -a ${DKP_BIN2S_ALIGNMENT} -H "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.h"
-                    "${CTR_N3DS_TRACK_SHADER_SHBIN}" > "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S"
-            DEPENDS "${CTR_N3DS_TRACK_SHADER_SHBIN}"
-            COMMENT "bin2s: embedding ctr_track.shbin"
-        )
-        # ASM language + the ctr_shbin.S source-file-properties override above
-        # already ran unconditionally for the first shader in this same
-        # if(NINTENDO_3DS) scope, so both apply here too; only the new output
-        # needs its own PROPERTIES call.
-        set_source_files_properties("${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S"
-            PROPERTIES LANGUAGE ASM)
+    add_custom_command(
+        OUTPUT "${CTR_N3DS_TRACK_SHADER_SHBIN}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CTR_N3DS_SHADER_GEN}"
+        COMMAND ${CTR_PICASSO_EXE} -o "${CTR_N3DS_TRACK_SHADER_SHBIN}" "${CTR_N3DS_TRACK_SHADER_SRC}"
+        DEPENDS "${CTR_N3DS_TRACK_SHADER_SRC}"
+        COMMENT "picasso: ctr_track.v.pica -> ctr_track.shbin"
+    )
+    add_custom_command(
+        OUTPUT "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S" "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.h"
+        COMMAND ${DKP_BIN2S} -a ${DKP_BIN2S_ALIGNMENT} -H "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.h"
+                "${CTR_N3DS_TRACK_SHADER_SHBIN}" > "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S"
+        DEPENDS "${CTR_N3DS_TRACK_SHADER_SHBIN}"
+        COMMENT "bin2s: embedding ctr_track.shbin"
+    )
+    # ASM language + the ctr_shbin.S source-file-properties override above
+    # already ran unconditionally for the first shader in this same
+    # if(NINTENDO_3DS) scope, so both apply here too; only the new output
+    # needs its own PROPERTIES call.
+    set_source_files_properties("${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S"
+        PROPERTIES LANGUAGE ASM)
 
-        target_sources(ctr_native PRIVATE "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S")
-    endif()
+    target_sources(ctr_native PRIVATE "${CTR_N3DS_SHADER_GEN}/ctr_track_shbin.S")
 
-    # PICA-native model renderer (rung 2): third shader, same pipeline again.
-    # Guarded by CTR_NATIVE_MODEL_RENDERER so a build without the gate never
-    # looks for it.
-    if(CTR_NATIVE_MODEL_RENDERER)
-        set(CTR_N3DS_MODEL_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/platform/n3ds/shaders/ctr_model.v.pica")
-        set(CTR_N3DS_MODEL_SHADER_SHBIN "${CTR_N3DS_SHADER_GEN}/ctr_model.shbin")
+    # PICA-native model renderer: third shader, same pipeline again.
+    set(CTR_N3DS_MODEL_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/platform/n3ds/shaders/ctr_model.v.pica")
+    set(CTR_N3DS_MODEL_SHADER_SHBIN "${CTR_N3DS_SHADER_GEN}/ctr_model.shbin")
 
-        add_custom_command(
-            OUTPUT "${CTR_N3DS_MODEL_SHADER_SHBIN}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CTR_N3DS_SHADER_GEN}"
-            COMMAND ${CTR_PICASSO_EXE} -o "${CTR_N3DS_MODEL_SHADER_SHBIN}" "${CTR_N3DS_MODEL_SHADER_SRC}"
-            DEPENDS "${CTR_N3DS_MODEL_SHADER_SRC}"
-            COMMENT "picasso: ctr_model.v.pica -> ctr_model.shbin"
-        )
-        add_custom_command(
-            OUTPUT "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S" "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.h"
-            COMMAND ${DKP_BIN2S} -a ${DKP_BIN2S_ALIGNMENT} -H "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.h"
-                    "${CTR_N3DS_MODEL_SHADER_SHBIN}" > "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S"
-            DEPENDS "${CTR_N3DS_MODEL_SHADER_SHBIN}"
-            COMMENT "bin2s: embedding ctr_model.shbin"
-        )
-        set_source_files_properties("${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S"
-            PROPERTIES LANGUAGE ASM)
+    add_custom_command(
+        OUTPUT "${CTR_N3DS_MODEL_SHADER_SHBIN}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CTR_N3DS_SHADER_GEN}"
+        COMMAND ${CTR_PICASSO_EXE} -o "${CTR_N3DS_MODEL_SHADER_SHBIN}" "${CTR_N3DS_MODEL_SHADER_SRC}"
+        DEPENDS "${CTR_N3DS_MODEL_SHADER_SRC}"
+        COMMENT "picasso: ctr_model.v.pica -> ctr_model.shbin"
+    )
+    add_custom_command(
+        OUTPUT "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S" "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.h"
+        COMMAND ${DKP_BIN2S} -a ${DKP_BIN2S_ALIGNMENT} -H "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.h"
+                "${CTR_N3DS_MODEL_SHADER_SHBIN}" > "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S"
+        DEPENDS "${CTR_N3DS_MODEL_SHADER_SHBIN}"
+        COMMENT "bin2s: embedding ctr_model.shbin"
+    )
+    set_source_files_properties("${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S"
+        PROPERTIES LANGUAGE ASM)
 
-        target_sources(ctr_native PRIVATE "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S")
-    endif()
+    target_sources(ctr_native PRIVATE "${CTR_N3DS_SHADER_GEN}/ctr_model_shbin.S")
 
     # citro3d before ctru: the linker resolves left to right and citro3d pulls
     # symbols out of ctru.

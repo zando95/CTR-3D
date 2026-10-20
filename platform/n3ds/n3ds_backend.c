@@ -16,17 +16,11 @@
 #include "n3ds_beat.h"
 #include "n3ds_render_thread.h" /* N3DS_RenderWorkerIsSelf -- which thread the frame-begin guard is running on */
 #include "ctr_shbin.h"
-#ifdef CTR_NATIVE_TRACK_RENDERER
-/* Rung 3a step 2's sibling shader, built by the exact same picasso -> bin2s
- * pipeline as ctr_shbin.h above (CMakeLists.txt, guarded by the same
- * CTR_NATIVE_TRACK_RENDERER option) -- see platform/n3ds/shaders/ctr_track.v.pica. */
+/* The track and model sibling shaders, built by the exact same picasso ->
+ * bin2s pipeline as ctr_shbin.h above (CMakeLists.txt) -- see
+ * platform/n3ds/shaders/ctr_track.v.pica and ctr_model.v.pica. */
 #include "ctr_track_shbin.h"
-#endif
-#ifdef CTR_NATIVE_MODEL_RENDERER
-/* Rung 2's model shader, same picasso -> bin2s pipeline, guarded by the same
- * CTR_NATIVE_MODEL_RENDERER option -- see platform/n3ds/shaders/ctr_model.v.pica. */
 #include "ctr_model_shbin.h"
-#endif
 
 /*
  * Diagnostics go to two places because neither alone is sufficient:
@@ -56,9 +50,6 @@ static FILE *s_logFile = NULL;
  * any other thread exists.
  */
 static LightLock s_logBufferLock;
-/* Rosalina-freeze bisect: 1 = stop emitting svcOutputDebugString (the SD and
- * netload sinks are unaffected). dumpreq `dbgoff`. */
-static int s_logSvcOff = 0;
 
 /*
  * 3dslink netload stderr streaming: when sent over Wi-Fi via 3dslink, HBL
@@ -229,10 +220,7 @@ void N3DS_DebugLog(const char *msg)
 		return;
 	}
 
-	if (!s_logSvcOff)
-	{
-		svcOutputDebugString(msg, (int)strlen(msg));
-	}
+	svcOutputDebugString(msg, (int)strlen(msg));
 
 	/* The render worker logs from the OT walk; if it is ever seen parked
 	 * here by the watchdog, the SD flush on another thread is what the
@@ -332,19 +320,6 @@ void N3DS_LogFlushNow(void)
 		fflush(s_logFile);
 		fsync(fileno(s_logFile));
 	}
-	LightLock_Unlock(&s_logBufferLock);
-}
-
-void N3DS_LogCloseFile(void)
-{
-	LightLock_Lock(&s_logBufferLock);
-	if (s_logFile != NULL)
-	{
-		fflush(s_logFile);
-		fclose(s_logFile);
-		s_logFile = NULL;
-	}
-	g_dbg_sdLog = 0;
 	LightLock_Unlock(&s_logBufferLock);
 }
 
@@ -551,7 +526,7 @@ void N3DS_GfxExit(void)
 }
 
 /*
- * 1 = flush only the BOTTOM framebuffer; 0 = the old whole-system
+ * Present flushes only the BOTTOM framebuffer, not the whole-system
  * gfxFlushBuffers().
  *
  * gfxFlushBuffers cleans the data cache for top-left, top-right AND bottom
@@ -562,13 +537,10 @@ void N3DS_GfxExit(void)
  * written by the GPU (C3D_FrameEnd's display transfer), never by the CPU, so
  * cleaning their cache lines is ~576KB of pure waste every frame.
  *
- * The one thing that ever READ them on the CPU is the pause freeze-frame
+ * The one thing that ever READS them on the CPU is the pause freeze-frame
  * (N3DS_CopyDisplayedTopFrame); it does its own invalidate, which is where
- * that belongs. Default 1, hardware-measured: present 3.70 -> 1.67ms, and
- * ~0.8ms of that reached the frame (Tubes median 36.1 -> 35.3ms). Free CPU
- * with no visual or behavioural change. dumpreq `fastpresent`.
+ * that belongs. Hardware-measured: present 3.70 -> 1.67ms.
  */
-int g_dbg_fastPresent = 1;
 
 /* Bottom-screen minimap present-side TTL -- declared up here because
  * N3DS_GfxPresent consumes it; set by N3DS_BottomMapDraw_Begin (much further
@@ -718,7 +690,6 @@ void N3DS_GfxPresent(void)
 	 * fight citro3d for ownership of the top screen -- C3D_FrameEnd (see
 	 * N3DS_C3DEndFrame) already presents that one.
 	 */
-	if (g_dbg_fastPresent)
 	{
 		u16 fbW = 0, fbH = 0;
 		u8 *fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &fbW, &fbH);
@@ -735,10 +706,6 @@ void N3DS_GfxPresent(void)
 		{
 			GSPGPU_FlushDataCache(fb, (u32)fbW * (u32)fbH * 3U);
 		}
-	}
-	else
-	{
-		gfxFlushBuffers();
 	}
 
 	gfxScreenSwapBuffers(GFX_BOTTOM, false);
@@ -798,7 +765,7 @@ int N3DS_CopyDisplayedTopFrame(unsigned char *dstRGB, int dstW, int dstH)
 	 * read here by the CPU, so the CPU's cached view of it may be stale. This
 	 * used to be covered by accident -- N3DS_GfxPresent's whole-system
 	 * gfxFlushBuffers cleaned and invalidated all three framebuffers every
-	 * frame. g_dbg_fastPresent stops paying that 3.3ms, so the one reader that
+	 * frame. The bottom-only present stops paying that 3.3ms, so the one reader that
 	 * actually needed it asks for it directly, on pause entry rather than
 	 * 30 times a second. */
 	GSPGPU_InvalidateDataCache(fb, (u32)fbW * (u32)fbH * 3U);
@@ -883,18 +850,12 @@ static int s_trackAtlasUnitsAllocated = 0;
  * (re)allocated, since a level reload changes the underlying .data. */
 static C3D_Tex s_trackAtlasTexturesNearest[N3DS_TRACK_ATLAS_MAX_UNITS];
 
-#ifdef CTR_NATIVE_MODEL_RENDERER
 /*
  * Rung 2 model program. Only the program
  * and its uniform locations live here -- no attribute layout and no buffer
  * info, because model draws deliberately reuse the packet path's. See
  * n3ds_backend.h's N3DS_ModelDraw_* comment for why that is safe and what it
  * costs in field reinterpretation.
- *
- * Kept OUTSIDE the CTR_NATIVE_TRACK_RENDERER block below on purpose: the two
- * options are independent, and a model-renderer build with the track renderer
- * off is a configuration this campaign will actually want (it isolates the
- * model path's fps contribution from the track's).
  */
 static DVLB_s *s_modelShaderDvlb = NULL;
 static shaderProgram_s s_modelShaderProgram;
@@ -911,9 +872,7 @@ static int s_modelBoundAtlas = -1;
  * s_trackDepthWriteState: -1 = not asserted in this bracket. */
 static int s_modelDepthWriteState = -1;
 static int s_modelDrawActive = 0;
-#endif
 
-#ifdef CTR_NATIVE_TRACK_RENDERER
 /*
  * Rung 3a step 2: the resident-mesh draw path's own program/attribute
  * layout/vertex+index buffer -- a second, independent set of the SAME kind
@@ -942,12 +901,8 @@ static int s_trackULocProjection = -1, s_trackULocH = -1, s_trackULocDepthRange 
  * The shove is per-face and global -- weight * that face's signed drawOrder
  * byte -- so the ceiling below, not this number, is what keeps an extreme
  * drawOrder from pulling a road face in front of the karts standing on it.
- * File-scope rather than a shared g_dbg_* because both readers (this uniform
- * write and the dumpreq token) live in this TU, which is its own TU so the
- * unity-build tentative-definition collision hazard does not apply here.
  */
-#define N3DS_TRACK_DRAWORDER_WEIGHT_DEFAULT 1.0f
-static float s_trackDrawOrderWeight = N3DS_TRACK_DRAWORDER_WEIGHT_DEFAULT;
+#define N3DS_TRACK_DRAWORDER_WEIGHT 1.0f
 static int s_trackULocUvOffset = -1, s_trackULocStereo = -1;
 /* Memo for the blend pass's depth-write state, so a frame with no semi-
  * transparent content pays nothing and a frame with some flips the pair exactly
@@ -1026,7 +981,6 @@ void N3DS_TrackGeom_FlushPatched(void)
  * and always restores packet state regardless (cheap, and foolproof against
  * any Begin/Leaf/End call-order mistake upstream). */
 static int s_trackDrawActive = 0;
-#endif /* CTR_NATIVE_TRACK_RENDERER */
 
 /* ------------------------------------------------------------- stereo 3D --- */
 /*
@@ -1163,13 +1117,9 @@ static N3DS_StereoOp *N3DS_StereoRecord(int kind)
  * stamp -- still gets real parallax. */
 static int N3DS_StereoPacketDepthActive(void)
 {
-#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
 	extern int g_dbg_packetDepth;
 
 	return (g_dbg_packetDepth != 0);
-#else
-	return 0;
-#endif
 }
 
 /* Fills one eye's (k, k*conv, clampLo, clampHi). The clamp band is
@@ -1369,21 +1319,10 @@ int g_dbg_trackAlphaRef = 1;
  * GX queue's bound completion counters advance. A P3D/PPF completion event
  * lost across the freeze/thaw wedges that wait permanently.
  *
- * 1 (default): route every C3D_FrameBegin through N3DS_GuardedFrameBegin
- * below -- a bounded C3D_FRAME_NONBLOCK retry loop woken by a gsp event
- * callback, logging escalating stall lines instead of hanging silently. 0:
- * the exact unguarded call, for A/B against a suspected regression.
- * Runtime: dumpreq `gxguard [N]`.
+ * Every C3D_FrameBegin goes through N3DS_GuardedFrameBegin below -- a
+ * bounded C3D_FRAME_NONBLOCK retry loop woken by a gsp event callback,
+ * logging escalating stall lines instead of hanging silently.
  */
-int g_dbg_gxGuard = 1;
-/*
- * Rosalina-freeze display recovery experiment (default OFF, dumpreq
- * `rosafix`): after a thaw longer than 2s, the game thread provably keeps
- * running while both LCDs stay on their last frame, so re-run the GPU-right
- * handshake APT performs on HOME-menu resume (release + acquire), clear the
- * LCD force-black state, and present both screens again.
- */
-int g_dbg_rosaFix = 0;
 
 void N3DS_C3DSetProjection(float left, float right, float bottom)
 {
@@ -1527,11 +1466,8 @@ static int N3DS_BeatCurrentThreadId(void)
 }
 
 /*
- * The port's only C3D_FrameBegin entry point (see g_dbg_gxGuard's comment
- * for why it is guarded). wantSyncDraw non-zero emulates
- * C3D_FRAME_SYNCDRAW's own frame-to-frame alignment boundedly (50ms cap, then
- * proceeds regardless) instead of calling the library's untimed
- * C3D_FrameSync(); the actual frame-begin always goes through
+ * The port's only C3D_FrameBegin entry point (see the stall-guard comment
+ * above for why it is guarded). The frame-begin goes through
  * C3D_FRAME_NONBLOCK so this function owns the only wait, timed against the
  * pulse event with a short poll period so a lost pulse costs milliseconds,
  * not a hang.
@@ -1540,44 +1476,16 @@ static int N3DS_BeatCurrentThreadId(void)
  * return -- see n3ds_beat.h for why that has to be a single set/clear pair,
  * not a mark per retry.
  */
-static void N3DS_GuardedFrameBegin(u8 wantSyncDraw)
+static void N3DS_GuardedFrameBegin(void)
 {
 	int beatThread;
 	u64 startTick;
 	u64 nextGateMs;
 	unsigned int recoverN;
 
-	if (!g_dbg_gxGuard)
-	{
-		C3D_FrameBegin(wantSyncDraw ? C3D_FRAME_SYNCDRAW : 0);
-		return;
-	}
-
 	beatThread = N3DS_BeatCurrentThreadId();
 	N3DS_BeatMark(beatThread, N3DS_BEAT_WHERE_FRAMEBEGIN);
 	startTick = svcGetSystemTick();
-
-	if (wantSyncDraw)
-	{
-		const u32 c0 = C3D_FrameCounter(0);
-		const u32 c1 = C3D_FrameCounter(1);
-
-		for (;;)
-		{
-			const u64 waitedMs = ((svcGetSystemTick() - startTick) * 1000ull) / SYSCLOCK_ARM11;
-
-			if ((C3D_FrameCounter(0) != c0) && (C3D_FrameCounter(1) != c1))
-			{
-				break;
-			}
-			if (waitedMs >= 50)
-			{
-				break;
-			}
-			LightEvent_Clear(&s_gxPulseEvent);
-			LightEvent_WaitTimeout(&s_gxPulseEvent, 4 * 1000 * 1000);
-		}
-	}
 
 	nextGateMs = 1000;
 	recoverN = 0;
@@ -1643,7 +1551,7 @@ int N3DS_C3DInit(void)
 	s_n3dsC3DActive = 1;
 
 	/*
-	 * Arm the gxguard wake source (see g_dbg_gxGuard's comment) before
+	 * Arm the gxguard wake source (see the stall-guard comment above) before
 	 * anything can call N3DS_C3DBeginFrame. Slots are free -- citro3d itself
 	 * only registers VBlank0/VBlank1 -- and oneShot=false since every frame
 	 * needs the same callback. Runs on the gsp event thread, so it must do
@@ -1652,12 +1560,7 @@ int N3DS_C3DInit(void)
 	LightEvent_Init(&s_gxPulseEvent, RESET_STICKY);
 	gspSetEventCallback(GSPGPU_EVENT_P3D, N3DS_GxPulseCallback, NULL, false);
 	gspSetEventCallback(GSPGPU_EVENT_PPF, N3DS_GxPulseCallback, NULL, false);
-	{
-		char msg[48];
-
-		snprintf(msg, sizeof(msg), "[BEAT] armed gxguard=%d", g_dbg_gxGuard);
-		N3DS_DebugLog(msg);
-	}
+	N3DS_DebugLog("[BEAT] armed gxguard");
 
 	s_renderTarget = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
 	if (s_renderTarget == NULL)
@@ -1809,7 +1712,6 @@ int N3DS_C3DInit(void)
 		}
 	}
 
-#ifdef CTR_NATIVE_TRACK_RENDERER
 	/* Rung 3a step 2's sibling shader/program -- a SECOND program object, not
 	 * a second vertex shader in the same one, since the packet and track
 	 * paths need to switch attribute layout and uniform sets independently
@@ -1844,9 +1746,7 @@ int N3DS_C3DInit(void)
 	AttrInfo_AddLoader(&s_trackAttrInfo, 0, GPU_SHORT, 3);         /* v0 = position (x, y, z) */
 	AttrInfo_AddLoader(&s_trackAttrInfo, 1, GPU_SHORT, 2);         /* v1 = texcoord (u, v) -- unused in 3a */
 	AttrInfo_AddLoader(&s_trackAttrInfo, 2, GPU_UNSIGNED_BYTE, 4); /* v2 = color + biased drawOrder */
-#endif /* CTR_NATIVE_TRACK_RENDERER */
 
-#ifdef CTR_NATIVE_MODEL_RENDERER
 	/* Rung 2's program. Fatal on failure for the same reason the other two
 	 * are: a model-renderer build with no model shader would draw nothing the
 	 * moment the toggle is flipped, and "nothing appeared" is a far more
@@ -1869,7 +1769,6 @@ int N3DS_C3DInit(void)
 	s_modelULocQw = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "qw");
 	s_modelULocH = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "hParam");
 	s_modelULocStereo = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "stereo");
-#endif /* CTR_NATIVE_MODEL_RENDERER */
 
 	return 1;
 }
@@ -1878,7 +1777,6 @@ void N3DS_C3DExit(void)
 {
 	int i;
 
-#ifdef CTR_NATIVE_TRACK_RENDERER
 	N3DS_TrackGeom_Free();
 	shaderProgramFree(&s_trackShaderProgram);
 	if (s_trackShaderDvlb != NULL)
@@ -1886,7 +1784,6 @@ void N3DS_C3DExit(void)
 		DVLB_Free(s_trackShaderDvlb);
 		s_trackShaderDvlb = NULL;
 	}
-#endif
 
 	for (i = 0; i < N3DS_VRAM_DISPLAY_TEX_COUNT; i++)
 	{
@@ -2013,18 +1910,14 @@ static int N3DS_NextPktBias(int cur)
 }
 
 /*
- * C3D_FrameBegin(SYNCDRAW) aligns the start of every frame build to the
- * hardware vblank; that alignment is native-only overhead, not pacing, since
- * the 30fps cap is enforced by the game itself (ReadyToFlip counts the
- * emulated 60Hz clock, not phase-locked to the panel) and presentation is
- * vblank-latched by GSP regardless, so nothing tears without it. 1 = align,
- * 0 = begin the moment the GPU is free. Runtime A/B: dumpreq `framesync`.
- *
- * Default 0: hardware-measured, Tubes mono 41->34.7ms, stereo 49->36.2ms --
- * most of stereo's extra frame cost was this wait rounding frames up to the
- * next vblank multiple, not render cost.
+ * Frame builds begin the moment the GPU is free rather than aligning to the
+ * hardware vblank (C3D_FrameBegin(SYNCDRAW)): the alignment is native-only
+ * overhead, not pacing, since the 30fps cap is enforced by the game itself
+ * (ReadyToFlip counts the emulated 60Hz clock, not phase-locked to the panel)
+ * and presentation is vblank-latched by GSP regardless, so nothing tears
+ * without it. Hardware-measured: Tubes mono 41->34.7ms, stereo 49->36.2ms --
+ * the wait rounded frames up to the next vblank multiple.
  */
-int g_dbg_frameSync = 0;
 
 void N3DS_C3DBeginFrame(void)
 {
@@ -2036,7 +1929,7 @@ void N3DS_C3DBeginFrame(void)
 	N3DS_StereoLatchFrame();
 
 	N3DS_FrameTrace("[CTR-3DS] FrameBegin: enter (SYNCDRAW wait)");
-	N3DS_GuardedFrameBegin(g_dbg_frameSync ? 1 : 0);
+	N3DS_GuardedFrameBegin();
 	N3DS_FrameTrace("[CTR-3DS] FrameBegin: returned");
 	/* Depth clears to FAR. Mtx_OrthoTilt maps LARGER vertex z to SMALLER
 	 * stored depth (verified empirically, see below), so far = max. */
@@ -2531,14 +2424,7 @@ static void N3DS_TrackAtlas_BindNearestView(int unit)
 }
 
 /* ------------------------------------------------ native track draw --- */
-/* Rung 3a step 2. See the header comment (n3ds_backend.h) for the bracket
- * contract. #else below provides no-op/failing stubs so the unconditional
- * declarations in n3ds_backend.h always link, the same promise
- * native_track_mesh.h makes for ITS accessors -- these functions have a real
- * compile-time dependency the atlas pool above does not (the generated
- * ctr_track_shbin.h only exists when CTR_NATIVE_TRACK_RENDERER is on), so
- * unlike N3DS_TrackAtlas_*, the real bodies have to be gated. */
-#ifdef CTR_NATIVE_TRACK_RENDERER
+/* See the header comment (n3ds_backend.h) for the bracket contract. */
 
 int N3DS_TrackGeom_Upload(const void *verts, int vertCount, int vertStride, const void *indices, int indexCount)
 {
@@ -2757,15 +2643,6 @@ void N3DS_TrackGeom_PatchPosColor(const unsigned short *vertIndices, const short
 	}
 }
 
-/* Backface culling for the track (dumpreq 'bfcull'): 0 = off
- * (draw every face), 1 = cull GPU back-faces, 2 = cull front-faces. Applied
- * per-frame in N3DS_TrackDraw_Begin, undone in _End. Default 1: culling
- * matches retail, is near-free, and removes erroneous back-facing geometry
- * (the Crash Cove second waterfall and the like). Safe because the bake gives
- * triangles and double-sided faces a reverse-wound copy (native_track_mesh.c)
- * so only single-sided quads are actually culled. */
-int g_dbg_bfCull = 1;
-
 void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, float h)
 {
 	C3D_TexEnv *env;
@@ -2799,28 +2676,18 @@ void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, flo
 	C3D_SetBufInfo(&s_trackBufInfo);
 
 	/*
-	 * Backface-cull A/B (dumpreq 'bfcull'), scoped to the TRACK only.
-	 *
-	 * Retail rejects back-facing SINGLE-SIDED faces per-face (GTE NCLIP winding
-	 * test gated by the DOUBLE_SIDED bit, game/226 DrawLevelOvr); our bake emits
-	 * every face regardless of winding and the GPU runs GPU_CULL_NONE globally
-	 * (:1128), so we draw backfaces retail drops -- e.g. Crash Cove's second
-	 * waterfall. This tries PICA hardware culling as the stand-in, restored to
-	 * NONE in N3DS_TrackDraw_End so the packet/UI/model draws after the track are
-	 * never affected. 1 vs 2 exists because the bake's winding convention is
-	 * unverified: if 1 (cull back) punches holes, the bake winds the other way
-	 * and 2 (cull front) is the correct one; if BOTH hole, winding is mixed and
-	 * culling is unsafe without a bake normalization pass. Judge on: holes in the
-	 * track (unsafe) vs the second waterfall vanishing cleanly + fps rising.
+	 * Backface culling, scoped to the TRACK only. Retail rejects back-facing
+	 * SINGLE-SIDED faces per-face (GTE NCLIP winding test gated by the
+	 * DOUBLE_SIDED bit, game/226 DrawLevelOvr); the bake emits every face
+	 * regardless of winding and the GPU runs GPU_CULL_NONE globally, so PICA
+	 * hardware culling stands in for it (it removes the Crash Cove second
+	 * waterfall and the like). Safe because the bake gives triangles and
+	 * double-sided faces a reverse-wound copy (native_track_mesh.c), so only
+	 * single-sided quads are actually culled. Restored to NONE in
+	 * N3DS_TrackDraw_End so the packet/UI/model draws after the track are never
+	 * affected.
 	 */
-	if (g_dbg_bfCull == 1)
-	{
-		C3D_CullFace(GPU_CULL_BACK_CCW);
-	}
-	else if (g_dbg_bfCull == 2)
-	{
-		C3D_CullFace(GPU_CULL_FRONT_CCW);
-	}
+	C3D_CullFace(GPU_CULL_BACK_CCW);
 
 	/* State 2 (TRACKRO, see g_dbg_depthTest): the track still TESTS against
 	 * depth -- so it can still be hidden by nearer packet content, which is
@@ -2878,36 +2745,15 @@ void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, flo
 		 * they behave exactly as they do today. */
 		float selTrueDepth = 0.0f;
 
-#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
 		{
 			extern int g_dbg_packetDepth;
 
 			selTrueDepth = (g_dbg_packetDepth != 0) ? 1.0f : 0.0f;
 		}
-#endif
 
 		/* hParam.w: drawOrder tie-break weight, in view.z units per drawOrder
-		 * step. Was the
-		 * `bucketToDepth` shader constant at 1.0; moved onto the uniform so
-		 * the sweep is dumpreq `dorder N` instead of a rebuild per leg, for
-		 * the same reason the depth-axis selector above is a uniform: this
-		 * has to be judged by eye on the content that shows it, and a rebuild
-		 * between legs is how a confounded comparison happens.
-		 *
-		 * 1.0 restores the shipped behaviour exactly. 0.0 removes the term,
-		 * which is the phase-0 measurement: the weight is added to TRACK
-		 * faces only, so ground faces (negative drawOrder) are pulled toward
-		 * the camera while packet decals riding that same surface -- kart
-		 * shadows, skid marks, tires -- carry no drawOrder and no equivalent
-		 * term, and sit that far behind the road. If they reappear at 0, that
-		 * mechanism is confirmed and the fix is a decal-side offset, NOT
-		 * shipping 0 here (baked road markings may shimmer without it).
-		 *
-		 * That ablation RAN and came back negative: the
-		 * decals stayed buried at 0, so this term is not the cause and the
-		 * default is back at the shipped 1.0. See GROUND_DECAL_PASS_DESIGN.md
-		 * 3 for what replaced it (the unbracketed ×4 regime axis). */
-		C3D_FVUnifSet(GPU_VERTEX_SHADER, s_trackULocH, h, selTrueDepth, 1.0f - selTrueDepth, s_trackDrawOrderWeight);
+		 * step (see N3DS_TRACK_DRAWORDER_WEIGHT). */
+		C3D_FVUnifSet(GPU_VERTEX_SHADER, s_trackULocH, h, selTrueDepth, 1.0f - selTrueDepth, N3DS_TRACK_DRAWORDER_WEIGHT);
 
 		/* Prove the selector actually REACHES the shader. Every depth number
 		 * logged so far is CPU-side arithmetic showing what the value would be,
@@ -3068,16 +2914,12 @@ void N3DS_TrackDraw_Leaf(int firstIndex, int indexCount, float otIndexLo, float 
 	 * UV and N3DS_TrackDraw_SetTextured picks the combiner setup that either
 	 * samples it or ignores it.
 	 *
-	 * This used to say the selector "rides hParam.w". It does not: hParam.w is
-	 * now the drawOrder tie-break weight (dumpreq `dorder` -- it named the
-	 * long-removed `trkbias` lever until then, the same stale-comment failure
-	 * twice over). Anyone trusting the old wording would have gone looking for
-	 * a texture flag in a depth uniform -- and on a part whose uniform names
-	 * are offsets into ONE shared physical register file, a wrong belief about
-	 * who owns a component is exactly how a past projection collision
-	 * happened. Caught by the parallel transparency work, whose own uvOffset
-	 * was added as a NEW uniform rather than parked on a spare component for
-	 * the same reason.
+	 * The selector does not ride hParam.w: that is the drawOrder tie-break
+	 * weight. On a part whose uniform names are offsets into ONE shared
+	 * physical register file, a wrong belief about who owns a component is
+	 * exactly how a past projection collision happened, so the transparency
+	 * path's uvOffset is its own uniform rather than parked on a spare
+	 * component.
 	 */
 	if ((atlasBin >= 0) && (atlasBin < s_trackAtlasUnitsAllocated))
 	{
@@ -3197,14 +3039,10 @@ void N3DS_TrackDraw_End(void)
 	 * track state by a call-order mistake upstream. */
 	N3DS_BindPacketDrawState();
 
-	/* Undo any track-scoped backface cull so the packet/UI/model/sky draws
-	 * after the track are never culled (their winding is not guaranteed). Only
-	 * when the toggle is live, so the default leg issues no redundant state
-	 * change. Matches the global GPU_CULL_NONE set once in N3DS_C3DInit. */
-	if (g_dbg_bfCull != 0)
-	{
-		C3D_CullFace(GPU_CULL_NONE);
-	}
+	/* Undo the track-scoped backface cull so the packet/UI/model/sky draws
+	 * after the track are never culled (their winding is not guaranteed).
+	 * Matches the global GPU_CULL_NONE set once in N3DS_C3DInit. */
+	C3D_CullFace(GPU_CULL_NONE);
 
 	/* Undo state 2's read-only depth mask. Unconditional on the state rather
 	 * than mirrored off a flag set in Begin: Begin can return early (geometry
@@ -3230,66 +3068,7 @@ void N3DS_TrackDraw_End(void)
 	s_trackDrawActive = 0;
 }
 
-#else /* !CTR_NATIVE_TRACK_RENDERER */
 
-int N3DS_TrackGeom_Upload(const void *verts, int vertCount, int vertStride, const void *indices, int indexCount)
-{
-	(void)verts;
-	(void)vertCount;
-	(void)vertStride;
-	(void)indices;
-	(void)indexCount;
-	return 0;
-}
-
-void N3DS_TrackGeom_Free(void)
-{
-}
-
-void N3DS_TrackGeom_PatchUV(const unsigned short *vertIndices, const short *uvPairs, int count)
-{
-	(void)vertIndices;
-	(void)uvPairs;
-	(void)count;
-}
-
-void N3DS_TrackGeom_PatchPosColor(const unsigned short *vertIndices, const short *xyz, const unsigned char *rgb, int count)
-{
-	(void)vertIndices;
-	(void)xyz;
-	(void)rgb;
-	(void)count;
-}
-
-void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, float h)
-{
-	(void)qx;
-	(void)qy;
-	(void)qw;
-	(void)h;
-}
-
-void N3DS_TrackDraw_Leaf(int firstIndex, int indexCount, float otIndexLo, float ordinalLo, float ordinalSpan, float invIndexSpan, int atlasBin, int blend, int uvDx, int uvDy)
-{
-	(void)firstIndex;
-	(void)indexCount;
-	(void)otIndexLo;
-	(void)ordinalLo;
-	(void)ordinalSpan;
-	(void)invIndexSpan;
-	(void)atlasBin;
-	(void)blend;
-	(void)uvDx;
-	(void)uvDy;
-}
-
-void N3DS_TrackDraw_End(void)
-{
-}
-
-#endif /* CTR_NATIVE_TRACK_RENDERER */
-
-#ifdef CTR_NATIVE_MODEL_RENDERER
 /*
  * Rung 2 model draw bracket. Mirrors N3DS_TrackDraw_* in shape; the differences
  * are all consequences of models being per-frame dynamic rather than resident.
@@ -3499,32 +3278,6 @@ void N3DS_ModelDraw_End(void)
 	s_modelBoundAtlas = -1;
 	s_modelDepthWriteState = -1;
 }
-#else
-void N3DS_ModelDraw_Begin(void)
-{
-}
-
-void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, float h)
-{
-	(void)qx;
-	(void)qy;
-	(void)qw;
-	(void)h;
-}
-
-void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int textured, int blend)
-{
-	(void)startVertex;
-	(void)triangleCount;
-	(void)atlasIndex;
-	(void)textured;
-	(void)blend;
-}
-
-void N3DS_ModelDraw_End(void)
-{
-}
-#endif /* CTR_NATIVE_MODEL_RENDERER */
 
 /*
  * PS1 semi-transparency (the four ABR modes) via PICA's fixed-function blend
@@ -3995,8 +3748,6 @@ unsigned int N3DS_ReadButtons(void)
 	 *   single      -- toggle g_dbg_forceSingleTexture
 	 *   textureless -- toggle g_dbg_texturelessMode
 	 *   triscopes   -- toggle g_dbg_perfTriScopes (per-triangle perf split; taxed)
-	 *   drawmerge   -- toggle g_dbg_drawMerge: 0 falls back to immediate
-	 *                  per-run submission instead of the state-sorted bins
 	 *   flagstyle [N] -- menu/loading flag: 0 = retail grey checkers (default),
 	 *                  1 = pride stripes, 2 = purple/white (Spyro). Bare token
 	 *                  cycles. Also reachable in-game by cheat: WONDER, SOAR.
@@ -4017,34 +3768,19 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  per-triangle fb-mirror test; freeze frames stale while ON)
 	 *   otz         -- toggle g_dbg_otzWiden (widened depth stamps, track-
 	 *                  renderer rung 1; [OTZ] occupancy line while on)
-	 *   trackrender [N] -- native track renderer state (CTR_NATIVE_TRACK_RENDERER
-	 *                  builds only): 0=off(retail) 1=on(resident replaces retail)
+	 *   trackrender [N] -- native track renderer state: 0=off(retail)
+	 *                  1=on(resident replaces retail)
 	 *                  2=both(diagnostic overlay). Bare token cycles 0->1->2->0;
 	 *                  'trackrender N' sets a specific state. The SELECT+START
 	 *                  master flips it with the rest of the renderer config.
-	 *   weld        -- toggle g_dbg_trackWeld, the track mesh's T-junction weld
-	 *                  (DEFAULT OFF; it bends plank and trestle geometry rather
-	 *                  than repairing cracks). Read during the mesh build, so
-	 *                  set it before loading the level to compare against, and
-	 *                  load a DIFFERENT track first -- the mesh is cached per
-	 *                  level and reloading the same one rebuilds nothing.
-	 *                  [TRKWELD] reports count and displacement histogram.
 	 *   packetdepth -- toggle g_dbg_packetDepth (depth model): packets stamp
 	 *                  GTE sz3 and the track shader switches to the same
 	 *                  true-depth axis, both at once. Button: folded into the
 	 *                  SELECT+START master.
-	 *   gtecapture [N] -- g_dbg_gteCapture (CTR_NATIVE_GTE_CAPTURE builds):
+	 *   gtecapture [N] -- g_dbg_gteCapture:
 	 *                  1=full 2=store-only(no matrix note) 0=ablated, to price
 	 *                  the capture subsystem and its matrix probe separately.
 	 *                  Bare token cycles 1->2->0.
-	 *   strictmtx   -- toggle g_dbg_pktDepthStrictMtx: a primitive whose
-	 *                  vertices resolve to two different matrix states is
-	 *                  treated as a miss instead of trusting a foreign depth.
-	 *   missordinal -- toggle g_dbg_pktDepthMissOrdinal: on a capture
-	 *                  miss keep the emit ordinal instead of deriving depth
-	 *                  from the OT bucket. Expect animated water over the HUD.
-	 *   noevict     -- toggle g_dbg_gteNoEvict: a capture store may not
-	 *                  overwrite a live entry owned by a different matrix.
 	 *   stereo      -- toggle g_dbg_stereo (master 3D enable; the physical slider
  *                  still gates frame by frame, this just forces mono)
  *   stereowindow -- toggle window mode (default OFF per owner: pop-out is
@@ -4082,47 +3818,25 @@ unsigned int N3DS_ReadButtons(void)
 	 *   vol [N]     -- output-stage gain, percent of SPU-faithful amplitude
 	 *                  (retail's 0x3fff master is half digital scale, so 200
 	 *                  = full scale and the default). Bare resets to default.
-	 *   gxguard [N] -- bounded C3D_FrameBegin with stall-recovery logging
-	 *                  (Rosalina-freeze hardening, default ON). Bare token
-	 *                  toggles, N sets 0/1. OFF calls libctru's C3D_FrameBegin
-	 *                  directly, for A/B against a suspected regression.
-	 *   texwarm [N] -- load-screen texture pre-warm (default OFF): decodes every
-	 *                  loaded model's textures at the level-load boundary
-	 *                  instead of on the crate-intro's kart-spawn frame. Bare
-	 *                  token toggles, N sets 0/1. [TEXWARM] reports pages/
-	 *                  subpages/us once per level.
-	 *   audiothread -- Rosalina-freeze bisect: stop and join the core-1 audio
-	 *                  worker thread at runtime (one-way, no restart). The
-	 *                  ndsp sink stays up; NativeAudio_StepVBlank's
-	 *                  main-thread fallback keeps audio audible.
-	 *   cpulimit N  -- Rosalina-freeze bisect: calls APT_SetAppCpuTimeLimit(N)
-	 *                  at runtime, independent of the audio worker's own
-	 *                  claim. Bare token = 0.
-	 *   rosabisect  -- both of the above in order: stop the audio worker,
-	 *                  then APT_SetAppCpuTimeLimit(0). One word per boot-run
-	 *                  is what the dumpreq channel actually supports.
-	 *   ndspoff     -- Rosalina-freeze bisect round 2: stop the audio worker
-	 *                  (if running) and tear down the ndsp sink permanently
-	 *                  (N3DS_NdspForceOff) -- audio stays silent for the rest
-	 *                  of the run, every ndspChn.../ndspWaveBuf/ndspSetOutputMode
-	 *                  call site is gated on the sink-up flag already, and a
-	 *                  later XA play request cannot bring it back.
-	 *   dbgoff      -- Rosalina-freeze bisect: stop emitting svcOutputDebugString.
+	 *   audiothread -- stop and join the audio worker thread at runtime
+	 *                  (one-way, no restart). The ndsp sink stays up;
+	 *                  NativeAudio_StepVBlank's main-thread fallback keeps
+	 *                  audio audible.
+	 *   ndspoff     -- stop the audio worker (if running) and tear down the
+	 *                  ndsp sink permanently (N3DS_NdspForceOff) -- audio stays
+	 *                  silent for the rest of the run, every
+	 *                  ndspChn.../ndspWaveBuf/ndspSetOutputMode call site is
+	 *                  gated on the sink-up flag already, and a later XA play
+	 *                  request cannot bring it back.
 	 *   nextboot    -- boot barrier: stop consuming lines until the next power-on.
-	 *   rosafix [N] -- Rosalina-freeze display recovery experiment (default OFF).
-	 *   no3d        -- Rosalina-freeze bisect: gfxSet3D(false) at runtime.
-	 *   logclose    -- Rosalina-freeze bisect: fclose the SD log file (sdlog off).
-	 *   speedoff    -- Rosalina-freeze bisect round 2: osSetSpeedupEnable(false)
-	 *                  -- drops the New3DS 804 MHz clock-up back to O3DS speed.
-	 *   rosabisect2 -- both of the above (ndspoff + speedoff). Checked BEFORE
-	 *                  rosabisect above -- same "rosabisect" prefix, and
-	 *                  strncmp would otherwise match the shorter word first.
+	 *   speedoff    -- osSetSpeedupEnable(false) -- drops the New3DS 804 MHz
+	 *                  clock-up back to O3DS speed.
 	 * Polled every 64 frames so the SD probe cost stays negligible on real
 	 * hardware; the request file is deleted first so one request fires once. */
 	{
 		/* 1, not 64: the first poll happens on the first button read of the
 		 * boot so a request staged on the card before launch applies ahead of
-		 * the boot-time loads (texwarm, speedoff), not a second into the intro. */
+		 * the boot-time loads (speedoff), not a second into the intro. */
 		static unsigned int s_dumpPollCountdown = 1;
 
 		if (--s_dumpPollCountdown == 0)
@@ -4222,45 +3936,6 @@ unsigned int N3DS_ReadButtons(void)
 					              : (g_dbg_widescreen == 1) ? "[CTR-3DS] widescreen: STRETCH (anamorphic)"
 					                                        : "[CTR-3DS] widescreen: off (4:3 crop)");
 				}
-				else if (strncmp(word, "framesync", 9) == 0)
-				{
-					g_dbg_frameSync ^= 1;
-					N3DS_DebugLog(g_dbg_frameSync ? "[CTR-3DS] framesync: ON (FrameBegin waits for hw vblank)"
-					                              : "[CTR-3DS] framesync: OFF (begin immediately)");
-				}
-				else if (strncmp(word, "gxguard", 7) == 0)
-				{
-					/* Bounded C3D_FrameBegin + stall logging (default ON). Bare
-					 * token toggles; 'gxguard N' sets 0/1. */
-					if (word[7] == ' ')
-					{
-						g_dbg_gxGuard = (atoi(&word[8]) != 0) ? 1 : 0;
-					}
-					else
-					{
-						g_dbg_gxGuard = !g_dbg_gxGuard;
-					}
-					N3DS_DebugLog(g_dbg_gxGuard ? "[CTR-3DS] gxguard: ON (bounded FrameBegin + stall recovery logging)"
-					                            : "[CTR-3DS] gxguard: off (raw C3D_FrameBegin, no bound)");
-				}
-				else if (strncmp(word, "texwarm", 7) == 0)
-				{
-					extern int g_dbg_texWarm;
-
-					/* Bare token toggles; 'texwarm N' sets 0/1. State lives
-					 * renderer-side (platform/native_model_texwarm.c); this
-					 * file only flips the plain-scalar flag it shares. */
-					if (word[7] == ' ')
-					{
-						g_dbg_texWarm = (atoi(&word[8]) != 0) ? 1 : 0;
-					}
-					else
-					{
-						g_dbg_texWarm = !g_dbg_texWarm;
-					}
-					N3DS_DebugLog(g_dbg_texWarm ? "[CTR-3DS] texwarm: ON (load-screen texture pre-warm)"
-					                            : "[CTR-3DS] texwarm: off (first draw decodes cold)");
-				}
 				else if (strncmp(word, "audiothread", 11) == 0)
 				{
 					/* Rosalina-freeze bisect: stop and join the core-1 audio
@@ -4271,28 +3946,6 @@ unsigned int N3DS_ReadButtons(void)
 
 					N3DS_AudioThreadStopAndJoin();
 					N3DS_DebugLog("[CTR-3DS] audiothread: STOPPED (main-thread fallback)");
-				}
-				else if (strncmp(word, "cpulimit", 8) == 0)
-				{
-					/* Rosalina-freeze bisect: reassert APT_SetAppCpuTimeLimit at
-					 * runtime, independent of the audio worker's own core-1
-					 * claim. Bare token = 0 (release the syscore reservation). */
-					const char *arg = word + 8;
-					int pct = 0;
-					char msg[64];
-					Result rc;
-
-					while ((*arg == ' ') || (*arg == '\t'))
-					{
-						arg++;
-					}
-					if ((*arg >= '0') && (*arg <= '9'))
-					{
-						pct = atoi(arg);
-					}
-					rc = APT_SetAppCpuTimeLimit((u32)pct);
-					snprintf(msg, sizeof(msg), "[CTR-3DS] cpulimit %d: rc=0x%08lx", pct, (unsigned long)rc);
-					N3DS_DebugLog(msg);
 				}
 				else if (strncmp(word, "ndspoff", 7) == 0)
 				{
@@ -4305,11 +3958,6 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_NdspForceOff();
 					N3DS_DebugLog("[CTR-3DS] ndspoff: DSP released");
 				}
-				else if (strncmp(word, "rosafix", 7) == 0)
-				{
-					g_dbg_rosaFix = (word[7] == ' ') ? ((atoi(&word[8]) != 0) ? 1 : 0) : !g_dbg_rosaFix;
-					N3DS_DebugLog(g_dbg_rosaFix ? "[CTR-3DS] rosafix: ON (GPU-right re-acquire after a >2s thaw)" : "[CTR-3DS] rosafix: off");
-				}
 				else if (strncmp(word, "nextboot", 8) == 0)
 				{
 					/* Boot barrier: the lines after this one stay on the card
@@ -4318,26 +3966,6 @@ unsigned int N3DS_ReadButtons(void)
 					s_dumpPollCountdown = 0x7fffffffu;
 					N3DS_DebugLog("[CTR-3DS] nextboot: dumpreq polling stopped for this boot");
 				}
-				else if (strncmp(word, "no3d", 4) == 0)
-				{
-					/* Rosalina-freeze bisect: drop the top screen to 2D at the
-					 * gfx level (the port's stereo rendering keeps emitting both
-					 * eyes; only the left is displayed). */
-					gfxSet3D(false);
-					N3DS_DebugLog("[CTR-3DS] no3d: gfxSet3D(false)");
-				}
-				else if (strncmp(word, "logclose", 8) == 0)
-				{
-					/* Rosalina-freeze bisect: release the SD log file this
-					 * process otherwise holds open for its whole lifetime. */
-					N3DS_DebugLog("[CTR-3DS] logclose: closing sdmc:/ctr3ds.log");
-					N3DS_LogCloseFile();
-				}
-				else if (strncmp(word, "dbgoff", 6) == 0)
-				{
-					s_logSvcOff = 1;
-					N3DS_DebugLog("[CTR-3DS] dbgoff: svcOutputDebugString silenced");
-				}
 				else if (strncmp(word, "speedoff", 8) == 0)
 				{
 					/* Rosalina-freeze bisect round 2: drop the New3DS
@@ -4345,58 +3973,11 @@ unsigned int N3DS_ReadButtons(void)
 					osSetSpeedupEnable(false);
 					N3DS_DebugLog("[CTR-3DS] speedoff: New3DS clock-up disabled");
 				}
-				else if (strncmp(word, "rosabisect2", 11) == 0)
-				{
-					/* Both round-2 bisect legs at once: release the DSP, then
-					 * drop the clock-up. Checked before the shorter
-					 * "rosabisect" token above -- same prefix. */
-					extern void N3DS_NdspForceOff(void);
-
-					N3DS_NdspForceOff();
-					osSetSpeedupEnable(false);
-					N3DS_DebugLog("[CTR-3DS] rosabisect2: DSP released, New3DS clock-up disabled");
-				}
-				else if (strncmp(word, "rosabisect", 10) == 0)
-				{
-					/* Both bisect legs at once, in the order that matters:
-					 * release the audio worker's core-1 claim, then reassert
-					 * the app CPU time limit to 0. */
-					extern void N3DS_AudioThreadStopAndJoin(void);
-					char msg[80];
-					Result rc;
-
-					N3DS_AudioThreadStopAndJoin();
-					rc = APT_SetAppCpuTimeLimit(0);
-					snprintf(msg, sizeof(msg), "[CTR-3DS] rosabisect: audiothread STOPPED, cpulimit 0 rc=0x%08lx", (unsigned long)rc);
-					N3DS_DebugLog(msg);
-				}
 				else if (strncmp(word, "sdlog", 5) == 0)
 				{
 					g_dbg_sdLog ^= 1;
 					N3DS_DebugLog(g_dbg_sdLog ? "[CTR-3DS] sdlog: ON (writing ctr3ds.log -- costs a ~2s hitch)"
 					                          : "[CTR-3DS] sdlog: off (no SD writes; bottom screen still live)");
-				}
-				else if (strncmp(word, "syncdecode", 10) == 0)
-				{
-					extern int g_dbg_hwSyncDecode;
-
-					g_dbg_hwSyncDecode ^= 1;
-					N3DS_DebugLog(g_dbg_hwSyncDecode ? "[CTR-3DS] syncdecode: ON (full decode at key-on, pre-chunking behavior)"
-					                                 : "[CTR-3DS] syncdecode: off (head chunk at key-on, audio thread pumps the rest)");
-				}
-				else if (strncmp(word, "fastpresent", 11) == 0)
-				{
-					g_dbg_fastPresent ^= 1;
-					N3DS_DebugLog(g_dbg_fastPresent ? "[CTR-3DS] fastpresent: ON (flush bottom framebuffer only)"
-					                                : "[CTR-3DS] fastpresent: off (whole-system gfxFlushBuffers)");
-				}
-				else if (strncmp(word, "fbcap", 5) == 0)
-				{
-					extern int g_dbg_fbCapture;
-
-					g_dbg_fbCapture ^= 1;
-					N3DS_DebugLog(g_dbg_fbCapture ? "[CTR-3DS] fbcap: ON (display-region draws sample the capture region)"
-					                              : "[CTR-3DS] fbcap: off (mirror+decode path)");
 				}
 				else if (strncmp(word, "subpage", 7) == 0)
 				{
@@ -4426,16 +4007,6 @@ unsigned int N3DS_ReadButtons(void)
 					g_dbg_perfTriScopes ^= 1;
 					N3DS_DebugLog(g_dbg_perfTriScopes ? "[CTR-3DS] per-tri perf scopes: ON (syscall tax ~10k/frame)"
 					                                  : "[CTR-3DS] per-tri perf scopes: off");
-				}
-				else if (strncmp(word, "drawmerge", 9) == 0)
-				{
-					extern int g_dbg_drawMerge;
-
-					/* Latched at BeginScene, so the flip lands on the next
-					 * frame boundary -- never mid-frame. */
-					g_dbg_drawMerge ^= 1;
-					N3DS_DebugLog(g_dbg_drawMerge ? "[CTR-3DS] draw merge: ON (deferred bins + segment replay)"
-					                              : "[CTR-3DS] draw merge: off (immediate runs)");
 				}
 #if defined(CTR_NATIVE_LOD_BIAS) && CTR_NATIVE_LOD_BIAS
 				else if (strncmp(word, "lodgeo", 6) == 0 || strncmp(word, "lodtex", 6) == 0)
@@ -4472,7 +4043,6 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog(g_dbg_renderThread ? "[CTR-3DS] render worker routing: ON"
 					                                 : "[CTR-3DS] render worker routing: OFF (sync on main thread)");
 				}
-#if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
 				else if (strncmp(word, "bilinear", 8) == 0)
 				{
 					/* Same live filter flip as the SELECT+D-RIGHT chord. */
@@ -4511,104 +4081,6 @@ unsigned int N3DS_ReadButtons(void)
 						snprintf(msg, sizeof(msg), "[CTR-3DS] alpha cutoff: %d/255 (1 = retail; higher trims bilinear rim)", g_dbg_trackAlphaRef);
 						N3DS_DebugLog(msg);
 					}
-				}
-#endif
-#ifdef CTR_NATIVE_DIRECT_EMIT
-				else if (strncmp(word, "directemit", 10) == 0)
-				{
-					extern int g_dbg_directEmit;
-
-					/* Both legs produce byte-identical bins, so unlike
-					 * 'drawmerge' this needs no BeginScene latch -- see
-					 * native_direct_emit.c. */
-					g_dbg_directEmit ^= 1;
-					N3DS_DebugLog(g_dbg_directEmit ? "[CTR-3DS] direct emit: ON" : "[CTR-3DS] direct emit: OFF");
-				}
-#endif
-				else if (strncmp(word, "resolvememo", 11) == 0)
-				{
-					extern int g_dbg_resolveMemo;
-
-					g_dbg_resolveMemo ^= 1;
-					N3DS_DebugLog(g_dbg_resolveMemo ? "[CTR-3DS] resolve memo: ON" : "[CTR-3DS] resolve memo: OFF");
-				}
-				else if (strncmp(word, "smokedefer", 10) == 0)
-				{
-					extern int g_dbg_smokeDefer;
-
-					/* Driver-local exhaust smoke redrawn after the model
-					 * pass (over its own kart, retail's painter's order) vs the old
-					 * in-merge draw where the body paints over it. */
-					g_dbg_smokeDefer ^= 1;
-					N3DS_DebugLog(g_dbg_smokeDefer ? "[CTR-3DS] deferred smoke: ON (over own kart)"
-					                               : "[CTR-3DS] deferred smoke: off (in-merge, old look)");
-				}
-				else if (strncmp(word, "stpass1", 7) == 0)
-				{
-					extern int g_dbg_stPass1;
-
-					/* Minimap-box probe, native_gpu.c DrawSplit: skip the
-					 * blending-off opaque-body pass of two-pass semi-trans draws. */
-					g_dbg_stPass1 ^= 1;
-					N3DS_DebugLog(g_dbg_stPass1 ? "[CTR-3DS] semi-trans pass 1: ON" : "[CTR-3DS] semi-trans pass 1: SKIPPED");
-				}
-				else if (strncmp(word, "stpass2", 7) == 0)
-				{
-					extern int g_dbg_stPass2;
-
-					/* Minimap-box probe: skip the blended STP-texel pass. */
-					g_dbg_stPass2 ^= 1;
-					N3DS_DebugLog(g_dbg_stPass2 ? "[CTR-3DS] semi-trans pass 2: ON" : "[CTR-3DS] semi-trans pass 2: SKIPPED");
-				}
-#ifdef CTR_NATIVE_TRACK_RENDERER
-				else if (strncmp(word, "weld", 4) == 0)
-				{
-					extern int g_dbg_trackWeld;
-
-					/* Track-mesh T-junction weld. Read only during a level mesh
-					 * build, so this has to be set before the level loads. */
-					g_dbg_trackWeld ^= 1;
-					N3DS_DebugLog(g_dbg_trackWeld ? "[CTR-3DS] track weld: ON (next level load)" : "[CTR-3DS] track weld: OFF (next level load)");
-				}
-#endif
-				else if (strncmp(word, "skyfar", 6) == 0)
-				{
-					extern int g_dbg_skyFar;
-
-					/* Pin the skybox to the far depth plane so translucent
-					 * track geometry (the waterfalls) wins the depth test against it,
-					 * vs the old OT-bucket fallback the sky punched through with. */
-					g_dbg_skyFar ^= 1;
-					N3DS_DebugLog(g_dbg_skyFar ? "[CTR-3DS] sky far-pin: ON (waterfalls over sky)"
-					                           : "[CTR-3DS] sky far-pin: off (old bucket depth)");
-				}
-				else if (strncmp(word, "skyfirst", 8) == 0)
-				{
-					extern int g_dbg_skyFirst;
-
-					/* Draw the skybox BEFORE the track pass (its own vertex
-					 * accumulator) so the depth-less translucent waterfall paints
-					 * over it. OFF routes the sky back into the opaque merge bins,
-					 * which flush after the track = the punch-through. */
-					g_dbg_skyFirst ^= 1;
-					N3DS_DebugLog(g_dbg_skyFirst ? "[CTR-3DS] sky-first: ON (sky under waterfalls)"
-					                             : "[CTR-3DS] sky-first: off (sky in merge, punches through)");
-				}
-				else if (strncmp(word, "backdropdbg", 11) == 0)
-				{
-					extern int g_dbg_backdropDump;
-
-					g_dbg_backdropDump = 1;
-					N3DS_DebugLog("[CTR-3DS] backdrop: one-shot drain dump armed");
-				}
-				else if (strncmp(word, "backdrop", 8) == 0)
-				{
-					extern int g_dbg_backdrop;
-
-					/* s46 clearColor backdrop fill A/B (native_renderer_3ds.c). */
-					g_dbg_backdrop ^= 1;
-					N3DS_DebugLog(g_dbg_backdrop ? "[CTR-3DS] backdrop: ON (clearColor fill under the sky pass)"
-					                             : "[CTR-3DS] backdrop: off (pre-s46 frame, fills ignored)");
 				}
 				else if (strncmp(word, "padmux", 6) == 0)
 				{
@@ -4664,70 +4136,6 @@ unsigned int N3DS_ReadButtons(void)
 					pct = N3DS_AudioSetOutputGainPercent(pct);
 					snprintf(msg, sizeof(msg), "[CTR-3DS] output gain: %d%% (100 = SPU-faithful)", pct);
 					N3DS_DebugLog(msg);
-				}
-				else if (strncmp(word, "aggsize", 7) == 0)
-				{
-					/* XA sink aggregate handoff target (n3ds_audio_thread.c): the
-					 * A/B lever for the XA-pop hunt. 'aggsize 1' hands every parcel
-					 * to the DSP immediately (no gaps, max resampler seams);
-					 * 'aggsize 8' is the aggregating default (fewest seams, but the
-					 * DSP can run dry between handoffs). Bare resets to default. */
-					extern int N3DS_AudioSetAggTarget(int parcels);
-					const char *arg = word + 7;
-					int n = -1;
-					char msg[80];
-
-					while ((*arg == ' ') || (*arg == '\t'))
-					{
-						arg++;
-					}
-					if ((*arg >= '0') && (*arg <= '9'))
-					{
-						n = atoi(arg);
-					}
-					n = N3DS_AudioSetAggTarget(n);
-					snprintf(msg, sizeof(msg), "[CTR-3DS] xa sink aggsize: %d parcel(s) per handoff", n);
-					N3DS_DebugLog(msg);
-				}
-				else if (strncmp(word, "uiorder", 7) == 0)
-				{
-					extern int g_dbg_uiOrder;
-
-					/* UI off the depth test. ON routes every UI-band prim out
-					 * of the state bins into one ordered list drawn last, in
-					 * submission order, with all UI pinned to a single depth stamp
-					 * -- painter's order, which is what retail does. OFF restores
-					 * the per-ordinal band stamps and leaves UI in the bins, i.e.
-					 * the old behaviour (256-prim budget, glyph/panel ties resolved
-					 * by whichever state bin each landed in). Both halves move
-					 * together; they are only correct as a pair. */
-					g_dbg_uiOrder ^= 1;
-					N3DS_DebugLog(g_dbg_uiOrder ? "[CTR-3DS] ui-order: ON (UI in submission order, off the depth test)"
-					                            : "[CTR-3DS] ui-order: off (UI in merge bins, depth-ordered)");
-				}
-				else if (strncmp(word, "uipin", 5) == 0)
-				{
-					extern int g_dbg_uiPin;
-
-					/* BISECT (temporary): splits the pin half off the routing
-					 * half so a defect can be attributed to one of them. OFF keeps
-					 * the ordered pass but restores per-ordinal UI stamps. Not a
-					 * supported configuration -- diagnostic only. */
-					g_dbg_uiPin ^= 1;
-					N3DS_DebugLog(g_dbg_uiPin ? "[CTR-3DS] ui-pin: ON (all UI at one stamp)"
-					                          : "[CTR-3DS] ui-pin: off (per-ordinal UI stamps, ordered pass still on)");
-				}
-				else if (strncmp(word, "uilast", 6) == 0)
-				{
-					extern int g_dbg_uiLast;
-
-					/* BISECT (temporary): WHERE the ordered UI pass runs. OFF
-					 * moves it back to the old post-merge slot, which separates
-					 * "content never drawn" from "content painted over by UI drawn
-					 * last". Diagnostic only. */
-					g_dbg_uiLast ^= 1;
-					N3DS_DebugLog(g_dbg_uiLast ? "[CTR-3DS] ui-last: ON (UI pass draws last of all)"
-					                           : "[CTR-3DS] ui-last: off (UI pass draws right after the merge barrier)");
 				}
 				else if (strncmp(word, "stats", 5) == 0)
 				{
@@ -4832,15 +4240,6 @@ unsigned int N3DS_ReadButtons(void)
 						N3DS_DebugLog(msg);
 					}
 				}
-				else if (strncmp(word, "uidump", 6) == 0)
-				{
-					extern int g_dbg_uiDump;
-
-					/* Bisect instrument: one-shot dump of the ordered UI list's
-					 * contents on the next frame. Needs the SD log on. */
-					g_dbg_uiDump = 1;
-					N3DS_DebugLog("[CTR-3DS] ui-dump: armed (next frame)");
-				}
 				else if (strncmp(word, "rainscale", 9) == 0)
 				{
 					/* Rain-density dial (RenderWeather): 'rainscale N' scales the
@@ -4879,31 +4278,6 @@ unsigned int N3DS_ReadButtons(void)
 					NativePerf_DumpSpikesNow();
 					N3DS_DebugLog("[CTR-3DS] spike catcher: buffer flushed to sdmc:/ctr_spikes.log");
 				}
-#ifdef CTR_NATIVE_TRACK_RENDERER
-				else if (strncmp(word, "bfcull", 6) == 0)
-				{
-					extern int g_dbg_bfCull;
-
-					/* Perf/parity experiment: track-scoped backface culling.
-					 * 'bfcull N' sets 0=off / 1=cull-back / 2=cull-front directly
-					 * -- deterministic for a PRE-LAUNCH dumpreq on hardware, where
-					 * the SD can't be written mid-race; bare 'bfcull' cycles for a
-					 * quick Azahar A/B. Watch for holes in the track (winding
-					 * inconsistent = unsafe) vs the second waterfall vanishing
-					 * cleanly + fps rising. Rationale in N3DS_TrackDraw_Begin. */
-					if ((word[6] == ' ') && (word[7] >= '0') && (word[7] <= '2'))
-					{
-						g_dbg_bfCull = word[7] - '0';
-					}
-					else
-					{
-						g_dbg_bfCull = (g_dbg_bfCull + 1) % 3;
-					}
-					N3DS_DebugLog(g_dbg_bfCull == 0   ? "[CTR-3DS] backface cull (track): OFF (draw all faces)"
-					              : g_dbg_bfCull == 1 ? "[CTR-3DS] backface cull (track): BACK faces culled"
-					                                  : "[CTR-3DS] backface cull (track): FRONT faces culled");
-				}
-#endif
 				else if (strncmp(word, "fbtest", 6) == 0)
 				{
 					extern int g_dbg_skipFbTriTest;
@@ -4988,7 +4362,6 @@ unsigned int N3DS_ReadButtons(void)
 					snprintf(msg, sizeof(msg), "[CTR-3DS] ground-decal nearer bias: %d view.z units", g_dbg_decalNearBias);
 					N3DS_DebugLog(msg);
 				}
-#ifdef CTR_NATIVE_TRACK_RENDERER
 				else if (strncmp(word, "trkchk", 6) == 0)
 				{
 					/* s32: runs BOTH depth formulas -- the integer one this
@@ -5003,7 +4376,6 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog(g_dbg_trackDepthCheck ? "[CTR-3DS] track depth check: ON (integer + shader arms)"
 					                                    : "[CTR-3DS] track depth check: off");
 				}
-#endif
 				else if (strncmp(word, "nofx", 4) == 0)
 				{
 					extern int g_dbg_noFx;
@@ -5012,15 +4384,6 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog(g_dbg_noFx ? "[CTR-3DS] blended packet effects: DROPPED (judging aid)"
 					                         : "[CTR-3DS] blended packet effects: drawn");
 				}
-				else if (strncmp(word, "fxdepth", 7) == 0)
-				{
-					extern int g_dbg_fxNoDepthWrite;
-
-					g_dbg_fxNoDepthWrite ^= 1;
-					N3DS_DebugLog(g_dbg_fxNoDepthWrite ? "[CTR-3DS] blended packets: depth TEST only (default, matches model/track)"
-					                                   : "[CTR-3DS] blended packets: also WRITE depth (old behaviour)");
-				}
-#ifdef CTR_NATIVE_TRACK_RENDERER
 				else if (strncmp(word, "trknear", 7) == 0)
 				{
 					/* s32: [TRKNEAR] walks OUR OWN resident mesh and reports its
@@ -5034,14 +4397,6 @@ unsigned int N3DS_ReadButtons(void)
 
 					g_dbg_trackNearCensus ^= 1;
 					N3DS_DebugLog(g_dbg_trackNearCensus ? "[CTR-3DS] track near census: ON" : "[CTR-3DS] track near census: off");
-				}
-#endif
-				else if (strncmp(word, "trackafter", 10) == 0)
-				{
-					extern int g_dbg_trackAfterMerge;
-
-					g_dbg_trackAfterMerge ^= 1;
-					N3DS_DebugLog(g_dbg_trackAfterMerge ? "[CTR-3DS] track draw: AFTER merge flush" : "[CTR-3DS] track draw: before merge flush (default)");
 				}
 				/* Stereo tokens. ORDER MATTERS within this family: "stereo" is
 				 * a prefix of all the others, so the longer tokens must be
@@ -5143,7 +4498,6 @@ unsigned int N3DS_ReadButtons(void)
 					snprintf(msg, sizeof(msg), "[CTR-3DS] depth test: %s", names[g_dbg_depthTest]);
 					N3DS_DebugLog(msg);
 				}
-#ifdef CTR_NATIVE_TRACK_RENDERER
 				else if (strncmp(word, "trackrender", 11) == 0)
 				{
 					extern int g_dbg_trackRender;
@@ -5166,48 +4520,6 @@ unsigned int N3DS_ReadButtons(void)
 					snprintf(msg, sizeof(msg), "[CTR-3DS] track render: %s", names[g_dbg_trackRender]);
 					N3DS_DebugLog(msg);
 				}
-#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
-				else if (strncmp(word, "decalaxis", 9) == 0)
-				{
-					extern int g_dbg_decalAxisFix;
-
-					/* Ground-decal 4x depth-axis unscale (shadows, skid
-					 * marks, tires). Bare token toggles; this is the A/B the
-					 * fix gets judged on, so 0 must reproduce the pre-fix behaviour
-					 * exactly. */
-					g_dbg_decalAxisFix ^= 1;
-					N3DS_DebugLog(g_dbg_decalAxisFix ? "[CTR-3DS] decal depth axis: FIXED (4x unscaled)"
-					                                : "[CTR-3DS] decal depth axis: off (pre-s41 behaviour)");
-				}
-#endif
-				else if (strncmp(word, "dorder", 6) == 0)
-				{
-					char msg[80];
-
-					/* The drawOrder tie-break sweep. 'dorder N'
-					 * sets the weight in view.z units per drawOrder step (N is
-					 * an integer: 0 removes the term, 1 is the shipped value
-					 * this replaced); bare 'dorder' toggles 0 <-> 1 so the A/B
-					 * leg is one token. Integer-only on purpose: atoi is what
-					 * every sibling token here uses, and sub-unit weights are
-					 * not what this measurement is asking about.
-					 */
-					if (word[6] == ' ')
-					{
-						int n = atoi(&word[7]);
-
-						s_trackDrawOrderWeight = (float)((n < 0) ? 0 : (n > 64) ? 64 : n);
-					}
-					else
-					{
-						s_trackDrawOrderWeight = (s_trackDrawOrderWeight != 0.0f) ? 0.0f : N3DS_TRACK_DRAWORDER_WEIGHT_DEFAULT;
-					}
-					snprintf(msg, sizeof(msg), "[CTR-3DS] track drawOrder weight: %d view.z units/step%s", (int)s_trackDrawOrderWeight,
-					         (s_trackDrawOrderWeight == 0.0f) ? " (term REMOVED -- phase 0 diagnostic)" : "");
-					N3DS_DebugLog(msg);
-				}
-#endif
-#ifdef CTR_NATIVE_MODEL_RENDERER
 				else if (strncmp(word, "modelrender", 11) == 0)
 				{
 					extern int g_dbg_modelRender;
@@ -5233,23 +4545,6 @@ unsigned int N3DS_ReadButtons(void)
 					}
 					snprintf(msg, sizeof(msg), "[CTR-3DS] model render: %s", names[g_dbg_modelRender]);
 					N3DS_DebugLog(msg);
-				}
-				else if (strncmp(word, "hudui", 5) == 0)
-				{
-					extern int g_dbg_hudModelsAsUi;
-
-					/* HUD models (place numeral, Wumpa counter, tokens...) take
-					 * the retail packet path so the UI-band rules apply to them.
-					 * OFF is the pop-out / "ST 1" / track-intersection state. */
-					if (word[5] == ' ')
-					{
-						g_dbg_hudModelsAsUi = (atoi(&word[6]) != 0);
-					}
-					else
-					{
-						g_dbg_hudModelsAsUi ^= 1;
-					}
-					N3DS_DebugLog(g_dbg_hudModelsAsUi ? "[CTR-3DS] HUD models: drawn as UI (retail packet path)" : "[CTR-3DS] HUD models: native capture (pops out, ST 1)");
 				}
 				else if (strncmp(word, "flagstyle", 9) == 0)
 				{
@@ -5306,54 +4601,6 @@ unsigned int N3DS_ReadButtons(void)
 					}
 					N3DS_DebugLog(g_reservesMeter ? "[CTR-3DS] reserves meter ON" : "[CTR-3DS] reserves meter OFF");
 				}
-				else if (strncmp(word, "pdfill", 6) == 0)
-				{
-					extern int g_dbg_pktDepthPartialFill;
-					char pdMsg[96];
-
-					/* Packet-depth partial-hit fill (invisible-tire fix,
-					 * native_gpu.c PacketDepth_ResolveXY). Modes: 0 = off
-					 * (the blink), 1 = any-hit (the gradient flicker),
-					 * 2 = strict honest-partial (ship). Bare token toggles
-					 * 2 <-> 0; 'pdfill N' sets a mode. */
-					if (word[6] == ' ')
-					{
-						g_dbg_pktDepthPartialFill = atoi(&word[7]);
-					}
-					else
-					{
-						g_dbg_pktDepthPartialFill = (g_dbg_pktDepthPartialFill != 0) ? 0 : 2;
-					}
-					snprintf(pdMsg, sizeof(pdMsg), "[CTR-3DS] pdfill: mode %d (0=off 1=any-hit 2=strict)", g_dbg_pktDepthPartialFill);
-					N3DS_DebugLog(pdMsg);
-				}
-				else if (strncmp(word, "menubdpar", 9) == 0)
-				{
-					extern int g_dbg_menuBdParZ;
-					char mpMsg[112];
-
-					/* STEREO plane for the character-select backdrop, in view.z
-					 * units (screen plane = 1200). 0 = follow the occlusion
-					 * stamp, which sits at effectively infinite parallax.
-					 * Occlusion is untouched either way. */
-					if (word[9] == ' ')
-					{
-						int z = atoi(&word[10]);
-
-						if (z < 0)
-						{
-							z = 0;
-						}
-						if (z > 60000)
-						{
-							z = 60000;
-						}
-						g_dbg_menuBdParZ = z;
-					}
-					snprintf(mpMsg, sizeof(mpMsg), "[CTR-3DS] menubdpar: stereo plane view.z %d%s", g_dbg_menuBdParZ,
-					         (g_dbg_menuBdParZ == 0) ? " (follow occlusion = infinity)" : "");
-					N3DS_DebugLog(mpMsg);
-				}
 				else if (strncmp(word, "hudshine", 8) == 0)
 				{
 					extern int g_dbg_hudShine;
@@ -5373,24 +4620,6 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog(g_dbg_hudShine ? "[CTR-3DS] hudshine: ON (wumpa shine in the UI band)"
 					                             : "[CTR-3DS] hudshine: off (shine on the world-bucket fallback)");
 				}
-				else if (strncmp(word, "menubd", 6) == 0)
-				{
-					extern int g_dbg_menuBackdrop;
-
-					/* Character-select diorama backdrop stamp (DEFAULT ON,
-					 * native_gpu.c PacketDepth_ResolveXY). OFF restores the
-					 * raw emit ordinal, which the menu flag buries. */
-					if (word[6] == ' ')
-					{
-						g_dbg_menuBackdrop = (atoi(&word[7]) != 0) ? 1 : 0;
-					}
-					else
-					{
-						g_dbg_menuBackdrop = !g_dbg_menuBackdrop;
-					}
-					N3DS_DebugLog(g_dbg_menuBackdrop ? "[CTR-3DS] menubd: ON (diorama backdrop behind preview model)"
-					                                 : "[CTR-3DS] menubd: off (strips buried behind the flag)");
-				}
 				else if (strncmp(word, "tirefix", 7) == 0)
 				{
 					extern int g_tireReflectFix;
@@ -5408,83 +4637,6 @@ unsigned int N3DS_ReadButtons(void)
 					}
 					N3DS_DebugLog(g_tireReflectFix ? "[CTR-3DS] tire reflection fix ON (wheels at corners)" : "[CTR-3DS] tire reflection fix OFF (retail centerline bug)");
 				}
-				else if (strncmp(word, "axisfix", 7) == 0)
-				{
-					extern int g_dbg_modelAxisFix;
-
-					/* Near-regime instances' mvp depth is 4x the
-					 * track's view.z axis (measured, [AXISCHK]); ON divides it back
-					 * out per instance. 'axisfix N' sets, bare token flips. */
-					if (word[7] == ' ')
-					{
-						g_dbg_modelAxisFix = (atoi(&word[8]) != 0);
-					}
-					else
-					{
-						g_dbg_modelAxisFix ^= 1;
-					}
-					N3DS_DebugLog(g_dbg_modelAxisFix ? "[CTR-3DS] instance depth axis fix: ON (regime unscale)" : "[CTR-3DS] instance depth axis fix: off (raw mvp axis = the sink)");
-				}
-				else if (strncmp(word, "modelfade", 9) == 0)
-				{
-					extern int g_dbg_modelFade;
-
-					/* Rung 3: replay of the normal writer's gte_dpct (instance
-					 * fade/tint) on captured colours. 'modelfade N' sets, bare
-					 * token flips. OFF = fading instances draw full-bright. */
-					if (word[9] == ' ')
-					{
-						g_dbg_modelFade = (atoi(&word[10]) != 0);
-					}
-					else
-					{
-						g_dbg_modelFade ^= 1;
-					}
-					N3DS_DebugLog(g_dbg_modelFade ? "[CTR-3DS] model fade replay: ON" : "[CTR-3DS] model fade replay: off (captured colours stay pre-dpct)");
-				}
-				else if (strncmp(word, "spec", 4) == 0)
-				{
-					extern int g_dbg_modelSpecular;
-
-					/* Writer lighting for the specular model writers
-					 * (KEY_TOKEN/LIT_TEXTURE): lit colours + additive lit
-					 * front faces. 'spec N' sets, bare token flips. OFF = the
-					 * raw flat-colour capture, the A/B baseline. */
-					if (word[4] == ' ')
-					{
-						g_dbg_modelSpecular = (atoi(&word[5]) != 0);
-					}
-					else
-					{
-						g_dbg_modelSpecular ^= 1;
-					}
-					N3DS_DebugLog(g_dbg_modelSpecular ? "[CTR-3DS] model specular: ON" : "[CTR-3DS] model specular: off (raw flat colours)");
-				}
-#endif
-#ifdef CTR_NATIVE_TRACK_RENDERER
-				else if (strncmp(word, "leafkeep", 8) == 0)
-				{
-					extern int g_dbg_trackLeafKeep;
-					char msg[64];
-
-					/* Drift-holes fix: frames a leaf survives past its last
-					 * visible-list appearance. 'leafkeep N' sets (0 = off,
-					 * capped 255), bare token flips 0 <-> 15. */
-					if (word[8] == ' ')
-					{
-						int n = atoi(&word[9]);
-
-						g_dbg_trackLeafKeep = (n < 0) ? 0 : (n > 255) ? 255 : n;
-					}
-					else
-					{
-						g_dbg_trackLeafKeep = (g_dbg_trackLeafKeep != 0) ? 0 : 15;
-					}
-					snprintf(msg, sizeof(msg), "[CTR-3DS] leaf keep-alive: %d frames%s", g_dbg_trackLeafKeep, g_dbg_trackLeafKeep ? "" : " (off)");
-					N3DS_DebugLog(msg);
-				}
-#endif
-#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
 				else if (strncmp(word, "packetdepth", 11) == 0)
 				{
 					extern int g_dbg_packetDepth;
@@ -5516,88 +4668,6 @@ unsigned int N3DS_ReadButtons(void)
 				 * first thing on screen is today's behaviour, and each removes
 				 * exactly one suspect -- see their definitions in native_gpu.c
 				 * and native_gte_capture.c. Read [PKTDEPTH2] alongside. */
-				else if (strncmp(word, "strictmtx", 9) == 0)
-				{
-					extern int g_dbg_pktDepthStrictMtx;
-
-					g_dbg_pktDepthStrictMtx ^= 1;
-					N3DS_DebugLog(g_dbg_pktDepthStrictMtx ? "[CTR-3DS] strict matrix: ON (mixed-provenance prim = miss)"
-					                                     : "[CTR-3DS] strict matrix: off");
-				}
-				else if (strncmp(word, "missordinal", 11) == 0)
-				{
-					extern int g_dbg_pktDepthMissOrdinal;
-
-					g_dbg_pktDepthMissOrdinal ^= 1;
-					/* The waterfall/HUD artefact this reintroduces is expected
-					 * and is not the thing being judged -- said here so the log
-					 * carries the caveat next to the toggle that caused it. */
-					N3DS_DebugLog(g_dbg_pktDepthMissOrdinal ? "[CTR-3DS] miss->ordinal: ON (expect animated water over everything)"
-					                                        : "[CTR-3DS] miss->ordinal: off (bucket-derived depth)");
-				}
-				else if (strncmp(word, "noevict", 7) == 0)
-				{
-					extern int g_dbg_gteNoEvict;
-
-					g_dbg_gteNoEvict ^= 1;
-					N3DS_DebugLog(g_dbg_gteNoEvict ? "[CTR-3DS] capture evict: REFUSED across matrix states"
-					                               : "[CTR-3DS] capture evict: normal (last writer wins)");
-				}
-				else if (strncmp(word, "pktaxisfix", 10) == 0)
-				{
-					extern int g_dbg_pktAxisFix;
-
-					/* Was advertised but never wired -- the
-					 * packet-side unscale had NO runtime switch until now.
-					 * OFF is the ice-pond kart vanish (Blizzard Bluff), which
-					 * doubles as this toggle's positive control. 'pktaxisfix N'
-					 * sets, bare token flips, same idiom as 'axisfix'. */
-					if (word[10] == ' ')
-					{
-						g_dbg_pktAxisFix = (atoi(&word[11]) != 0);
-					}
-					else
-					{
-						g_dbg_pktAxisFix ^= 1;
-					}
-					N3DS_DebugLog(g_dbg_pktAxisFix ? "[CTR-3DS] packet depth axis fix: ON (regime unscale at the store)"
-					                               : "[CTR-3DS] packet depth axis fix: off (raw regime axis = ice-pond vanish)");
-				}
-				else if (strncmp(word, "bboxdepth", 9) == 0)
-				{
-					extern int g_dbg_bboxDepthStores;
-
-					/* Warp-pad prize hunt: 0 removes the queue-phase bbox
-					 * corner stores -- the one unbracketed regime-axis producer
-					 * left in the capture table (native_gte_capture.c has the
-					 * story). If the prize burial vanishes at 0, that leak is
-					 * the bug. 'bboxdepth N' sets, bare token flips. */
-					if (word[9] == ' ')
-					{
-						g_dbg_bboxDepthStores = (atoi(&word[10]) != 0);
-					}
-					else
-					{
-						g_dbg_bboxDepthStores ^= 1;
-					}
-					N3DS_DebugLog(g_dbg_bboxDepthStores ? "[CTR-3DS] bbox corner stores: ON (today's behaviour, unbracketed)"
-					                                    : "[CTR-3DS] bbox corner stores: SUPPRESSED (s45 A/B leg)");
-				}
-				else if (strncmp(word, "dcheck", 6) == 0)
-				{
-					extern int g_dbg_modelDepthCheck;
-
-					/* The depth-axis self-verification both classifiers
-					 * already carry -- [AXISCHK]/[MDLDEPTH] (native_model_emit)
-					 * and the [PKTAXIS] per-func ratio/reclass stats
-					 * (native_gte_capture), flushed every 256 frames while ON.
-					 * Was PC-argv-only (--model-depth-check) until now; the 3DS
-					 * build had no way to light it. Taxed per store, so a
-					 * toggle, not a default. */
-					g_dbg_modelDepthCheck ^= 1;
-					N3DS_DebugLog(g_dbg_modelDepthCheck ? "[CTR-3DS] depth axis check: ON ([AXISCHK]/[PKTAXIS] every 256f)"
-					                                    : "[CTR-3DS] depth axis check: off");
-				}
 				else if ((strncmp(word, "watch", 5) == 0) || (strncmp(word, "hide", 4) == 0))
 				{
 					extern char g_dbg_watchName[16];
@@ -5654,7 +4724,6 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog(g_dbg_paintUnder ? "[CTR-3DS] paint-under members: ON (hidden inside their cover)"
 					                               : "[CTR-3DS] paint-under members: off (flat-orange crate A/B leg)");
 				}
-#endif
 				else
 				{
 					N3DS_DebugCaptureAll();
@@ -5678,9 +4747,9 @@ unsigned int N3DS_ReadButtons(void)
 
 	/* The chord map is deliberately this small -- owner's ruling, the chords
 	 * below are the ones he actually reaches for. Everything else is a dumpreq
-	 * token only: `framesync`, `verbose` (bottom-screen stats), `bfcull [N]`,
-	 * `depthtest [N]`, `padmux [N]`, `gtecapture [N]`, `directemit`,
-	 * `aggsize N`, `packetdepth`, `trackrender`, `modelrender`, `wide`.
+	 * token only: `verbose` (bottom-screen stats),
+	 * `depthtest [N]`, `padmux [N]`, `gtecapture [N]`,
+	 * `packetdepth`, `trackrender`, `modelrender`, `wide`.
 	 * B / X / Y / ZL / ZR / D-UP / D-DOWN / A / L are all free. A control
 	 * earns a chord only when it must flip mid-race (the game holds the SD
 	 * card then, so dumpreq is unplaceable) AND the owner will use it;
@@ -5691,14 +4760,12 @@ unsigned int N3DS_ReadButtons(void)
 	 * mid-race flip -- rewrites each unit's filter field, no re-upload, no
 	 * rebuild -- so it lands the same frame. dumpreq `bilinear` is the same
 	 * path for Azahar. (Was the textureless debug view, now dumpreq-only.) */
-#if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
 	if ((held & KEY_SELECT) && (hidKeysDown() & KEY_DRIGHT))
 	{
 		g_dbg_trackBilinear ^= 1;
 		N3DS_TrackAtlas_ApplyFilter();
 		N3DS_DebugLog(g_dbg_trackBilinear ? "[CTR-3DS] track filter: BILINEAR" : "[CTR-3DS] track filter: nearest");
 	}
-#endif
 
 	/* SELECT held + D-pad LEFT: stereo pop-out cap <-> uncapped. A button
 	 * because the question is whether uncapped pop-out survives normal racing,
@@ -5726,38 +4793,6 @@ unsigned int N3DS_ReadButtons(void)
 		}
 	}
 
-	/* SELECT held + D-pad UP: cycle the character-select backdrop's STEREO
-	 * plane -- infinity (follow the occlusion stamp) -> the flag's plane just
-	 * behind the screen -> just past the far end of the kart band. Same reason
-	 * as the pop-out chord above: the only way to judge this is eyes on the 3D
-	 * screen with the slider in hand while character select is up, and dumpreq
-	 * cannot be placed while the game holds the SD card. Occlusion is untouched
-	 * by every step, so the strips stay in front of the flag and behind the
-	 * preview model whichever plane is selected. */
-	if ((held & KEY_SELECT) && (hidKeysDown() & KEY_DUP))
-	{
-		extern int g_dbg_menuBdParZ;
-		char msg[96];
-
-		if (g_dbg_menuBdParZ == 0)
-		{
-			g_dbg_menuBdParZ = 1232;
-		}
-		else if (g_dbg_menuBdParZ == 1232)
-		{
-			g_dbg_menuBdParZ = 2500;
-		}
-		else
-		{
-			g_dbg_menuBdParZ = 0;
-		}
-		snprintf(msg, sizeof(msg), "[CTR-3DS] menu backdrop stereo plane: %s", (g_dbg_menuBdParZ == 0)     ? "infinity"
-		                                                                      : (g_dbg_menuBdParZ == 1232) ? "1232 (just behind screen)"
-		                                                                                                   : "2500 (past kart band)");
-		N3DS_DebugLog(msg);
-	}
-
-#if defined(CTR_NATIVE_TRACK_RENDERER) && defined(CTR_NATIVE_MODEL_RENDERER) && defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
 	/* SELECT held + START: the owner's "our config" combo --
 	 * track renderer + native models + packet depth all flip together, because
 	 * reaching the target config from a clean boot cost three chords every
@@ -5791,7 +4826,6 @@ unsigned int N3DS_ReadButtons(void)
 		N3DS_DebugLog(target ? "[CTR-3DS] OUR CONFIG: track+models+dmodel+widescreen all ON"
 		                     : "[CTR-3DS] our config: all off (full retail, 4:3)");
 	}
-#endif
 
 #endif
 
@@ -5902,18 +4936,6 @@ static void N3DS_BeatMainTick(void)
 			s_frameTraceBudget = 64;
 			s_beatPostThawFrames = 600;
 			N3DS_LogFlushNow();
-			if (g_dbg_rosaFix && (gapMs > 2000))
-			{
-				Result rc;
-
-				GSPGPU_ReleaseRight();
-				rc = GSPGPU_AcquireRight(0);
-				GSPGPU_SetLcdForceBlack(0);
-				gfxSwapBuffers();
-				snprintf(msg, sizeof(msg), "[BEAT] ROSAFIX acquire rc=%08lx", (unsigned long)rc);
-				N3DS_DebugLog(msg);
-				N3DS_LogFlushNow();
-			}
 		}
 	}
 	s_beatLastTick = now;

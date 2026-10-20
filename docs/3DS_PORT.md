@@ -126,8 +126,8 @@ Rules the hardware enforces and emulators do not:
 
 - `CTR_INTERNAL` (CMake option, default ON; the release is built with it OFF)
   compiles the debug surface: `sdmc:/dumpreq.txt`, a file of one word per line
-  polled on the first frame and every 64 frames after (`stereo`, `drawmerge`,
-  `sdlog`, ...), SELECT chords, `[PERF]` scope windows, screenshots and probes.
+  polled on the first frame and every 64 frames after (`stereo`, `sdlog`,
+  `bilinear`, ...), SELECT chords, `[PERF]` scope windows, screenshots and probes.
   OFF strips all of it from the binary and changes no default.
 - In any build, an empty `enable-log.txt` beside the `.3dsx` turns on the SD log
   at `sdmc:/ctr3ds.log`. It is flushed on a timer, because a flush per line

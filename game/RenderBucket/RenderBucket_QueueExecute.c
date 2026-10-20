@@ -63,10 +63,6 @@ struct PushBuffer;
 extern void GTECapture_BeginInstanceDepth(const struct Instance *inst, const struct PushBuffer *pb, s32 mvpZIfNormal, int funcKind);
 extern void GTECapture_EndInstanceDepth(void);
 extern int GTECapture_WatchIsHiddenInstance(void);
-/* s45 bbox-store A/B -- see RenderBucket_ProjectFrameBounds and the flag's
- * definition in native_gte_capture.c. */
-extern void GTECapture_SetStoreSuppressed(int suppressed);
-extern int g_dbg_bboxDepthStores;
 #endif
 
 struct RenderBucketEntry
@@ -1165,11 +1161,6 @@ static void RenderBucket_ProjectFrameBounds(struct ModelFrame *frame, struct Mod
 {
 	u32 minXY = RenderBucket_MipsSll(RenderBucket_PackedFrameXY(frame, nextFrame), 2) & 0xfff8ffff;
 	u32 minZ = RenderBucket_MipsSll(RenderBucket_FrameZ(frame, nextFrame), 2);
-#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
-	/* Latched so the close below undoes exactly what this call did, even if
-	 * the dumpreq poll flips the flag mid-frame. */
-	int bboxSuppressed = 0;
-#endif
 	u32 maxXMinY = RenderBucket_MipsAdd(minXY, 0x3fc) & 0xfff8ffff;
 	u32 maxXMaxY = RenderBucket_MipsAdd(maxXMinY, 0x03fc0000);
 	u32 minXMaxY = RenderBucket_MipsAdd(minXY, 0x03fc0000);
@@ -1178,24 +1169,6 @@ static void RenderBucket_ProjectFrameBounds(struct ModelFrame *frame, struct Mod
 	// NOTE(aalhendi): Retail projects the bbox through packed GTE VXY/VZ
 	// registers at 0x80071054-0x80071164 and folds min/max through ASM-verified
 	// helper 0x80071524. Native keeps the register tuple as explicit bounds fields.
-#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
-	/* s45: these 8 corner projections run in the QUEUE phase, OUTSIDE the s33
-	 * instance bracket, so their SZ3s go into the capture table on the raw
-	 * regime axis (4x for near instances) at the bbox corners' screen coords.
-	 * The s33 comment waved that off as "eight vertices against hundreds, at
-	 * screen coordinates the body immediately restores" -- but a bbox is a
-	 * BOUND, so its corners generally land OUTSIDE the model's silhouette and
-	 * nothing restores them. dumpreq 'bboxdepth 0' suppresses the stores (and
-	 * their evictions, per SetStoreSuppressed's contract) so the leak is
-	 * A/B-able against the warp-pad prize burial. Default 1 = store, today's
-	 * behaviour. No nesting concern: the only other suppression bracket wraps
-	 * DrawSky, which never runs inside the queue phase. */
-	if (g_dbg_bboxDepthStores == 0)
-	{
-		GTECapture_SetStoreSuppressed(1);
-		bboxSuppressed = 1;
-	}
-#endif
 	gte_SetRotMatrix(projectionMvp);
 	gte_SetTransMatrix(projectionMvp);
 	gte_SetGeomOffset(pb->rect.w >> 1, pb->rect.h >> 1);
@@ -1227,12 +1200,6 @@ static void RenderBucket_ProjectFrameBounds(struct ModelFrame *frame, struct Mod
 	*geomScreenHalf = (int)CFC2(26) >> 1;
 	RenderBucket_BoundsUpdate_80071524(bounds, MFC2(13), MFC2(18));
 
-#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
-	if (bboxSuppressed)
-	{
-		GTECapture_SetStoreSuppressed(0);
-	}
-#endif
 }
 
 static int RenderBucket_AcceptProjectedBounds(const struct RenderBucketBounds *bounds, struct PushBuffer *pb, int geomScreenHalf)

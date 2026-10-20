@@ -111,9 +111,8 @@ int NativeModelEmit_BeginInstance(const struct InstDrawPerPlayer *idpp, const st
 // the implementation comment.
 int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, int blendOverride);
 
-// Runtime toggle for the specular writer treatment above (dumpreq 'spec',
-// default ON). Folded into the caller's per-instance classification so a flip
-// lands on an instance boundary.
+// Whether the specular writer treatment above applies (always, on the native
+// model path). Folded into the caller's per-instance classification.
 int NativeModelEmit_SpecularEnabled(void);
 
 // Closes the instance opened by BeginInstance. Safe to call after a

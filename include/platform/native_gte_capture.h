@@ -32,10 +32,6 @@ int GTECapture_Lookup(s16 sx, s16 sy, u8 *fracX8, u8 *fracY8);
  * every depth test. Game-thread only, same ownership as Store. See
  * game/Particle.c. */
 void GTECapture_StoreParticleCorner(s16 sx, s16 sy, u16 sz3);
-/* Deferred driver-local smoke pass (native_renderer_3ds): master A/B, default
- * ON, dumpreq 'smokedefer'. Defined in native_gpu.c. (No near-bias -- the
- * captured view.z depth alone is sufficient; owner-tested, removed s42f.) */
-extern int g_dbg_smokeDefer;
 /* Deferred-smoke pass plumbing (native_gpu.c). DrawDeferredSmoke redraws the
  * captured driver-local smoke after the model pass (called from
  * native_renderer_3ds.c); ResetDeferredSmoke clears the capture buffer at the
@@ -54,9 +50,7 @@ void NativeGpu_ClearSmokePackets(void);
  * losing the depth test to the sky's OT-bucket fallback. Mark: game thread,
  * once per frame, around DrawSky_Full's emit. Publish: DrawOTag, read=write
  * before the walk is posted. Clear: MainFrame_ResetDB, flip write at frame
- * start. Same double-buffer contract as the smoke tag above. Runtime A/B:
- * dumpreq 'skyfar' (default ON). */
-extern int g_dbg_skyFar;
+ * start. Same double-buffer contract as the smoke tag above. */
 void NativeGpu_MarkSkyRange(uintptr_t start, uintptr_t end);
 /* s46: CAM_SkyboxGlow marks through this instead -- unions into the sky span
  * (same consumers) AND records the glow-only slice, which the 3DS emit path
@@ -104,7 +98,7 @@ void NativeGpu_MarkHudShineRange(uintptr_t start, uintptr_t end);
  * otherwise leave on the raw emit ordinal where the menu flag buries them.
  * Stamped PKTDEPTH_MENU_BACKDROP instead -- between the flag's band and the
  * preview model. One producer per frame, overwrite semantics; same lifecycle
- * as the sky pair; inert on PC. Runtime A/B: dumpreq 'menubd' (default ON). */
+ * as the sky pair; inert on PC. */
 void NativeGpu_MarkMenuBackdropRange(uintptr_t start, uintptr_t end);
 void NativeGpu_PublishSkyRange(void);
 void NativeGpu_ClearSkyRange(void);
@@ -155,12 +149,6 @@ int GTECapture_ReadMatrixWords(u8 id, u32 out[8]);
 // the largest sz3 difference any harmful overwrite introduced.
 u32 GTECapture_ReadEvictCensus(u32 *outSameMtx, u32 *outMaxDz);
 
-// Eviction-mechanism A/B. 1 = a store may not overwrite a live entry
-// belonging to a DIFFERENT matrix state (first writer keeps the slot). Not
-// a proposed fix -- first-writer-wins is as arbitrary as last-writer-wins --
-// but if the sink responds to it at all, eviction is in the causal chain.
-extern int g_dbg_gteNoEvict;
-
 // Instance depth-axis bracket: retail projects RenderBucket instances on
 // a regime-scaled depth axis (x4 nearer than 0x1000 view units, /4 for far
 // DRAW_HUGE), so their SZ3 stores were 4x wrong on the shared axis and a
@@ -189,9 +177,7 @@ void GTECapture_BeginFixedDepthShift(int shift);
  * bracket teardown clears it. No-op on PC (the bias is 3DS-only). */
 void GTECapture_SetFixedShiftUnder(int on);
 void GTECapture_EndInstanceDepth(void);
-// Runtime A/B for the unscale (dumpreq 'pktaxisfix'); default ON, OFF is the
-// ice-pond vanish. The [PKTAXIS] instrument rides --model-depth-check.
-extern int g_dbg_pktAxisFix;
+// The [PKTAXIS] instrument rides --model-depth-check.
 
 void GTECapture_Clear(void);
 // Double-buffer publish: called by the DrawOTag facade on the game

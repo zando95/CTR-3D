@@ -99,17 +99,11 @@ The split is intentional:
 
 | Layer | Responsibility |
 |-------|----------------|
-| Platform, `Platform_InitMempackArena` | Creates and clears the host backing storage, chooses the native test mode, reports the exposed arena |
+| Platform, `Platform_InitMempackArena` | Creates and clears the host backing storage, reports the exposed arena |
 | Game, `MEMPACK_Init` | Keeps the retail allocator lifecycle and initializes `sdata->PtrMempack` from the platform-provided arena |
 
-`CTR_NATIVE_MEMPACK_RETAIL_PRESSURE` controls the current mode:
-
-| Mode | Backing Buffer | Exposed Mempack Window | Purpose |
-|------|----------------|------------------------|---------|
-| `1` | `0x200000` bytes | `0xba9f0`-`0x1ff800` | Test native under retail-like memory pressure |
-| `0` | `0x800000` bytes | `0x0`-`0x800000` | Expanded native mode with extra low-address host memory |
-
-The pressure mode is useful for finding native paths that silently rely on more dynamic memory than retail had.
+The arena is retail-sized: a `0x200000`-byte backing buffer exposing the mempack window `0xba9f0`-`0x1ff800`.
+That is useful for finding native paths that silently rely on more dynamic memory than retail had.
 The PS1 path does not call the platform arena hook; it computes the allocator window from retail overlay symbols.
 
 ## Native VRAM

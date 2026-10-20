@@ -344,14 +344,11 @@ void GTECapture_SetStoreDepthRemap(int active)
  * branch costs nothing measurable since the entry line is already being
  * fetched for the next write.
  */
-int g_dbg_gteNoEvict;
-
 global_variable struct
 {
 	u32 diffMtx;  /* same pixel, different object -- the harmful population */
 	u32 sameMtx;  /* same pixel, same object: a real self-overwrite, benign */
 	u32 maxDz;    /* biggest sz3 delta a harmful overwrite introduced */
-	u32 refused;  /* overwrites declined while g_dbg_gteNoEvict is on */
 } s_gteEvict;
 
 u32 GTECapture_ReadEvictCensus(u32 *outSameMtx, u32 *outMaxDz)
@@ -363,7 +360,6 @@ u32 GTECapture_ReadEvictCensus(u32 *outSameMtx, u32 *outMaxDz)
 	s_gteEvict.diffMtx = 0;
 	s_gteEvict.sameMtx = 0;
 	s_gteEvict.maxDz = 0;
-	s_gteEvict.refused = 0;
 	return diff;
 }
 
@@ -384,17 +380,8 @@ u32 GTECapture_ReadEvictCensus(u32 *outSameMtx, u32 *outMaxDz)
  *
  * Known residual: queue-phase bbox corner projections
  * (RenderBucket_ProjectFrameBounds) run outside this bracket and still store
- * scaled depths -- see g_dbg_bboxDepthStores / dumpreq 'bboxdepth'.
+ * scaled depths.
  */
-
-/* dumpreq 'pktaxisfix'. Default ON: OFF is the ice-pond vanish. */
-int g_dbg_pktAxisFix = 1;
-/* dumpreq 'bboxdepth': 1 = queue-phase bbox corner projections store
- * into the capture table (today's behaviour, the known unbracketed regime-axis
- * leak above); 0 = suppress them, stores and evictions both, via the same
- * SetStoreSuppressed contract DrawSky uses. The A/B for the warp-pad prize /
- * mask-hint burial. */
-int g_dbg_bboxDepthStores = 1;
 
 /* WATCH instrument (dumpreq 'watch <name>', bare 'watch' = off): put a tap
  * on ONE NAMED OBJECT instead of inferring from anonymous primitives -- the
@@ -433,9 +420,6 @@ global_variable u16 s_watchCorrMax;
  * naming the corrupter. */
 global_variable s32 s_watchInstT[3];
 global_variable s32 s_watchCamPos[3];
-/* The ground-decal (shadows/skids/tires) fixed-shift unscale. Its own switch
- * rather than a share of g_dbg_pktAxisFix, so an A/B moves one thing. */
-int g_dbg_decalAxisFix = 1;
 /* Ground-decal nearer bias, in view.z units, applied to every store inside a
  * FIXED-shift bracket (shadows/skids/tires and the ordinary particle list) --
  * the 3DS analogue of retail's painter's order for content that sits ON the
@@ -641,11 +625,7 @@ void GTECapture_BeginFixedDepthShift(int shift)
 {
 	s_instAxisActive = 1;
 	s_instAxisFixed = 1;
-	/* Runtime A/B (dumpreq `decalaxis`): 0 leaves the stores exactly as they
-	 * were before this fix, which is the leg this fix has to be judged against.
-	 * Separate from g_dbg_pktAxisFix on purpose -- that one also governs the
-	 * instance bracket, so sharing it would move two things at once. */
-	s_instAxisShift = (g_dbg_decalAxisFix != 0) ? shift : 0;
+	s_instAxisShift = shift;
 	s_instAxisTrueZ = 0;
 	s_instAxisMtxAtClassify = GTE_INSTAXIS_MTX_NONE;
 }
@@ -852,20 +832,17 @@ void GTECapture_Store(s16 sx, s16 sy, s64 sxFull, s64 syFull, u16 sz3, s32 hOver
 
 		u16 watchRaw = sz3;
 
-		if (g_dbg_pktAxisFix)
+		if (s_instAxisShift == 2)
 		{
-			if (s_instAxisShift == 2)
-			{
-				u32 t = (u32)sz3 >> 2;
+			u32 t = (u32)sz3 >> 2;
 
-				sz3 = (u16)((t != 0) ? t : 1); /* keep a hit distinguishable from empty */
-			}
-			else if (s_instAxisShift == -2)
-			{
-				u32 t = (u32)sz3 << 2;
+			sz3 = (u16)((t != 0) ? t : 1); /* keep a hit distinguishable from empty */
+		}
+		else if (s_instAxisShift == -2)
+		{
+			u32 t = (u32)sz3 << 2;
 
-				sz3 = (t > 0xFFFFu) ? (u16)0xFFFFu : (u16)t;
-			}
+			sz3 = (t > 0xFFFFu) ? (u16)0xFFFFu : (u16)t;
 		}
 
 #if defined(__3DS__)
@@ -925,11 +902,6 @@ void GTECapture_Store(s16 sx, s16 sy, s64 sxFull, s64 syFull, u16 sz3, s32 hOver
 			if (dz > s_gteEvict.maxDz)
 			{
 				s_gteEvict.maxDz = dz;
-			}
-			if (g_dbg_gteNoEvict)
-			{
-				s_gteEvict.refused++;
-				return;
 			}
 		}
 		else

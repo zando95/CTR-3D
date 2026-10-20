@@ -50,10 +50,9 @@ global_variable u32 s_trackFrameDroppedTotal;
 global_variable int s_trackFrameDroppedWarned;
 
 /* Leaf keep-alive (see the block in NativeTrackFrame_Record): frames a leaf survives past its
- * last appearance in the visible lists; 0 disables. dumpreq 'leafkeep N'. Default 15 (~half a
- * second at 30fps) -- enough to cover a drift swing, small enough that the extra draws stay
- * bounded. */
-int g_dbg_trackLeafKeep = 15;
+ * last appearance in the visible lists. 15 (~half a second at 30fps) -- enough to cover a drift
+ * swing, small enough that the extra draws stay bounded. */
+#define TRACKFRAME_LEAF_KEEP_FRAMES 15
 
 #define TRACKFRAME_KEEP_MAX_SLOTS 4096
 global_variable u16 s_leafKeepStamp[TRACKFRAME_KEEP_MAX_SLOTS];
@@ -629,14 +628,13 @@ void NativeTrackFrame_Record(struct GameTracker *gGT, struct mesh_info *mesh, st
 		/*
 		 * Leaf keep-alive covers geometry going missing behind the kart mid-drift: the visibility
 		 * list can lag a fast camera swing (a HOLES artifact, not a behind-eye clamp issue). A leaf
-		 * stays in the draw set for g_dbg_trackLeafKeep frames after it last appeared in retail's
+		 * stays in the draw set for TRACKFRAME_LEAF_KEEP_FRAMES frames after it last appeared in retail's
 		 * own visible lists ("visible union recently-visible"), bounded cost instead of drawing the
 		 * whole level. Appended AFTER the real walks so visible leaves always win the cap, and
 		 * never through the droppedLeaves/degraded path -- stale leaves are garnish and must not
 		 * blank the frame the way a real visible-leaf drop does. Stamp 0 means "never seen"; the
 		 * counter skips 0 on wrap.
 		 */
-		if (g_dbg_trackLeafKeep > 0)
 		{
 			unsigned totalSlots = NativeTrackMesh_LeafCount();
 			unsigned slot;
@@ -674,7 +672,7 @@ void NativeTrackFrame_Record(struct GameTracker *gGT, struct mesh_info *mesh, st
 			{
 				u16 stamp = s_leafKeepStamp[slot];
 
-				if ((stamp != 0) && (stamp != s_leafKeepNow) && ((u16)(s_leafKeepNow - stamp) <= (u16)g_dbg_trackLeafKeep))
+				if ((stamp != 0) && (stamp != s_leafKeepNow) && ((u16)(s_leafKeepNow - stamp) <= (u16)TRACKFRAME_LEAF_KEEP_FRAMES))
 				{
 					dst->leafSlot[dst->leafCount++] = (u16)slot;
 				}

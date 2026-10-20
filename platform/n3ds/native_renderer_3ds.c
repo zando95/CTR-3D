@@ -179,8 +179,7 @@ global_variable int s_semiTransPass = 0;
  * reorder. The draw merge below is what retires that rule for OPAQUE
  * content: the emit-ordinal depth test resolves paint order, so opaque
  * submission order is free and this run machinery carries the BLEND stream
- * only. Runtime A/B: dumpreq 'drawmerge' restores immediate submission for
- * both streams.
+ * only.
  */
 global_variable int s_runAtlas = -1;
 global_variable int s_runVertCount = 0;
@@ -188,21 +187,6 @@ global_variable int s_runVertCount = 0;
 global_variable int s_runUntextured = -1;
 /* Blend mode the pending run was opened under. */
 global_variable int s_runBlendMode = 0;
-
-/* ---- Accumulator debug toggles ------------------------------------------ */
-
-/* Sky-first accumulator A/B (dumpreq 'skyfirst'). Default ON. What it gates,
- * and why the sky has to draw before the track pass, is documented on
- * s_skyVerts below. */
-int g_dbg_skyFirst = 1;
-
-/* Backdrop accumulator A/B (dumpreq 'backdrop'): 0 skips both the accumulate
- * and the drain, restoring the pre-backdrop frame exactly. 'backdropdbg' arms
- * a one-shot log of the drain-time counts on the next frame. */
-int g_dbg_backdrop = 1;
-int g_dbg_backdropDump = 0;
-
-/* ------------------------------------------------------------------------- */
 
 /*
  * Cross-bucket draw merge. The depth substrate makes opaque submission order
@@ -233,9 +217,6 @@ int g_dbg_backdropDump = 0;
  * capacity escalation. The blend run may stay OPEN across interleaved
  * opaque calls -- adjacent same-state blend runs merge across them, which
  * is legal for the same reason the barrier is.
- *
- * s_mergeActive is LATCHED from g_dbg_drawMerge at BeginScene so the
- * dumpreq 'drawmerge' toggle can never flip mid-frame.
  */
 #define N3DS_MERGE_BIN_COUNT (N3DS_ATLAS_COUNT + 1) /* [0..11] textured per atlas, [12] untextured/white */
 #define N3DS_MERGE_UNTEX_BIN N3DS_ATLAS_COUNT
@@ -262,10 +243,6 @@ global_variable N3DS_MergeSegment s_mergeOpaqueSegs[N3DS_MERGE_MAX_OPAQUE_SEGS];
 global_variable int s_mergeOpaqueSegCount = 0;
 global_variable N3DS_MergeSegment s_mergeBlendSegs[N3DS_MERGE_MAX_BLEND_SEGS];
 global_variable int s_mergeBlendSegCount = 0;
-global_variable int s_mergeActive = 0;
-/* Runtime A/B toggle (dumpreq 'drawmerge', n3ds_backend.c); the compile
- * gate is the opt-in, so default ON when built. */
-int g_dbg_drawMerge = 1;
 
 /*
  * The skybox is opaque but must draw UNDER translucent track surfaces
@@ -274,10 +251,10 @@ int g_dbg_drawMerge = 1;
  * bins, and draw them at the TOP of EndScene before the track pass; every
  * other packet effect keeps its normal post-track order. Sky content is
  * always untextured, so one draw via N3DS_WHITE_ATLAS/doubling 0 covers it.
- * Depth is still stamped far (PacketDepth_ResolveXY, g_dbg_skyFar) so later
+ * Depth is still stamped far (PacketDepth_ResolveXY) so later
  * opaque cliffs occlude it correctly. Walk-thread-local, no double buffer;
  * overflow silently drops excess sky triangles rather than flushing
- * mid-walk. Runtime A/B: dumpreq 'skyfirst' (g_dbg_skyFirst, defined above).
+ * mid-walk.
  */
 #define N3DS_SKY_VERT_CAP 2048
 global_variable N3DS_Vertex s_skyVerts[N3DS_SKY_VERT_CAP];
@@ -330,48 +307,16 @@ global_variable int s_backdropVertUsed = 0;
  * on any change, so a text-heavy menu costs a handful of draws, not one per
  * glyph. Walk-thread-local and drawn on the same thread in EndScene, same
  * lifecycle as s_mergeBinVerts.
- */
-/*
- * DEFAULT ON: this fixes a broad class of UI layering defects (menu and
- * character-select text layering, the selected portrait being covered by its own
- * highlight). Flip with dumpreq 'uiorder'.
  *
- * The character-select diorama gradient is NOT this pass's content and not its
- * regression: the backdrop strips never enter this list (4P 'uidump': 33
- * segments, none at a preview box). They are screen-space quads with no
+ * This fixes a broad class of UI layering defects (menu and character-select
+ * text layering, the selected portrait being covered by its own highlight).
+ *
+ * The character-select diorama gradient is NOT this pass's content: the
+ * backdrop strips never enter this list. They are screen-space quads with no
  * captured depth, pinned to the far plane through the menu-backdrop span
  * (native_gpu.c, NativeGpu_MarkMenuBackdropRange) like the rest of the
  * backdrop class.
  */
-int g_dbg_uiOrder = 1;
-/*
- * BISECT TOGGLE (temporary, dumpreq 'uipin'). The change above is two halves
- * -- the depth-stamp PIN (PacketDepth_UiStamp, native_gpu.c) and the ordered
- * ROUTING (this file) -- and they normally move together because neither is
- * correct alone. This splits them so a defect can be attributed to one half
- * without rebuilding twice: 'uipin' off leaves UI on its old per-ordinal stamps
- * while still routing it through the ordered pass.
- *
- * Diagnostic only. Any combination other than both-ON is a known-broken state
- * (see the header above for why), so this is not a supported configuration --
- * it exists to answer "which half did it?". The character-select gradient
- * regression that motivated it is attributed (menu-backdrop span,
- * native_gpu.c); strip this with the next probe sweep.
- */
-int g_dbg_uiPin = 1;
-/*
- * BISECT TOGGLE 2 (temporary, dumpreq 'uilast'). WHERE the ordered UI pass
- * runs. 1 = last of all (after the model pass and deferred smoke), which is the
- * shipped behaviour. 0 = immediately after the merge barrier, i.e. the slot UI
- * used to occupy when it lived in the bins.
- *
- * Exists to answer one binary question about the character-select gradient
- * regression: is that content NEVER DRAWN, or drawn and then PAINTED OVER by UI
- * that now comes last? Moving the pass earlier separates those without another
- * round of reading code. Diagnostic only; the regression is attributed
- * (menu-backdrop span, native_gpu.c) -- strip with the next probe sweep.
- */
-int g_dbg_uiLast = 1;
 /* Multiple of 3. A text-heavy menu (track lists, high scores) is the peak
  * producer; overflow closes the open run early and keeps going, so the cost of
  * a small buffer is extra draws, never dropped or misordered UI. */
@@ -384,11 +329,6 @@ global_variable int s_uiOrdRunDoubling = -1;
 global_variable int s_uiOrdRunAtlas = -1;
 global_variable N3DS_MergeSegment s_uiOrdSegs[N3DS_UIORD_MAX_SEGS];
 global_variable int s_uiOrdSegCount = 0;
-/* Bisect instrument: screen-space bbox per segment (x0,y0,x1,y1), filled at
- * run close. Identifying WHICH on-screen shape a segment is has been the missing
- * fact in this whole investigation -- a big box-filling quad is the gradient, a
- * cluster of small ones is the portrait frames. Diagnostic only. */
-global_variable short s_uiOrdSegBox[N3DS_UIORD_MAX_SEGS][4];
 /* Prims that could not be recorded (segment list full). Reported by the stats
  * block: silently dropping UI would read as "covered everything" when it did not. */
 global_variable u32 s_uiOrdDropped = 0;
@@ -410,8 +350,8 @@ global_variable u32 s_uiOrdPrims = 0;
  * onto the bottom render target with an ortho window fitted around their own
  * screen rect -- same untouched vertices, magnified by the window, so the dots
  * cannot drift off the sheet. Runs after the stereo right eye (nothing here is
- * journaled) and before FrameEnd. Requires uiorder+uipin (the resolver only
- * retags while the pin owns the band). The stamp itself is applied regardless
+ * journaled) and before FrameEnd. The resolver only retags while the
+ * ordered-UI pin owns the band. The stamp itself is applied regardless
  * of 'btmmap' -- it also keys the seam-closing far-edge UV inset
  * (N3DS_ConvertTriangleVerts) -- so the PEEL below carries the gate: with
  * 'btmmap' off the stamped map flows into the ordinary ordered-UI list and
@@ -563,12 +503,6 @@ enum N3DS_BlendCloseCause
 	N3DS_BLEND_CLOSE_STATE,     /* blend mode or textured/untextured change  */
 };
 
-/* Ordering A/B (dumpreq 'trackafter') -- see NativeRenderer_EndScene.
- * Defined outside the DRAW_MERGE gate on purpose: the question it asks is
- * about the resident track draw's position relative to the frame's last
- * flush, which exists in both merge and non-merge builds. */
-int g_dbg_trackAfterMerge = 0;
-
 /*
  * Bottom-screen verbosity (dumpreq 'verbose'). OFF by default: the
  * stats block had accreted every instrument this port has ever needed --
@@ -677,21 +611,14 @@ static void N3DS_SweepApply(int idx)
 {
 	extern int g_dbg_packetDepth;
 	extern int g_dbg_pktDepthBias;
-#ifdef CTR_NATIVE_TRACK_RENDERER
 	extern int g_dbg_trackRender;
-#endif
 	extern volatile int gCtrDebugSkipInstances;
 	extern volatile int gCtrDebugSkipEffects;
 	extern volatile int gCtrDebugSkipHUD;
 	extern int g_dbg_vsyncCredit;
 	const N3DS_SweepConfig *cfg = &s_sweepConfigs[idx];
 
-	/* The track leg of the sweep only exists when the native track renderer is
-	 * compiled in; without it every config runs the retail track and the field
-	 * has nothing to drive. */
-#ifdef CTR_NATIVE_TRACK_RENDERER
 	g_dbg_trackRender = cfg->trackRender;
-#endif
 	g_dbg_packetDepth = cfg->packetDepth;
 	gCtrDebugSkipInstances = cfg->skipInstances;
 	gCtrDebugSkipEffects = cfg->skipEffects;
@@ -781,9 +708,7 @@ int g_dbg_atlasView = 0;
  * frame-granular, so skipping repeat touches within a frame changes nothing.
  * Stats impact: tier hit counters advance on memo hits (routing counters
  * stay honest); the caches' own hit counters undercount by design.
- * Runtime A/B: dumpreq 'resolvememo'.
  */
-int g_dbg_resolveMemo = 1;
 
 /* PROBE: ablate the per-triangle fb-mirror overlap test inside
  * N3DS_ResolveTriangleTexture. Platform_EndScene re-arms s_fbMirrorStale
@@ -1559,10 +1484,9 @@ global_variable u8 s_texdecFrameWorstIsSub = 0;
 global_variable s8 s_texdecFrameWorstTileX = -1;
 global_variable s8 s_texdecFrameWorstTileY = -1;
 
-/* One increment per actual C3D_DrawArrays call (N3DS_FlushRun, called from
- * DrawTriangles) -- checks the design doc's own predicted "more, smaller
- * draw calls than PC" risk directly; measured ~150-290/frame before the
- * atlas rework above, which is what motivated it. */
+/* One increment per actual C3D_DrawArrays call (N3DS_MergeEmit) -- checks
+ * the design doc's own predicted "more, smaller draw calls than PC" risk
+ * directly. */
 global_variable u32 s_drawCallCount = 0;
 
 /*
@@ -2598,109 +2522,29 @@ decodeIntoSubSlot:
 	return oldestSlot;
 }
 
-/*
- * Binds atlas `atlasIndex` and draws the vertCount vertices already sitting
- * in s_convertScratch. Appends (does not overwrite) into the shared
- * per-frame vertex buffer and draws from wherever they actually landed --
- * NOT from a hardcoded offset. That distinction is load-bearing: GPU
- * command execution for a whole frame is deferred to a single
- * GX_ProcessCommandList call at frame end (see n3ds_backend.h's header
- * comment on N3DS_C3DAppendVertices), and DrawTriangles is called once per
- * split -- up to thousands of times a frame -- so many runs get queued
- * before any of them actually executes. Drawing from offset 0 every time
- * (the bug this replaced) made every queued draw in the frame
- * read whichever run's vertices were written last, since nothing stops a
- * later CPU-side write from landing before an earlier draw's GPU read.
- */
-internal void N3DS_FlushRun(int atlasIndex, int vertCount)
-{
-	int baseVertex;
-	const int perfScopes = g_dbg_perfTriScopes;
-
-	if (vertCount <= 0)
-	{
-		return;
-	}
-
-	if (perfScopes)
-	{
-		NativePerf_BeginScope(NATIVE_PERF_BUCKET_DRAW_TRIANGLES_APPEND);
-	}
-	baseVertex = N3DS_TvboCheckedAppend(s_convertScratch, vertCount);
-	if (perfScopes)
-	{
-		NativePerf_EndScope(NATIVE_PERF_BUCKET_DRAW_TRIANGLES_APPEND);
-	}
-	if (baseVertex < 0)
-	{
-		/* Frame vertex budget exhausted -- drop this run rather than draw
-		 * from a wrong/stale offset. Counted and reported, never silent:
-		 * the budget was previously sized from PC's PER-PASS ceiling while
-		 * covering a whole frame of up to three passes, and the resulting
-		 * dropped draws looked like missing models rather than an error. */
-		s_droppedRuns++;
-		return;
-	}
-
-	if (perfScopes)
-	{
-		NativePerf_BeginScope(NATIVE_PERF_BUCKET_DRAW_TRIANGLES_FLUSH);
-	}
-	N3DS_C3DBindAtlas(atlasIndex);
-	N3DS_C3DDrawTriangles(baseVertex, vertCount / 3);
-	if (perfScopes)
-	{
-		NativePerf_EndScope(NATIVE_PERF_BUCKET_DRAW_TRIANGLES_FLUSH);
-	}
-	s_drawCallCount++;
-	s_frameAtlasMask |= (1u << (atlasIndex & 31));
-}
-
-/* Flushes the frame-scope pending run (see the s_runAtlas block). Must be
- * called before ANY draw that isn't an atlas run (PresentVRAM*, the atlas
- * inspector) and at EndScene -- a pending run left unflushed across a
- * foreign bind would still draw correctly (N3DS_FlushRun re-binds), but
- * AFTER the foreign draw, breaking paint order. */
-internal void N3DS_FlushPendingRun(void)
-{
-	N3DS_FlushRun(s_runAtlas, s_runVertCount);
-	s_runVertCount = 0;
-}
-
 internal void N3DS_MergeFlush(void);
 
 /*
  * One deferred draw actually hitting the command list. Doubling is gated by
  * the caller's tracker because N3DS_C3DSetColorDoubling dirties the TEV
  * unconditionally; blend is set unconditionally because the backend dedups
- * it internally (n3ds_backend.h). s_runBlendMode is kept equal to the last
- * blend mode ACTUALLY set so the non-merge entry guard's change-gating stays
- * truthful if the toggle flips next frame.
+ * it internally (n3ds_backend.h). s_runBlendMode is overwritten as a side
+ * effect, so a caller with an open blend run closes it first.
  */
-/* Translucent packet effects (smoke, sparks, shadows) must not write depth --
- * see N3DS_MergeEmit. ON by default: it matches the model and track paths.
- * s_mergeDepthWriteState is the memo; -1 forces the first draw to assert. */
-int g_dbg_fxNoDepthWrite = 1;
+/* s_mergeDepthWriteState is the depth-write memo (see N3DS_MergeEmit); -1
+ * forces the first draw to assert. */
 int g_dbg_noFx;
 global_variable int s_mergeDepthWriteState = -1;
 
 internal void N3DS_MergeEmit(int blendMode, int doubling, int atlas, int baseVertex, int vertCount, int *lastDoubling)
 {
 	/*
-	 * Owner-found, s32: exhaust smoke was cutting a hole through the player and
-	 * making him look see-through. A blended packet is translucent -- it must
-	 * TEST depth so things in front still hide it, but it must not WRITE depth,
-	 * or every pixel it covers becomes opaque to whatever is drawn afterwards.
+	 * A blended packet (smoke, sparks, shadows) is translucent: it must TEST
+	 * depth so things in front still hide it, but it must not WRITE depth, or
+	 * every pixel it covers becomes opaque to whatever is drawn afterwards. The
+	 * model path (N3DS_ModelDraw_Run) and the track's blended ranges follow the
+	 * same rule.
 	 *
-	 * This is not a new rule. Both other geometry sources already follow it:
-	 * N3DS_ModelDraw_Run (n3ds_backend.c, "a blended run ... must not WRITE
-	 * depth") and the track's blended ranges. The merge path -- which carries
-	 * every packet-sourced effect: smoke, sparks, shadows -- was the one that
-	 * never got it, because it was written before depth existed at all.
-	 *
-	 * g_dbg_fxNoDepthWrite defaults ON because matching the other two paths is
-	 * the correct behaviour, not an experiment; the toggle exists so it can be
-	 * A/B'd against the old look without a rebuild (dumpreq `fxdepth`).
 	 * g_dbg_noFx drops blended packets entirely -- a judging aid, so effects
 	 * cannot obscure what is being looked at while something else is tuned.
 	 */
@@ -2718,7 +2562,7 @@ internal void N3DS_MergeEmit(int blendMode, int doubling, int atlas, int baseVer
 		/* Memoized here rather than in the backend so a frame of all-opaque
 		 * merge segments costs zero extra GPU state changes, matching what the
 		 * doubling tracker above already does. */
-		const int wantWrite = ((blendMode != 0) && g_dbg_fxNoDepthWrite) ? 0 : 1;
+		const int wantWrite = (blendMode != 0) ? 0 : 1;
 
 		if (wantWrite != s_mergeDepthWriteState)
 		{
@@ -2739,7 +2583,7 @@ internal void N3DS_MergeEmit(int blendMode, int doubling, int atlas, int baseVer
 	 * re-issues the outcome. vertCount is raw vertices, same as this call's
 	 * own parameter (the replay's C3D_DrawArrays takes vertices directly).
 	 * No-op unless this frame latched stereo. */
-	N3DS_StereoRecordPacket(blendMode, doubling, ((blendMode != 0) && g_dbg_fxNoDepthWrite) ? 0 : 1, atlas, baseVertex, vertCount);
+	N3DS_StereoRecordPacket(blendMode, doubling, (blendMode != 0) ? 0 : 1, atlas, baseVertex, vertCount);
 }
 
 /*
@@ -2803,7 +2647,7 @@ internal void N3DS_MergeCloseBlendRun(enum N3DS_BlendCloseCause cause)
  * comment: opaque (bins, then spilled segments) first -- internally
  * order-free, resolved by the depth test -- then blend segments verbatim,
  * then the still-open blend run, which is by construction the latest blend
- * content. Also the merge-off fallback for the shared call sites.
+ * content.
  */
 internal void N3DS_MergeFlush(void)
 {
@@ -2811,25 +2655,14 @@ internal void N3DS_MergeFlush(void)
 	int i;
 	/*
 	 * The still-open run's OWN state, snapshotted before anything else emits.
-	 * N3DS_MergeEmit assigns s_runBlendMode as a side effect (it keeps the
-	 * non-merge entry guard's change-gating truthful), so by the time the
-	 * trailing-run block below ran, the opaque bin emits had already
-	 * overwritten it with BM_NONE -- and the frame's last blend run was
-	 * submitted with blending OFF, or with the last blend SEGMENT's mode when
-	 * there was one. Found by the [MERGEB] counters disagreeing with
-	 * themselves: 43 blend draws carrying 60 vertices between them, because
-	 * two thirds of them were being classified as opaque at emit time.
-	 * s_runUntextured is not clobbered the same way, but is snapshotted with
-	 * it so the pair is read from one point in time.
+	 * N3DS_MergeEmit assigns s_runBlendMode as a side effect, so by the time
+	 * the trailing-run block below runs, the opaque bin emits have already
+	 * overwritten it with BM_NONE. s_runUntextured is not clobbered the same
+	 * way, but is snapshotted with it so the pair is read from one point in
+	 * time.
 	 */
 	const int pendingBlendMode = s_runBlendMode;
 	const int pendingUntextured = s_runUntextured;
-
-	if (!s_mergeActive)
-	{
-		N3DS_FlushPendingRun();
-		return;
-	}
 
 	/* [MERGEDBG] removed: it existed to answer ONE question -- whether
 	 * content reached the merge bins and was emitted, or never got binned. It
@@ -2914,19 +2747,6 @@ internal void N3DS_DrawBackdropPass(void)
 	int baseVertex;
 	int lastDoubling = -1;
 
-	if (g_dbg_backdropDump)
-	{
-		char msg[96];
-
-		snprintf(msg, sizeof(msg), "[BACKDROP] drain: backdropVerts=%d skyVerts=%d enable=%d", s_backdropVertUsed, s_skyVertUsed, g_dbg_backdrop);
-		N3DS_DebugLog(msg);
-		g_dbg_backdropDump = 0;
-	}
-	if (!g_dbg_backdrop)
-	{
-		s_backdropVertUsed = 0;
-		return;
-	}
 	if (s_backdropVertUsed <= 0)
 	{
 		return;
@@ -3016,30 +2836,12 @@ internal void N3DS_UiOrderCloseRun(void)
 	else
 	{
 		N3DS_MergeSegment *seg = &s_uiOrdSegs[s_uiOrdSegCount];
-		short x0 = 32767, y0 = 32767, x1 = -32768, y1 = -32768;
-		int k;
-
 		seg->blendMode = (u8)s_uiOrdRunBlend;
 		seg->doubling = (u8)s_uiOrdRunDoubling;
 		seg->atlas = (u8)s_uiOrdRunAtlas;
 		seg->baseVertex = baseVertex;
 		seg->vertCount = s_uiOrdRunUsed;
 
-		/* Instrument: bbox of what this segment actually covers on screen. */
-		for (k = 0; k < s_uiOrdRunUsed; k++)
-		{
-			const short vx = (short)s_uiOrdRunVerts[k].x;
-			const short vy = (short)s_uiOrdRunVerts[k].y;
-
-			if (vx < x0) { x0 = vx; }
-			if (vy < y0) { y0 = vy; }
-			if (vx > x1) { x1 = vx; }
-			if (vy > y1) { y1 = vy; }
-		}
-		s_uiOrdSegBox[s_uiOrdSegCount][0] = x0;
-		s_uiOrdSegBox[s_uiOrdSegCount][1] = y0;
-		s_uiOrdSegBox[s_uiOrdSegCount][2] = x1;
-		s_uiOrdSegBox[s_uiOrdSegCount][3] = y1;
 		s_uiOrdSegCount++;
 	}
 	s_uiOrdRunUsed = 0;
@@ -3266,53 +3068,12 @@ internal N3DS_Vertex *N3DS_BtmFpsAppend(int blendMode, int doubling, int atlas)
  * the right-eye replay reissues them identically. lastDoubling = -1 makes the
  * pass self-contained against whatever state the model/smoke passes left.
  */
-/* Bisect instrument (dumpreq 'uidump'): one-shot dump of what the ordered UI
- * list actually holds on the current screen. Answers the question every theory so
- * far has guessed at -- whether a given piece of content is classified as UI and
- * reaches this list at all. Untextured segments are called out separately because
- * the character-select gradient is untextured gouraud, so untexVerts==0 means it
- * never entered the list and the loss is upstream of this pass. */
-int g_dbg_uiDump = 0;
-
 internal void N3DS_DrawUiPass(void)
 {
 	int lastDoubling = -1;
 	int i;
 
 	N3DS_UiOrderCloseRun(); /* the frame's last run is still open */
-
-	if (g_dbg_uiDump)
-	{
-		char line[192];
-		int untexSegs = 0, untexVerts = 0, totalVerts = 0;
-
-		for (i = 0; i < s_uiOrdSegCount; i++)
-		{
-			totalVerts += s_uiOrdSegs[i].vertCount;
-			if ((int)s_uiOrdSegs[i].atlas == N3DS_WHITE_ATLAS)
-			{
-				untexSegs++;
-				untexVerts += s_uiOrdSegs[i].vertCount;
-			}
-		}
-		snprintf(line, sizeof(line), "[UIDUMP] segs=%d verts=%d untexSegs=%d untexVerts=%d", s_uiOrdSegCount, totalVerts, untexSegs,
-		         untexVerts);
-		N3DS_DebugLog(line);
-		for (i = 0; i < s_uiOrdSegCount; i++)
-		{
-			const int w = s_uiOrdSegBox[i][2] - s_uiOrdSegBox[i][0];
-			const int h = s_uiOrdSegBox[i][3] - s_uiOrdSegBox[i][1];
-
-			/* Every segment, in draw order: the question is what is emitted AFTER
-			 * the big diorama slabs, since that is what can cover them. */
-			snprintf(line, sizeof(line), "[UIDUMP]  seg%02d atlas=%d blend=%d dbl=%d verts=%d box=%d,%d..%d,%d (%dx%d)", i,
-			         (int)s_uiOrdSegs[i].atlas, (int)s_uiOrdSegs[i].blendMode, (int)s_uiOrdSegs[i].doubling,
-			         s_uiOrdSegs[i].vertCount, s_uiOrdSegBox[i][0], s_uiOrdSegBox[i][1], s_uiOrdSegBox[i][2], s_uiOrdSegBox[i][3], w,
-			         h);
-			N3DS_DebugLog(line);
-		}
-		g_dbg_uiDump = 0; /* one-shot */
-	}
 
 	if (s_uiOrdPrims > s_uiOrdPrimsMax)
 	{
@@ -3469,7 +3230,7 @@ internal void N3DS_DrawBottomMapPass(void)
 			for (i = 0; i < s_btmmSegCount; i++)
 			{
 				const N3DS_MergeSegment *seg = &s_btmmSegs[i];
-				const int wantWrite = ((seg->blendMode != 0) && g_dbg_fxNoDepthWrite) ? 0 : 1;
+				const int wantWrite = (seg->blendMode != 0) ? 0 : 1;
 
 				if ((int)seg->doubling != lastDoubling)
 				{
@@ -3509,7 +3270,7 @@ internal void N3DS_DrawBottomMapPass(void)
 				for (i = 0; i < s_btmfSegCount; i++)
 				{
 					const N3DS_MergeSegment *seg = &s_btmfSegs[i];
-					const int wantWrite = ((seg->blendMode != 0) && g_dbg_fxNoDepthWrite) ? 0 : 1;
+					const int wantWrite = (seg->blendMode != 0) ? 0 : 1;
 
 					if ((int)seg->doubling != lastDoubling)
 					{
@@ -3874,7 +3635,6 @@ internal void N3DS_ConvertTriangleVerts(N3DS_Vertex *dst3, const GrVertex *triVe
  * rect in the same frame falls back to the mirror path rather than
  * overwriting a region already-queued draws reference.
  */
-int g_dbg_fbCapture = 1; /* dumpreq 'fbcap' */
 global_variable u32 s_fbCapFrame;
 global_variable int s_fbCapValid;
 global_variable s16 s_fbCapRectX, s_fbCapRectY, s_fbCapRectW, s_fbCapRectH;
@@ -4014,7 +3774,7 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 	 * path). Tested against the slot RECTS, not the stale flags: a rect
 	 * stays a display buffer whether or not the mirror is current.
 	 */
-	if (g_dbg_fbCapture && (format == TF_16_BIT) && (view == N3DS_TEXVIEW_OPAQUE))
+	if ((format == TF_16_BIT) && (view == N3DS_TEXVIEW_OPAQUE))
 	{
 		const int pageX = (texPage & 0xF) * 64;
 		const int pageY = (texPage & 0x10) ? 256 : 0;
@@ -4076,7 +3836,7 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 		int atlasIdx, physCellX, physCellY, subX, subY;
 		const u32 stamp = s_decodeCacheEvictions + s_subPageCacheEvictions + s_vramDirtyBumps;
 
-		if (g_dbg_resolveMemo && s_rmemoValid && (s_rmemoTier == 1) && (s_rmemoStamp == stamp) && (s_rmemoPage == texPage) && (s_rmemoClut == clut) &&
+		if (s_rmemoValid && (s_rmemoTier == 1) && (s_rmemoStamp == stamp) && (s_rmemoPage == texPage) && (s_rmemoClut == clut) &&
 		    (s_rmemoFormat == (u8)format) && (s_rmemoView == (u8)view) && (s_rmemoTileX == (s16)tileX0) && (s_rmemoTileY == (s16)tileY0))
 		{
 			*outAtlasIdx = s_rmemoAtlas;
@@ -4120,7 +3880,7 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 		int atlasIdx, cellX, cellY;
 		const u32 stamp = s_decodeCacheEvictions + s_subPageCacheEvictions + s_vramDirtyBumps;
 
-		if (g_dbg_resolveMemo && s_rmemoValid && (s_rmemoTier == 2) && (s_rmemoStamp == stamp) && (s_rmemoPage == texPage) && (s_rmemoClut == clut) &&
+		if (s_rmemoValid && (s_rmemoTier == 2) && (s_rmemoStamp == stamp) && (s_rmemoPage == texPage) && (s_rmemoClut == clut) &&
 		    (s_rmemoFormat == (u8)format) && (s_rmemoView == (u8)view))
 		{
 			*outAtlasIdx = s_rmemoAtlas;
@@ -4376,11 +4136,9 @@ void NativeRenderer_BeginScene(void)
 	s_runVertCount = 0;
 	s_runUntextured = -1;
 
-	/* Latch the toggle so 'drawmerge' can never flip mid-frame, and
-	 * defensively drop any deferred state a frame that skipped EndScene
+	/* Defensively drop any deferred state a frame that skipped EndScene
 	 * could have stranded -- the VBO cursor just reset, so stale recorded
 	 * baseVertex values must never survive into this frame. */
-	s_mergeActive = g_dbg_drawMerge;
 	{
 		int bin;
 
@@ -4426,53 +4184,33 @@ void NativeRenderer_EndScene(void)
 	}
 
 	/*
-	 * Draw the skybox FIRST -- before the resident track pass and before the
-	 * merge barrier -- so the translucent waterfalls (which write no depth) paint
-	 * over it instead of it painting over them. The sky was routed out of the
-	 * opaque bins into s_skyVerts during the walk (native_direct_emit.c), so it is
-	 * not double-drawn by MergeFlush below. Packet state from the walk is still
-	 * active here, which is what N3DS_MergeEmit assumes. dumpreq 'skyfirst'.
+	 * Draw the backdrop fill and the skybox FIRST -- before the resident track
+	 * pass and before the merge barrier -- so the translucent waterfalls (which
+	 * write no depth) paint over the sky instead of it painting over them. The
+	 * sky was routed out of the opaque bins into s_skyVerts during the walk
+	 * (native_direct_emit.c), so it is not double-drawn by MergeFlush below.
+	 * Packet state from the walk is still active here, which is what
+	 * N3DS_MergeEmit assumes.
+	 *
+	 * Backdrop first, sky second: both sit at the far pin (vertex -32768), LEQUAL
+	 * passes on equal, so the later sky draw wins the tie and layers over the
+	 * fill -- bg color, then gradient/dome, then everything real, retail's
+	 * stack.
 	 */
-	if (g_dbg_skyFirst)
-	{
-		/* Backdrop first, sky second: both sit at the far pin (vertex
-		 * -32768), LEQUAL passes on equal, so the later sky draw wins the
-		 * tie and layers over the fill -- bg color, then gradient/dome,
-		 * then everything real, retail's stack. */
-		N3DS_DrawBackdropPass();
-		N3DS_DrawSkyPass();
-	}
+	N3DS_DrawBackdropPass();
+	N3DS_DrawSkyPass();
 
-#if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
 	/*
-	 * Rung 3a step 2: resident
-	 * track draws, issued IMMEDIATELY BEFORE the merge-bin barrier below.
-	 * MergeFlush emits opaque bins/segments first and blend segments last,
-	 * so track geometry submitted just before it is opaque-with-opaque
+	 * Resident track draws, issued IMMEDIATELY BEFORE the merge-bin barrier
+	 * below. MergeFlush emits opaque bins/segments first and blend segments
+	 * last, so track geometry submitted just before it is opaque-with-opaque
 	 * (order-free under the emit-ordinal depth test) and still lands UNDER
 	 * every blended packet -- which is what surface-riding content (shadows,
-	 * skids) draws over the surface it rides needs. Forward-declared here,
-	 * defined later (platform/native_track_frame.c) -- same idiom
-	 * game/MAIN/MainFrame_RenderFrame.c already uses for
-	 * NativeTrackFrame_Record, needed because main.c's unity chain includes
-	 * this file before that one.
+	 * skids) draws over the surface it rides needs. Drawn after the flush, the
+	 * track would shove shadows and skids behind itself. Forward-declared here,
+	 * defined later (platform/native_track_frame.c), because main.c's unity
+	 * chain includes this file before that one.
 	 */
-	/*
-	 * The ONE difference that tracks the symptom. With merge OFF, packet
-	 * content is drawn immediately DURING the walk -- before this call -- and
-	 * karts/UI/crates all appear with the resident renderer on. With merge ON,
-	 * essentially all packet content is deferred to N3DS_MergeFlush() below,
-	 * i.e. AFTER this call, and it never reaches the screen (owner-confirmed
-	 * on the demo race; direct emit ruled out separately -- OFF changes
-	 * nothing, so it is the deferral itself, not the direct-emit bin writer).
-	 * This toggle moves the track draw to the far side of the flush so the
-	 * ordering can be A/B'd at runtime instead of rebuilt: dumpreq
-	 * 'trackafter'. Not a proposed fix -- the existing order is deliberate
-	 * (see the comment below on landing under blended packets) -- it is the
-	 * discriminator between "deferred draws die" and "the track draw poisons
-	 * what follows it".
-	 */
-	if (!g_dbg_trackAfterMerge)
 	{
 		extern void NativeTrackDraw_IssueForWalk(void);
 
@@ -4480,26 +4218,12 @@ void NativeRenderer_EndScene(void)
 		NativeTrackDraw_IssueForWalk();
 		NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_TRACK_DRAW);
 
-		/* NativeTrackDraw_IssueForWalk's own N3DS_TrackDraw_End (called once
-		 * per leaf-draw bracket, even when zero leaves drew) already restored
-		 * the packet path's program/attrInfo/bufInfo/texture-combiner state
-		 * via N3DS_BindPacketDrawState -- required before MergeFlush below,
-		 * whose draws assume that exact state. TEV doubling doesn't strictly
-		 * need this reset too (N3DS_MergeFlush's own lastDoubling=-1 always
-		 * reasserts it before its first emit), but reset the frame-scope
-		 * tracker anyway so ANY other consumer between here and the next
-		 * BeginScene sees the same "unknown, please reassert" signal the
-		 * atlas inspector/PresentVRAMRect already leave behind after their
-		 * own foreign draws: that reset now happens
-		 * INSIDE NativeTrackDraw_IssueForWalk itself, gated behind its own
-		 * toggle-0 early return, rather than unconditionally here every
-		 * frame this build option is compiled in. Toggle 0 is the A/B
-		 * baseline every fps number gets measured against, and it must cost
-		 * nothing beyond retail -- a stray reset of state nothing here even
-		 * touched at toggle 0 broke that (the effect was near-nil per the
-		 * comment above, but near-nil isn't the same as compiled-out). */
+		/* NativeTrackDraw_IssueForWalk's own N3DS_TrackDraw_End (called once per
+		 * leaf-draw bracket, even when zero leaves drew) already restored the
+		 * packet path's program/attrInfo/bufInfo/texture-combiner state via
+		 * N3DS_BindPacketDrawState -- required before MergeFlush below, whose
+		 * draws assume that exact state. */
 	}
-#endif
 
 	/* Last flush point of the frame: whatever the final splits left
 	 * deferred (merge bins/segments, or just the pending run) has to be
@@ -4508,14 +4232,6 @@ void NativeRenderer_EndScene(void)
 	N3DS_MergeFlush();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_MERGE_FLUSH);
 
-	/* Bisect ('uilast' off): draw the UI pass HERE, in the slot UI occupied
-	 * when it still lived in the merge bins, instead of last. See g_dbg_uiLast. */
-	if (!g_dbg_uiLast)
-	{
-		N3DS_DrawUiPass();
-	}
-
-#if defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
 	/*
 	 * PICA-native model instances (rung 2).
 	 *
@@ -4530,8 +4246,7 @@ void NativeRenderer_EndScene(void)
 	 * entire point of putting them on this axis.
 	 *
 	 * Costs nothing at toggle 0 -- NativeModelDraw_IssueForWalk returns before
-	 * touching any GPU state, the same early-out shape the track draw uses so
-	 * its own A/B baseline stays honest.
+	 * touching any GPU state, the same early-out shape the track draw uses.
 	 */
 	{
 		extern void NativeModelDraw_IssueForWalk(void);
@@ -4542,21 +4257,7 @@ void NativeRenderer_EndScene(void)
 		NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_MODEL_DRAW);
 		s_texdecFrameMdlTicks += N3DS_GetTickCount() - texdecMdlT0;
 	}
-#endif
 
-#if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
-	/* Other half of the ordering A/B above. */
-	if (g_dbg_trackAfterMerge)
-	{
-		extern void NativeTrackDraw_IssueForWalk(void);
-
-		NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_TRACK_DRAW);
-		NativeTrackDraw_IssueForWalk();
-		NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_TRACK_DRAW);
-	}
-#endif
-
-#if CTR_NATIVE_GTE_CAPTURE
 	/*
 	 * Driver-local exhaust smoke, deliberately held out of the merge
 	 * above (DrawAllSplits flagged its splits deferredSmoke), is redrawn HERE --
@@ -4564,7 +4265,7 @@ void NativeRenderer_EndScene(void)
 	 * (retail's painter's order) while the depth test still lets a genuinely
 	 * nearer wall or kart occlude it. The smoke carries real view.z depth
 	 * (GTECapture_StoreParticleCorner) so the LEQUAL test is meaningful against
-	 * the body's own view.z depth; before this change it fell back to the
+	 * the body's own view.z depth; without it the smoke would fall back to the
 	 * parse-order ordinal axis and read as infinitely far.
 	 *
 	 * NativeGpu_DrawDeferredSmoke re-runs the captured splits through the normal
@@ -4573,8 +4274,7 @@ void NativeRenderer_EndScene(void)
 	 * rule) -- and the MergeFlush below drains them onto the command list on top
 	 * of the body. s_mergeDepthWriteState is forced to "unknown" first so the
 	 * smoke's first emit re-asserts the LEQUAL depth state the model pass left.
-	 * No-op on any frame with no driver-local smoke on screen, and a plain A/B
-	 * against the old look via dumpreq 'smokedefer'.
+	 * No-op on any frame with no driver-local smoke on screen.
 	 */
 	{
 		extern void NativeGpu_DrawDeferredSmoke(void);
@@ -4582,20 +4282,14 @@ void NativeRenderer_EndScene(void)
 		s_mergeDepthWriteState = -1;
 		N3DS_MergeFlush();
 	}
-#endif
 
 	/*
 	 * The frame's UI, in submission order, LAST -- after the merge barrier,
-	 * the model pass and the deferred smoke, so nothing can paint over it. This
-	 * is the point of the whole change: UI layering is now painter's order (what
-	 * retail does) instead of an artefact of which state bin each glyph and panel
-	 * happened to land in. No-op when the toggle is off (nothing was routed here,
-	 * so the list is empty and UI stayed in the bins). dumpreq 'uiorder'.
+	 * the model pass and the deferred smoke, so nothing can paint over it. UI
+	 * layering is painter's order (what retail does), not an artefact of which
+	 * state bin each glyph and panel happened to land in.
 	 */
-	if (g_dbg_uiLast)
-	{
-		N3DS_DrawUiPass();
-	}
+	N3DS_DrawUiPass();
 
 #ifdef CTR_INTERNAL
 	/*
@@ -4673,18 +4367,8 @@ void NativeRenderer_EndScene(void)
 	 * frame -- every fps baseline -- is bit-for-bit today's. Right-eye
 	 * draws are not counted in s_drawCallCount: [PERF] draw counts stay
 	 * per-eye numbers.
-	 *
-	 * Gated on the merge path being live: with `drawmerge` toggled off (or a
-	 * build without it) packet content draws immediately during the walk and
-	 * never reaches the journal, so a replay would show the right eye a
-	 * world with no karts/UI. Skipping instead leaves the right framebuffer
-	 * holding its last stereo frame while that diagnostic combo is active --
-	 * defined, visible-as-what-it-is, and gone the moment merge is back on.
 	 */
-	if (s_mergeActive)
-	{
-		N3DS_StereoRenderRightEye();
-	}
+	N3DS_StereoRenderRightEye();
 
 	/* Bottom-screen minimap, LAST of all: after the right-eye replay so its
 	 * target/state switches can never leak into the journaled eyes, before
@@ -4990,19 +4674,11 @@ void NativeRenderer_SwapWindow(void)
 		 */
 		{
 			extern int g_dbg_packetDepth;
-#ifdef CTR_NATIVE_TRACK_RENDERER
 			extern int g_dbg_trackRender;
-#endif
 			extern int g_dbg_modelRender;
 			extern int g_dbg_widescreen;
 			static const char *const trackNames[3] = {"retail", "OURS", "both"};
-			/* Without the native track renderer compiled in the track is always
-			 * retail, which is index 0. */
-#ifdef CTR_NATIVE_TRACK_RENDERER
 			int tr = g_dbg_trackRender;
-#else
-			int tr = 0;
-#endif
 
 			/* The console is 40 columns. Every line here is written to fit
 			 * inside that WITHOUT wrapping -- a wrapped line costs two rows and
@@ -5095,17 +4771,14 @@ void NativeRenderer_SwapWindow(void)
 			{
 				printf("draws  total %-8lu\n", (unsigned long)s_drawCallCount);
 			}
-			/* The A/B instrument for the cross-bucket merge: read
-			 * draws/frame above with merge on vs off ('drawmerge' in
-			 * dumpreq.txt). op/bl split says where the remaining draws come from;
+			/* op/bl split says where the remaining draws come from;
 			 * spill/esc nonzero means capacity tuning is needed. */
 			if (g_dbg_statsVerbose)
-			printf("merge  %-3s op %-8lu bl %-8lu spill %-4lu esc %-4lu\n", s_mergeActive ? "ON" : "off",
-			       (unsigned long)s_mergeEmitOpaque, (unsigned long)s_mergeEmitBlend, (unsigned long)s_mergeBinSpills,
-			       (unsigned long)s_mergeEscalations);
-			snprintf(cacheLine, sizeof(cacheLine), "[CTR-3DS] merge active=%d emitOpaque=%lu emitBlend=%lu spills=%lu escalations=%lu",
-			         s_mergeActive, (unsigned long)s_mergeEmitOpaque, (unsigned long)s_mergeEmitBlend,
-			         (unsigned long)s_mergeBinSpills, (unsigned long)s_mergeEscalations);
+			printf("merge  op %-8lu bl %-8lu spill %-4lu esc %-4lu\n", (unsigned long)s_mergeEmitOpaque, (unsigned long)s_mergeEmitBlend,
+			       (unsigned long)s_mergeBinSpills, (unsigned long)s_mergeEscalations);
+			snprintf(cacheLine, sizeof(cacheLine), "[CTR-3DS] merge emitOpaque=%lu emitBlend=%lu spills=%lu escalations=%lu",
+			         (unsigned long)s_mergeEmitOpaque, (unsigned long)s_mergeEmitBlend, (unsigned long)s_mergeBinSpills,
+			         (unsigned long)s_mergeEscalations);
 			N3DS_DebugLog(cacheLine);
 
 			/*
@@ -5117,11 +4790,11 @@ void NativeRenderer_SwapWindow(void)
 			 */
 			if (g_dbg_statsVerbose)
 			{
-				printf("uiord  %-3s primsMax %-6lu segs %-4d dropped %-6lu\n", g_dbg_uiOrder ? "ON" : "off",
-				       (unsigned long)s_uiOrdPrimsMax, N3DS_UIORD_MAX_SEGS, (unsigned long)s_uiOrdDropped);
+				printf("uiord  primsMax %-6lu segs %-4d dropped %-6lu\n", (unsigned long)s_uiOrdPrimsMax, N3DS_UIORD_MAX_SEGS,
+				       (unsigned long)s_uiOrdDropped);
 			}
-			snprintf(cacheLine, sizeof(cacheLine), "[CTR-3DS] uiorder active=%d primsMax=%lu maxSegs=%d dropped=%lu",
-			         g_dbg_uiOrder, (unsigned long)s_uiOrdPrimsMax, N3DS_UIORD_MAX_SEGS, (unsigned long)s_uiOrdDropped);
+			snprintf(cacheLine, sizeof(cacheLine), "[CTR-3DS] uiorder primsMax=%lu maxSegs=%d dropped=%lu",
+			         (unsigned long)s_uiOrdPrimsMax, N3DS_UIORD_MAX_SEGS, (unsigned long)s_uiOrdDropped);
 			N3DS_DebugLog(cacheLine);
 
 			/*
@@ -5279,7 +4952,7 @@ void NativeRenderer_SwapWindow(void)
 				         (unsigned long)s_subPageCacheEvictions, subEvictionsWindow);
 				N3DS_DebugLog(cacheLine);
 
-				snprintf(cacheLine, sizeof(cacheLine), "[CTR-3DS] rmemo on=%d hits=%lu", g_dbg_resolveMemo, (unsigned long)s_resolveMemoHits);
+				snprintf(cacheLine, sizeof(cacheLine), "[CTR-3DS] rmemo hits=%lu", (unsigned long)s_resolveMemoHits);
 				N3DS_DebugLog(cacheLine);
 
 				snprintf(cacheLine, sizeof(cacheLine),
@@ -6007,13 +5680,6 @@ void NativeRenderer_Clear(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 		return;
 	}
 
-	/* skyfirst OFF is the s43 punch-through comparison leg: nothing drains
-	 * the accumulators ahead of the track there, so keep the leg pure. */
-	if (!g_dbg_skyFirst || !g_dbg_backdrop)
-	{
-		return;
-	}
-
 	if ((s_backdropVertUsed + 6) > N3DS_BACKDROP_VERT_CAP)
 	{
 		return;
@@ -6375,53 +6041,22 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 	}
 
 	/*
-	 * Cross-split flush points (the batching lever): a pending run from an
-	 * earlier split keeps accumulating unless THIS split needs different
-	 * GPU state. citro3d records a state change at the next draw, so state
-	 * must only ever change while no run is pending -- flush first, then
-	 * assert. Both branches are change-gated here (SetColorDoubling has no
-	 * dedup of its own -- it dirties the TEV unconditionally), so the
-	 * common case (consecutive same-state splits) costs two compares and
-	 * no flush: that is where the draws/frame reduction comes from.
+	 * Merge frame: no immediate GPU state calls at all -- state is set at the
+	 * barrier, per emitted draw. Opaque calls touch nothing here (bins are
+	 * self-keyed and the blend run legally stays open across them); a blend
+	 * call closes the run only on a real state change, then stamps the run
+	 * descriptors with this call's state -- N3DS_MergeCloseBlendRun reads them
+	 * at close time, so they must always describe what the run is
+	 * accumulating.
 	 */
-	if (s_mergeActive)
+	if (s_currentBlendMode != 0 /* BM_NONE */)
 	{
-		/*
-		 * Merge frame: no immediate GPU state calls at all -- state is set
-		 * at the barrier, per emitted draw. Opaque calls touch nothing here
-		 * (bins are self-keyed and the blend run legally stays open across
-		 * them); a blend call closes the run only on a real state change,
-		 * then stamps the run descriptors with this call's state --
-		 * N3DS_MergeCloseBlendRun reads them at close time, so they must
-		 * always describe what the run is accumulating.
-		 */
-		if (s_currentBlendMode != 0 /* BM_NONE */)
+		if ((s_runVertCount > 0) && ((untextured != s_runUntextured) || (s_currentBlendMode != s_runBlendMode)))
 		{
-			if ((s_runVertCount > 0) && ((untextured != s_runUntextured) || (s_currentBlendMode != s_runBlendMode)))
-			{
-				N3DS_MergeCloseBlendRun(N3DS_BLEND_CLOSE_STATE);
-			}
-			s_runUntextured = untextured;
-			s_runBlendMode = s_currentBlendMode;
+			N3DS_MergeCloseBlendRun(N3DS_BLEND_CLOSE_STATE);
 		}
-	}
-	else
-	{
-		if (untextured != s_runUntextured)
-		{
-			N3DS_FlushPendingRun();
-			/* bright is 2 for every textured primitive and 1 for every
-			 * untextured one, without exception (native_gpu.c), so the split's
-			 * texture sentinel determines it for the whole call. */
-			N3DS_C3DSetColorDoubling(untextured ? 0 : 1);
-			s_runUntextured = untextured;
-		}
-		if (s_currentBlendMode != s_runBlendMode)
-		{
-			N3DS_FlushPendingRun();
-			N3DS_C3DSetBlendMode(s_currentBlendMode);
-			s_runBlendMode = s_currentBlendMode;
-		}
+		s_runUntextured = untextured;
+		s_runBlendMode = s_currentBlendMode;
 	}
 
 	/*
@@ -6516,7 +6151,7 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 		{
 			extern int g_dbg_packetDepth;
 
-			if (s_mergeActive && g_dbg_uiOrder && g_dbg_packetDepth && (triVerts[0].emitOrdinal >= 0xFFC0u))
+			if (g_dbg_packetDepth && (triVerts[0].emitOrdinal >= 0xFFC0u))
 			{
 				N3DS_Vertex *uiDst;
 
@@ -6615,7 +6250,7 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 			}
 		}
 
-		if (s_mergeActive && (s_currentBlendMode == 0 /* BM_NONE */))
+		if (s_currentBlendMode == 0 /* BM_NONE */)
 		{
 			/* Opaque under merge: no run, no order -- straight into the
 			 * per-state bin; the depth test owns layering. Untextured
@@ -6651,21 +6286,14 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 			/* Attribute the flush: only a MID-RUN atlas change is the
 			 * potentially-reducible kind (s_runVertCount > 0 excludes the
 			 * frame's first triangle, which flushes nothing). Blend/TEV
-			 * changes were already handled (pending run flushed) at call
-			 * entry, so an atlas change is the only break left here. */
+			 * changes were already handled at call entry, so an atlas change
+			 * is the only break left here. */
 			if ((atlasIdx != s_runAtlas) && (s_runVertCount > 0))
 			{
 				s_atlasSwitchFlushes++;
 			}
-			if (s_mergeActive)
-			{
-				/* Blend run under merge: recorded segment, not a draw. */
-				N3DS_MergeCloseBlendRun(N3DS_BLEND_CLOSE_ATLAS);
-			}
-			else
-			{
-				N3DS_FlushPendingRun();
-			}
+			/* Blend run: recorded segment, not a draw. */
+			N3DS_MergeCloseBlendRun(N3DS_BLEND_CLOSE_ATLAS);
 			s_runAtlas = atlasIdx;
 		}
 

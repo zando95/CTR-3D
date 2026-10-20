@@ -220,9 +220,7 @@ typedef struct
 	 * re-evaluated per node: the walk can run on the worker thread while the
 	 * game thread flips g_dbg_trackRender at any time, so re-reading live
 	 * state at two points could clear with the flag off then record with it
-	 * on, filling a table it never cleared. Precedent: s_mergeActive is
-	 * latched at BeginScene the same way (n3ds_backend.c,
-	 * native_renderer_3ds.c).
+	 * on, filling a table it never cleared.
 	 */
 	int otRecorderActive;
 
@@ -1424,33 +1422,15 @@ int g_dbg_packetDepth = CTR_NATIVE_RENDERER_DEFAULT_ON;
  */
 int g_dbg_pktDepthBias = 0;
 
-/* Deferred driver-local exhaust-smoke pass. External linkage (the dumpreq
- * handler lives in the separate n3ds_backend.c TU). A/B master, default ON:
- * 1 = driver-local smoke is held out of the normal merge and redrawn AFTER the
- * native model pass so it paints over its own kart body (retail's painter's
- * order) while a nearer wall/kart still occludes it; 0 = old behaviour (smoke
- * in the merge, body over it). Runtime A/B: dumpreq 'smokedefer'.
+/* Deferred driver-local exhaust-smoke pass: driver-local smoke is held out of
+ * the normal merge and redrawn AFTER the native model pass so it paints over
+ * its own kart body (retail's painter's order) while a nearer wall/kart still
+ * occludes it.
  *
- * NO near-bias: the smoke's own captured view.z depth
- * (GTECapture_StoreParticleCorner), drawn after the body, is sufficient on its
- * own -- owner tested bias 0 and it was perfect, so the dial was removed.
- * The depth CAPTURE is still essential: without it the smoke falls back to the
+ * It needs no near-bias: the smoke's own captured view.z depth
+ * (GTECapture_StoreParticleCorner), drawn after the body, is sufficient. The
+ * depth CAPTURE is essential: without it the smoke falls back to the
  * parse-order ordinal axis, reads as infinitely far, and is occluded by all. */
-int g_dbg_smokeDefer = 1;
-
-/* Skybox far-pin A/B (dumpreq 'skyfar'). Default ON. The range table and the
- * resolver branch it gates live in the guarded block below. */
-int g_dbg_skyFar = 1;
-
-/* Minimap-box probe (dumpreq 'stpass1' / 'stpass2'): skip pass 1 or pass 2
- * of every textured-semi-trans two-pass split (DrawSplit below). Whichever skip
- * removes the minimap's black box names the guilty pass -- PASS1 is the
- * opaque-body view drawn blending-off (a box there means 0x0000/STP texels are
- * leaking into the PASS1 view on this platform), PASS2 is the blended STP view
- * (a box there means the blend state is wrong at replay time). Diagnostic
- * only; both default ON = unchanged output, and PC has no toggle for them. */
-int g_dbg_stPass1 = 1;
-int g_dbg_stPass2 = 1;
 
 /* Set per node by the OT walk (beside GTECapture_MarkOTNode): whether the node
  * the walk is about to hand to direct-emit or the parse path is sky-class (the
@@ -1483,10 +1463,6 @@ global_variable int s_hudshineNodeActive;
  * PacketDepth_ResolveXY, which sees screen coordinates, not packet addresses. */
 global_variable int s_menubdNodeActive;
 
-/* Runtime A/B for the menu-backdrop stamp (dumpreq 'menubd'). OFF restores the
- * raw emit ordinal, i.e. the strips buried behind the flag. */
-int g_dbg_menuBackdrop = 1;
-
 /*
  * Runtime A/B for the HUD shine's UI-band classification (dumpreq 'hudshine').
  * ON = UI_Weapon_DrawBG's quads take the UI band (widescreen X ramp, stereo
@@ -1495,22 +1471,6 @@ int g_dbg_menuBackdrop = 1;
  * the fruit and icon it backs move with the wide window.
  */
 int g_dbg_hudShine = 1;
-
-/*
- * STEREO depth for the menu backdrop, in view.z units -- the axis
- * s_stereoConv (1200) lives on, where the player kart band is ~256..2278.
- * Split from the occlusion stamp on purpose, the same two-channel trick the
- * checkered flag uses: occlusion has to stay at PKTDEPTH_MENU_BACKDROP or the
- * flag stops losing to the strips, but that stamp is view.z ~32767, which
- * parks the backdrop at effectively infinite parallax. Setting this pulls the
- * PARALLAX plane forward without disturbing any layering.
- *
- * 0 (default) = the UI band, flattened to the screen plane exactly like the
- * window border. Otherwise the view.z plane the strips sit at, for pushing the
- * backdrop back into the box: 1232 is the flag's anchor just behind the screen,
- * larger values sit deeper. dumpreq 'menubdpar N'.
- */
-int g_dbg_menuBdParZ = 0;
 
 /* ------------------------------------------------------------------------- */
 
@@ -1661,8 +1621,6 @@ internal void PacketDepth_BeginWalk(void)
  */
 internal u16 PacketDepth_UiStamp(u32 uiOrdinal)
 {
-	u32 slot;
-
 #if defined(__3DS__)
 	/*
 	 * ORDERED UI PASS: every UI primitive gets the SAME stamp, the nearest
@@ -1671,23 +1629,17 @@ internal u16 PacketDepth_UiStamp(u32 uiOrdinal)
 	 * replayed in submission order at the end of the frame (N3DS_DrawUiPass,
 	 * native_renderer_3ds.c).
 	 */
-	{
-		extern int g_dbg_uiOrder;
-		extern int g_dbg_uiPin; /* bisect: pin half, split off from routing */
+	(void)uiOrdinal;
+	return (u16)0xFFFF;
+#else
+	u32 slot = uiOrdinal >> PKTDEPTH_UI_ORD_SHIFT;
 
-		if (g_dbg_uiOrder && g_dbg_uiPin)
-		{
-			return (u16)0xFFFF;
-		}
-	}
-#endif
-
-	slot = uiOrdinal >> PKTDEPTH_UI_ORD_SHIFT;
 	if (slot > (u32)(PKTDEPTH_UI_BAND - 1))
 	{
 		slot = (u32)(PKTDEPTH_UI_BAND - 1);
 	}
 	return (u16)(PKTDEPTH_UI_BASE + slot);
+#endif
 }
 
 global_variable u16 s_pendingDepth;
@@ -1724,13 +1676,13 @@ global_variable u32 s_pktDepthFlatFallback;
 global_variable int s_pktDepthLastAppended;
 global_variable int s_pktDepthLastResolved;
 
-/* s45 miss forensics (gated on g_dbg_modelDepthCheck, dumpreq 'dcheck'): up to
+/* s45 miss forensics (gated on g_dbg_modelDepthCheck, PC --model-depth-check): up to
  * 4 sampled misses per [PKTDEPTH] window. Per sample: the screen XY of the
  * vertex that missed, how many vertices hit before it, a 3x3 neighbourhood
  * probe of the capture table (nbr>0 = the depth exists a pixel away = rounding
  * mismatch between store and packet; nbr=0 = never stored = producer gap), the
  * OT slot the fallback read, and the depth it handed out (sentinels: 0xFFFE =
- * no content bucket, kept ordinal; 0xFFFD = missordinal A/B kept ordinal).
+ * no content bucket, kept ordinal).
  * Exempt (flag) primitives are misses BY DESIGN and are not sampled. This is
  * the instrument that decides the warp-pad prize burial's remaining unknown. */
 #define PKTMISS_SAMPLE_N 8
@@ -1828,7 +1780,7 @@ internal int NativeGpu_IsSmokePacket(uintptr_t addr)
  * the backdrop. The sky has no real depth (GTE translation zeroed) and its
  * stores are suppressed, so pinning it to the absolute far plane (stamp 0)
  * makes it lose to every real surface by construction, matching retail's
- * paint-first behavior. Runtime A/B: dumpreq 'skyfar' (g_dbg_skyFar).
+ * paint-first behavior.
  */
 global_variable uintptr_t s_skyRangeStart[2];
 global_variable uintptr_t s_skyRangeEnd[2];
@@ -2188,7 +2140,6 @@ global_variable struct
 	u32 mdlReal, mdlFellBack;   /* resolved / missed, instance-matrix provenance */
 	u32 unkFellBack;            /* missed on vertex 0: no provenance evidence at all */
 	u32 mixed;                  /* vertices of one primitive owned by two objects */
-	u32 strictMissed;           /* 'mixed' primitives demoted to a miss by strictmtx */
 	/* Per-vertex vs flat-at-farthest-corner, split the same way. The existing
 	 * [PKTDEPTH] perVert/flat pair is frame-wide and therefore cannot say
 	 * whether a kart is in the flat group -- which is the only question left. */
@@ -2227,43 +2178,23 @@ global_variable int s_pendingDepthIsModel;
 global_variable u32 s_pendingDepthSpread;
 
 /*
- * A/B switches, both default OFF so the first thing on screen is today's
- * behaviour. Neither is a proposed fix; each removes one suspect so the owner
- * can say whether the karts come out of the road.
+ * Partial-hit fill. The capture table is direct-mapped, so a later same-frame
+ * projection can steal any corner's slot; the resolve loop then fails the
+ * WHOLE primitive on that one corner and the no-bucket exit leaves it on the
+ * raw emit ordinal -- z near the far pin, buried behind everything (the
+ * invisible-tire blink: a sprite quad's 4 corners all resolve or none do).
+ * When the resolved corners agree on a matrix, their own max depth is the
+ * primitive's depth to within its own thickness -- strictly better than either
+ * fallback.
  *
- * strictmtx  -- treat a 'mixed' primitive as a miss. Restores this subsystem's
- *               own stated rule ("a miss is always a miss, never a wrong
- *               value"), which eviction is the sole violator of.
- * missordinal-- on a miss, keep the emit ordinal instead of reconstructing from
- *               the OT bucket. KNOWN LOUD SIDE EFFECT: this is the defect
- *               deliberately reintroduced -- geometry that never GTE-projects
- *               (AnimateWater, so the waterfalls and lava) lands on the ordinal
- *               axis and draws over everything including the HUD. Expected, not
- *               a new bug; what matters is only whether the KARTS move.
- */
-int g_dbg_pktDepthStrictMtx = 0;
-int g_dbg_pktDepthMissOrdinal = 0;
-/*
- * Partial-hit fill (dumpreq `pdfill [N]`). The capture table is
- * direct-mapped, so a later same-frame projection can steal any corner's
- * slot; the resolve loop then fails the WHOLE primitive on that one corner
- * and the no-bucket exit leaves it on the raw emit ordinal -- z near the
- * far pin, buried behind everything (the invisible-tire blink: a sprite
- * quad's 4 corners all resolve or none do). When the resolved corners
- * agree on a matrix, their own max depth is the primitive's depth to
- * within its own thickness -- strictly better than either fallback.
- *
- * Modes: 0 = off (whole-prim miss fallbacks, the blink). 1 = fill on ANY
- * hit -- too loose: a prim whose corners were NEVER stored (synthesized 2D
- * quads; the char-select gradient) can catch a STRANGER's entry at a
- * coincident pixel and surface for just that frame (the gradient flicker).
- * 2 (default) = fill only on an honest partial hit: at most one corner
- * missing, OR >= 2 hits that agree in depth to within
- * PKTDEPTH_PARTIAL_SPREAD_MAX -- one object's corners agree, strangers at
- * screen-quad distances do not.
+ * Fills only on an honest partial hit: at most one corner missing, OR >= 2
+ * hits that agree in depth to within PKTDEPTH_PARTIAL_SPREAD_MAX -- one
+ * object's corners agree, strangers at screen-quad distances do not. Filling
+ * on ANY hit is too loose: a prim whose corners were NEVER stored
+ * (synthesized 2D quads; the char-select gradient) can catch a STRANGER's
+ * entry at a coincident pixel and surface for just that frame.
  */
 #define PKTDEPTH_PARTIAL_SPREAD_MAX 64
-int g_dbg_pktDepthPartialFill = 2;
 global_variable u32 s_pktDepthPartialFilled;
 
 internal void PacketDepth_NoteExtent(u16 stamp, u16 *lo, u16 *hi)
@@ -2369,7 +2300,7 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 		perVertPar = NULL;
 	}
 
-	if (g_dbg_skyFar && s_skyNodeActive)
+	if (s_skyNodeActive)
 	{
 		/*
 		 * SKYBOX -> absolute far plane (block above NativeGpu_MarkSkyRange).
@@ -2402,7 +2333,7 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 		return 1;
 	}
 
-	if (g_dbg_menuBackdrop && s_menubdNodeActive)
+	if (s_menubdNodeActive)
 	{
 		/*
 		 * MENU BACKDROP (character-select diorama strips). Same shape as the
@@ -2422,13 +2353,8 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 		 * the convergence plane, so the two stay locked if `stereoconv` moves.
 		 * Same idiom as the paint-on-top flat-overlay flavor below.
 		 */
-		u16 par = PKTDEPTH_UI_BASE;
+		const u16 par = PKTDEPTH_UI_BASE;
 
-		/* Override with an explicit view.z plane -- see g_dbg_menuBdParZ. */
-		if (g_dbg_menuBdParZ > 0)
-		{
-			par = PacketDepth_ClampWorld(0xFFFFu - (u16)g_dbg_menuBdParZ);
-		}
 		*out = PKTDEPTH_MENU_BACKDROP;
 		if (perVert)
 		{
@@ -2504,9 +2430,7 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 			 * s_uimapNodeActive, same node mechanism as the sky span) get their
 			 * own band stamp so the renderer can peel them from the ordered UI
 			 * list onto the bottom target. Only while the ordered-UI pin owns
-			 * the band (stamp == 0xFFFF): the uipin/uiorder diagnostic legs use
-			 * per-ordinal stamps where 0xFFFE is a legitimate UI position, and
-			 * retagging there would misroute a stranger. */
+			 * the band (stamp == 0xFFFF). */
 			{
 				extern int g_dbg_btmMap;
 
@@ -2709,18 +2633,13 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 		}
 	}
 
-	/* Mechanism 1's signature, and its A/B. A primitive cannot legitimately
-	 * span two matrix states -- one face is projected under one matrix -- so
-	 * every 'mixed' is an eviction that has already handed at least one vertex
-	 * a stranger's depth. */
+	/* Mechanism 1's signature. A primitive cannot legitimately span two matrix
+	 * states -- one face is projected under one matrix -- so every 'mixed' is
+	 * an eviction that has already handed at least one vertex a stranger's
+	 * depth. */
 	if (mixed)
 	{
 		s_pktDepth2.mixed++;
-		if (g_dbg_pktDepthStrictMtx)
-		{
-			s_pktDepth2.strictMissed++;
-			missed = 1;
-		}
 	}
 
 	if (missed)
@@ -2816,41 +2735,13 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 			s_pktMissSampStaleAge[missSampIdx] = (u8)((staleAge > 255u) ? 255u : staleAge);
 		}
 
-		if ((g_dbg_pktDepthPartialFill != 0) && (hits > 0) && !mixed &&
-		    ((g_dbg_pktDepthPartialFill == 1) || (hits >= (n - 1)) ||
-		     ((hits >= 2) && ((u32)(maxSz3 - minSz3) <= PKTDEPTH_PARTIAL_SPREAD_MAX))))
+		if ((hits > 0) && !mixed && ((hits >= (n - 1)) || ((hits >= 2) && ((u32)(maxSz3 - minSz3) <= PKTDEPTH_PARTIAL_SPREAD_MAX))))
 		{
-			/* See the flag's declaration comment. Flat across the primitive:
+			/* See the partial-hit fill comment above. Flat across the primitive:
 			 * the missing corner has no per-vertex depth to contribute, and a
 			 * flat sprite/small poly is what this population is. */
 			*out = PacketDepth_ClampWorld(0xFFFFu - maxSz3);
 			s_pktDepthPartialFilled++;
-#if defined(CTR_INTERNAL) && defined(__3DS__)
-			{
-				/* Gradient-flicker forensics (remove with the hunt): who gets
-				 * filled, with how many hits and what agreement. Throttled per
-				 * frame; only while the tirelog trace is armed. */
-				extern int g_dbg_tireVtxLog;
-				static u32 s_pdfillLogFrame;
-				static u32 s_pdfillLogCount;
-
-				if (g_dbg_tireVtxLog)
-				{
-					if (s_pdfillLogFrame != s_pktDepth.frames)
-					{
-						s_pdfillLogFrame = s_pktDepth.frames;
-						s_pdfillLogCount = 0;
-					}
-					if (s_pdfillLogCount < 24)
-					{
-						s_pdfillLogCount++;
-						Platform_LogInstrument("[PDFILL] pf=%u n=%d hits=%d spread=%u xy0=%d,%d xy1=%d,%d out=%04x\n",
-						                       (unsigned)s_pktDepth.frames, n, hits, (unsigned)(maxSz3 - minSz3), (int)xs[0],
-						                       (int)ys[0], (n > 1) ? (int)xs[1] : 0, (n > 1) ? (int)ys[1] : 0, (unsigned)*out);
-					}
-				}
-			}
-#endif
 			PacketDepth_NoteExtent(*out, &s_pktDepth.realMin, &s_pktDepth.realMax);
 			s_pendingDepthSpread = 0;
 			if (missSampIdx >= 0)
@@ -2890,16 +2781,6 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 			 * choice, and on a build with no depth test it was: keeping the
 			 * caller's ordinal is at least the behaviour this content had
 			 * before the feature existed. */
-			return 0;
-		}
-		if (g_dbg_pktDepthMissOrdinal)
-		{
-			/* Mechanism 2's A/B -- see the switch's own comment for the side
-			 * effect this is expected to produce. */
-			if (missSampIdx >= 0)
-			{
-				s_pktMissSampOut[missSampIdx] = 0xFFFDu;
-			}
 			return 0;
 		}
 		*out = PacketDepth_ClampWorld(0xFFFFu - (s_gpu.otCurrentSlotIdx << PKTDEPTH_OT_SHIFT));
@@ -3371,7 +3252,7 @@ void NativeGpu_ResetEmitOrdinal(void)
 			Platform_LogInstrument("[PKTDEPTHZ] realZ=%u..%u backZ=%u..%u uiZ=%u..%u (larger = nearer)\n", s_pktDepth.realMin, s_pktDepth.realMax,
 			             s_pktDepth.backMin, s_pktDepth.backMax, s_pktDepth.uiMin, s_pktDepth.uiMax);
 			/* s45 miss forensics flush -- see the sample declarations for the
-			 * field meanings. Sampled misses only exist while dcheck is on. */
+			 * field meanings. Sampled misses only exist while the depth check is on. */
 			{
 				u32 mk;
 
@@ -3415,10 +3296,10 @@ void NativeGpu_ResetEmitOrdinal(void)
 				u32 evictSame = 0, evictDz = 0;
 				const u32 evictDiff = GTECapture_ReadEvictCensus(&evictSame, &evictDz);
 
-				Platform_LogInstrument("[PKTDEPTH2] dom=%u wld=%lu/%lu mdl=%lu/%lu unkFell=%lu mixed=%lu strictMiss=%lu evict=%lu/%lu evictDz=%lu\n",
+				Platform_LogInstrument("[PKTDEPTH2] dom=%u wld=%lu/%lu mdl=%lu/%lu unkFell=%lu mixed=%lu evict=%lu/%lu evictDz=%lu\n",
 				                       (unsigned)s_pktDepthDomMtx, (unsigned long)s_pktDepth2.wldReal, (unsigned long)s_pktDepth2.wldFellBack,
 				                       (unsigned long)s_pktDepth2.mdlReal, (unsigned long)s_pktDepth2.mdlFellBack, (unsigned long)s_pktDepth2.unkFellBack,
-				                       (unsigned long)s_pktDepth2.mixed, (unsigned long)s_pktDepth2.strictMissed, (unsigned long)evictDiff,
+				                       (unsigned long)s_pktDepth2.mixed, (unsigned long)evictDiff,
 				                       (unsigned long)evictSame, (unsigned long)evictDz);
 				/* THE LINE THIS BUILD EXISTS FOR. mdlFlat is the count of model
 				 * primitives stamped at their own farthest corner; spread is how
@@ -4523,19 +4404,13 @@ void DrawSplit(const GPUDrawSplit *split)
 		// PS1 textured ABE only blends texels whose sampled 16-bit color has STP
 		// set; non-STP texels remain opaque. Native split state is per draw,
 		// so draw this primitive-sized split twice with shader-side STP masks.
-		if (g_dbg_stPass1)
-		{
-			NativeRenderer_SetBlendMode(BM_NONE);
-			NativeRenderer_SetPSXTextureSemiTransPass(1);
-			NativeRenderer_DrawTriangles(split->startVertex, split->numVerts / 3);
-		}
+		NativeRenderer_SetBlendMode(BM_NONE);
+		NativeRenderer_SetPSXTextureSemiTransPass(1);
+		NativeRenderer_DrawTriangles(split->startVertex, split->numVerts / 3);
 
-		if (g_dbg_stPass2)
-		{
-			NativeRenderer_SetBlendMode(split->blendMode);
-			NativeRenderer_SetPSXTextureSemiTransPass(2);
-			NativeRenderer_DrawTriangles(split->startVertex, split->numVerts / 3);
-		}
+		NativeRenderer_SetBlendMode(split->blendMode);
+		NativeRenderer_SetPSXTextureSemiTransPass(2);
+		NativeRenderer_DrawTriangles(split->startVertex, split->numVerts / 3);
 
 		NativeRenderer_SetPSXTextureSemiTransPass(0);
 	}
@@ -4680,10 +4555,9 @@ void DrawAllSplits()
 	for (int i = 1; i <= s_gpu.splitIndex; i++)
 	{
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
-		/* s42b: hold driver-local exhaust smoke out of the normal pass and copy
-		 * it for the post-model redraw (NativeGpu_DrawDeferredSmoke). Toggle off
-		 * (dumpreq 'smokedefer') falls straight through to the old in-merge draw. */
-		if (s_gpu.splits[i].deferredSmoke && g_dbg_smokeDefer)
+		/* Hold driver-local exhaust smoke out of the normal pass and copy it for
+		 * the post-model redraw (NativeGpu_DrawDeferredSmoke). */
+		if (s_gpu.splits[i].deferredSmoke)
 		{
 			NativeGpu_CaptureDeferredSmoke(&s_gpu.splits[i]);
 			continue;
@@ -6229,10 +6103,7 @@ int NativeWide_GlowStretchX(int x)
 int NativeUiShine_ExactTiling(void)
 {
 #if defined(__3DS__)
-	extern int g_dbg_uiOrder;
-	extern int g_dbg_uiPin;
-
-	return g_dbg_hudShine && g_dbg_packetDepth && g_dbg_uiOrder && g_dbg_uiPin;
+	return g_dbg_hudShine && g_dbg_packetDepth;
 #else
 	return 0;
 #endif
@@ -6247,10 +6118,8 @@ int NativeUiMap_RouteActive(void)
 {
 #if defined(__3DS__)
 	extern int g_dbg_btmMap;
-	extern int g_dbg_uiOrder;
-	extern int g_dbg_uiPin;
 
-	return g_dbg_btmMap && g_dbg_uiOrder && g_dbg_uiPin && g_dbg_packetDepth;
+	return g_dbg_btmMap && g_dbg_packetDepth;
 #else
 	return 0;
 #endif

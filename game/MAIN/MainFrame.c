@@ -808,8 +808,7 @@ static void MainFrame_VisMemAddDriverPVS(struct GameTracker *gGT, int playerInde
 //
 // Cost to watch: drawing more geometry pushes more primitives through the
 // per-level PrimMem budget (MainInit_GetPrimMemSize, data.primMem_SizePerLEV_*).
-// If that overflows, geometry drops again; CTR_NATIVE_MEMPACK_RETAIL_PRESSURE=0
-// in platform/native_memory.c opens an 8 MiB arena if headroom is needed.
+// If that overflows, geometry drops again.
 // Modes:
 //   0 - retail. The baked PVS decides everything.
 //   1 - fall back to all-visible only when neither the camera nor the driver's
