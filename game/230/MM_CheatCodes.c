@@ -32,6 +32,19 @@ void MM_Cheat_SpyroFlag(void)
 	g_dbg_flagStyle = (g_dbg_flagStyle == 2) ? 0 : 2;
 	OtherFX_Play(MM_CHEAT_SUCCESS_SFX, 1);
 }
+
+/*
+ * Retail's SOAR chain-loaded the Spyro 2 demo, the one legitimate way to play as Nitrous Oxide
+ * (a GameShark was the only other route). The PS Vita port (Rinnegatamante's
+ * Crash-Team-Racing-High-Octane) repoints the very same cheat at unlocking Oxide instead, closer
+ * to what SOAR was for than the flag-color easter egg above. This keeps both: the flag toggle
+ * stays (nothing regresses for people used to it) and the unlock is added on top.
+ */
+void MM_Cheat_UnlockOxide(void)
+{
+	UNLOCK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_OXIDE);
+	MM_Cheat_SpyroFlag(); // plays MM_CHEAT_SUCCESS_SFX
+}
 #endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800ac9fc-0x800aca34.

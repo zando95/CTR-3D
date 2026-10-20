@@ -1165,6 +1165,7 @@ void MM_Cheat_TurboCounter(void);
  * MM_ParseCheatCodes rather than from the full D230 cheat table. */
 void MM_Cheat_PrideFlag(void);
 void MM_Cheat_SpyroFlag(void);
+void MM_Cheat_UnlockOxide(void);
 #endif
 
 void UI_Map_DrawMap_ExtraFunc(struct Icon *icon, POLY_FT4 *p, s16 posX, s16 empty, struct PrimMem *primMem, uint32_t *otMem, u32 transparency);

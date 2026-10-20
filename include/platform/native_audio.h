@@ -36,6 +36,8 @@ u32 NativeAudio_VoiceCacheWarmSectorsRead(void);
 int NativeAudio_VoiceCacheWarmPercent(void);
 int NativeAudio_PlayXAFile(const char *relativePath, int channelFilter, int volumeLeft, int volumeRight);
 int NativeAudio_GetXATrackLength(int categoryID, int xaID);
+void NativeAudio_SetVoiceLanguage(int languageFileIndex);
+int NativeAudio_HasPalVoicePack(void);
 int NativeAudio_IsXAPlaying(void);
 int NativeAudio_GetXACurrOffset(void);
 int NativeAudio_GetXAMaxSample(void);

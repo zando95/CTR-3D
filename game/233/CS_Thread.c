@@ -1769,7 +1769,13 @@ struct Thread *CS_Thread_Init(s16 modelID, const char *name, struct CsThreadInit
 			char *const *base;
 			int off = (modelID - STATIC_CRASHDANCE);
 
+#if defined(CTR_NATIVE)
+			// Oxide has no first-place win dance on the retail disc (see LOAD_TenStages.c); when he
+			// legitimately wins a race, fall through to a normal dance instead of his missing one.
+			if ((modelID == gGT->podium_modelIndex_First) && (modelID != STATIC_OXIDEDANCE))
+#else
 			if (modelID == gGT->podium_modelIndex_First)
+#endif
 			{
 				base = R233.danceFirstScripts;
 			}

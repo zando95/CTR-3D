@@ -652,10 +652,32 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		void (*setPtrCb)(struct LoadQueueSlot *) = LOAD_QUEUE_CALLBACK_SET_POINTER;
 
 		// podium first place
-		if ((ptrIndexArr[0] != 0) && (ptrIndexArr[0] != STATIC_OXIDEDANCE))
+		if (ptrIndexArr[0] != 0)
 		{
-			fileIndex = BI_DANCEMODELWIN + podiumFileVariant + (ptrIndexArr[0] - STATIC_CRASHDANCE) * LOAD_PODIUM_MODEL_FILE_STRIDE;
+			int danceModelIndex = ptrIndexArr[0] - STATIC_CRASHDANCE;
+
+#if defined(CTR_NATIVE)
+			// Oxide has no first-place ("win") dance model in the retail BIGFILE -- only PC and this
+			// native build can ever reach this with ptrIndexArr[0] == STATIC_OXIDEDANCE, since he is
+			// now a legitimately playable/winnable racer (see MM_Characters.c). Use his "lose" dance
+			// instead of leaving the model slot empty, but (unlike every other case here) still
+			// queue the load either way.
+			if (ptrIndexArr[0] == STATIC_OXIDEDANCE)
+			{
+				fileIndex = BI_DANCEMODELLOSE + podiumFileVariant + danceModelIndex * LOAD_PODIUM_MODEL_FILE_STRIDE;
+			}
+			else
+			{
+				fileIndex = BI_DANCEMODELWIN + podiumFileVariant + danceModelIndex * LOAD_PODIUM_MODEL_FILE_STRIDE;
+			}
 			LOAD_AppendQueue(0, LT_GETADDR, fileIndex, &ptrModelPtrArr[0], setPtrCb);
+#else
+			if (ptrIndexArr[0] != STATIC_OXIDEDANCE)
+			{
+				fileIndex = BI_DANCEMODELWIN + podiumFileVariant + danceModelIndex * LOAD_PODIUM_MODEL_FILE_STRIDE;
+				LOAD_AppendQueue(0, LT_GETADDR, fileIndex, &ptrModelPtrArr[0], setPtrCb);
+			}
+#endif
 		}
 
 		// podium second place

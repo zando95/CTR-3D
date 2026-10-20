@@ -57,7 +57,22 @@ The screens:
 - A frame-rate readout sits in the top-right corner of the bottom screen.
 - The 3D slider works in real time.
 
-The main menu has an **OPTIONS** entry with four toggles: PAL PENTA (Penta Penguin's PAL/Japanese stats), RESERVES METER (the boost-reserves bar), BOTTOM MAP, and TEXTURE FILTER. They return to their defaults on every launch. VS and Battle modes are not on the menu; one console has one controller.
+The main menu has an **OPTIONS** entry with four toggles: PAL PENTA (Penta Penguin's PAL/Japanese stats), RESERVES METER (the boost-reserves bar), BOTTOM MAP, and TEXTURE FILTER. They return to their defaults on every launch.
+
+Below the toggles is a **LANGUAGE** row: confirm cycles through English, French, German, Italian, Spanish and Dutch, and the game text changes immediately. Unlike the toggles, the choice is remembered in `/3ds/ctr_native/language.cfg`; delete that file to go back to English. The OPTIONS menu itself is translated too (title, every option, and ON/OFF as SI/NO, JA/NEIN, OUI/NON and so on). Voices stay English unless you install PAL voices (see below), because the NTSC-U disc has no other voice tracks. VS and Battle modes are not on the menu; one console has one controller.
+
+### PAL voices
+
+The NTSC-U disc only has English speech. To hear the other languages, extract the voices from a PAL disc image of the game:
+
+1. Install Python 3.11 or newer.
+2. Put your PAL Crash Team Racing `.bin` dump (raw 2352-byte sectors) next to `tools/extract_pal_voices.py`.
+3. Run `python extract_pal_voices.py YOUR_PAL_DUMP.bin`. Add `--language SPN` (and `FRN`, `GRM`, `ITL`, `DCH`) to extract only the languages you want and save SD space. English is not needed.
+4. Copy the generated `pal-voices` folder to the SD card so the final path is `/3ds/ctr_native/mods/pal-voices`, with `XA/` directly inside it (for example `/3ds/ctr_native/mods/pal-voices/XA/SPN.XNF` and `/3ds/ctr_native/mods/pal-voices/XA/SPN/GAME/S01.XA`).
+
+Pick a language in OPTIONS and the voices follow. A language whose pack is not installed, and the few lines the PAL disc does not have, play in English. The voices of the language you had selected at launch are preloaded into RAM with the rest of the audio; if you switch language later, the new language's voices are read from the SD card until the next launch, which can add a short hitch when a voice line starts. `sdmc:/ctr3ds.log` records which packs were found (lines starting with `[PALVOICE]`).
+
+The extractor is the one from the PS Vita port ([Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane)), which also defined the PAL voice mapping used here.
 
 ## Reporting a bug
 
@@ -79,6 +94,9 @@ Everything here is on by default unless it says otherwise. The toggles are the O
 - **The full-screen feedback blur** used by the clock item and the intro flyby's ghost trail is removed. The clock's flash and slowdown remain.
 - **The close-up "mosaic" texture tier is not rendered.** Near surfaces use the standard texture.
 - **The Spyro 2 demo cheat code does something else now**, since a native build cannot launch the demo off the disc. One new cheat code has been added.
+- **Language selection** (English, French, German, Italian, Spanish, Dutch), using the localized text files that are already on the NTSC-U disc. The n-tilde, inverted `¡` `¿`, the ordinal `º` and quotation marks that those files rely on are drawn from existing font icons, because the NTSC-U font code does not know them. Remembered between launches.
+- **Voices in the selected language** (French, German, Italian, Spanish, Dutch) from PAL voice packs on the SD card. English keeps the NTSC-U disc's own voices.
+- **Nitros Oxide as a playable character.** Enter SOAR (originally the code for the Spyro 2 demo, which this port cannot chain-load) at the cheat-code screen to unlock him for Arcade and Versus. His character-select model and icon slot come from the PS Vita port ([Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0), since the retail NTSC-U disc was never built with a 16th racer in mind. Unlocking him also still cycles the flag-color easter egg SOAR already triggered; both happen together.
 - **VS and Battle modes** are not offered.
 
 The PC build from this repository carries the changes that are not 3DS-specific: PAL Penta, the reserves meter, the ice-reflection fix and the cheat codes. On PC they are always on; only the 3DS build has the OPTIONS menu.
