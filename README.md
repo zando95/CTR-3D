@@ -10,7 +10,7 @@ The PC port is still here and still builds; see [PC builds](#pc-builds-windows-a
 
 ## Play as Nitros Oxide
 
-Enter the code **ROSWELL** on the main menu to unlock Nitros Oxide, the final boss, as a racer. Hold **L** and **R**, then press on the D-Pad and face buttons, in order: **Right, A, Down, Left, Right, Left, Left**. A chime confirms it, and he gets a 16th portrait on the character-select grid in Arcade. His model is read from your own disc when you pick him, like every other model in the game. Until the code is entered, the character-select screen is the retail one.
+Enter the code **ROSWELL** on the main menu to unlock Nitros Oxide, the final boss, as a racer. Hold **L** and **R**, then press on the D-Pad and face buttons, in order: **Right, A, Down, Left, Right, Left, Left**.
 
 ## Philosophy
 
