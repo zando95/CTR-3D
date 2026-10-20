@@ -1,6 +1,7 @@
 #include <macros.h>
 #include <platform/native_assets.h>
 #include <platform/native_disc_image.h>
+#include <platform/native_render_queue.h>
 #include <platform/native_renderer.h>
 #include <platform/native_str.h>
 #include <psx/libgpu.h>
@@ -23,7 +24,8 @@
 #define NATIVE_STR_BS_ID                    0x3800u
 #define NATIVE_STR_END_OF_BLOCK             0xfe00u
 #define NATIVE_STR_IDCT_SHIFT               14
-#define NATIVE_STR_IDCT_SCALE               (1 << NATIVE_STR_IDCT_SHIFT)
+#define NATIVE_STR_IDCT_ROW_SHIFT           8
+#define NATIVE_STR_IDCT_OUT_SHIFT           (2 * NATIVE_STR_IDCT_SHIFT + 2 - NATIVE_STR_IDCT_ROW_SHIFT)
 #define NATIVE_STR_SCRAPBOOK_PATH           "TEST.STR"
 #define NATIVE_STR_SCRAPBOOK_FRAME_COUNT    0x1148
 /*
@@ -68,6 +70,16 @@ struct NativeSTRState
 	s32 height;
 	u32 readAheadStart;
 	u32 readAheadCount;
+	/* Render-queue ticket of the last posted upload of rgb555. Kept across
+	 * Stop: the buffer must not be rewritten until that job has run. */
+	unsigned int uploadTicket;
+	/* Set when a read refilled the read-ahead from the disc image this call. */
+	s32 refilled;
+	/* frameData holds a frame that was read but not yet decoded. */
+	s32 framePending;
+	/* 1 = after a refill, return without a new picture and decode next call.
+	 * Only for callers that keep showing the previous picture on a 0 return. */
+	s32 deferDecodeAfterRefill;
 	/*
 	 * Caller-owned scratch, main-thread role: every STR reader (track preview,
 	 * scrapbook) runs on the main thread, and on 3DS the owner picks which
@@ -195,52 +207,48 @@ internal u16 NativeSTR_NegateMdecCode(u16 code)
 	return (u16)((code & 0xfc00) | ((u32)-NativeSTR_Sign10(code) & 0x3ff));
 }
 
-internal u32 NativeSTR_ReadBits(struct NativeSTRBitReader *br, s32 count)
+/* The stream is little-endian 16-bit words, each read MSB first; words past
+ * the end of the frame read as zero. */
+internal u32 NativeSTR_ReadWord(const struct NativeSTRBitReader *br, s32 wordIndex)
 {
-	u32 value = 0;
-	s32 i;
+	s32 byteOffset = wordIndex * 2;
 
-	for (i = 0; i < count; i++)
-	{
-		s32 byteOffset = (br->bitOffset >> 4) * 2;
-		s32 bit = 15 - (br->bitOffset & 0xf);
-		u32 word = 0;
-
-		if (byteOffset + 1 < br->size)
-		{
-			word = NativeSTR_ReadLE16(&br->data[byteOffset]);
-		}
-
-		value = (value << 1) | ((word >> bit) & 1);
-		br->bitOffset++;
-	}
-
-	return value;
+	return (byteOffset + 1 < br->size) ? NativeSTR_ReadLE16(&br->data[byteOffset]) : 0;
 }
 
+/* count is 1..17: two words cover it from any bit position (offset <= 15). */
 internal u32 NativeSTR_PeekBits(struct NativeSTRBitReader *br, s32 count)
 {
-	s32 oldBitOffset = br->bitOffset;
-	u32 value = NativeSTR_ReadBits(br, count);
+	s32 wordIndex = br->bitOffset >> 4;
+	u32 window = (NativeSTR_ReadWord(br, wordIndex) << 16) | NativeSTR_ReadWord(br, wordIndex + 1);
 
-	br->bitOffset = oldBitOffset;
+	return (window << (br->bitOffset & 0xf)) >> (32 - count);
+}
+
+internal u32 NativeSTR_ReadBits(struct NativeSTRBitReader *br, s32 count)
+{
+	u32 value = NativeSTR_PeekBits(br, count);
+
+	br->bitOffset += count;
 	return value;
 }
 
 internal s32 NativeSTR_ReadAcCode(struct NativeSTRBitReader *br, u16 *outCode)
 {
+	/* 17 bits hold the longest non-escape code: 12 prefix + 4 index + sign. */
+	u32 bits = NativeSTR_PeekBits(br, 17);
 	u32 i;
 
-	if (NativeSTR_PeekBits(br, 6) == 0x1)
+	if ((bits >> 11) == 0x1)
 	{
-		NativeSTR_ReadBits(br, 6);
+		br->bitOffset += 6;
 		*outCode = (u16)NativeSTR_ReadBits(br, 16);
 		return 1;
 	}
 
-	if (NativeSTR_PeekBits(br, 12) == 0)
+	if ((bits >> 5) == 0)
 	{
-		NativeSTR_ReadBits(br, 12);
+		br->bitOffset += 12;
 		*outCode = NATIVE_STR_END_OF_BLOCK;
 		return 1;
 	}
@@ -249,22 +257,26 @@ internal s32 NativeSTR_ReadAcCode(struct NativeSTRBitReader *br, u16 *outCode)
 	{
 		const struct NativeSTRAcGroup *group = &s_acGroups[i];
 
-		if (NativeSTR_PeekBits(br, group->prefixBits) == group->prefix)
+		if ((bits >> (17 - group->prefixBits)) == group->prefix)
 		{
+			s32 used = group->prefixBits;
 			u16 code;
 			u32 index = 0;
 			u32 sign = 0;
 
-			NativeSTR_ReadBits(br, group->prefixBits);
 			if (group->indexBits != 0)
 			{
-				index = NativeSTR_ReadBits(br, group->indexBits);
+				used += group->indexBits;
+				index = (bits >> (17 - used)) & ((1u << group->indexBits) - 1);
 			}
 
 			if (group->values[0] != NATIVE_STR_END_OF_BLOCK)
 			{
-				sign = NativeSTR_ReadBits(br, 1);
+				used += 1;
+				sign = (bits >> (17 - used)) & 1;
 			}
+
+			br->bitOffset += used;
 
 			if (index >= group->valueCount)
 			{
@@ -280,37 +292,99 @@ internal s32 NativeSTR_ReadAcCode(struct NativeSTRBitReader *br, u16 *outCode)
 	return 0;
 }
 
+/* Round half away from zero, then divide by 2^shift using shifts on the
+ * magnitude, so no 64-bit division call is emitted. */
+internal s32 NativeSTR_RoundShift(s64 value, s32 shift)
+{
+	const s64 half = (s64)1 << (shift - 1);
+
+	return (value >= 0) ? (s32)((value + half) >> shift) : -(s32)((-value + half) >> shift);
+}
+
+/*
+ * Separable IDCT, rows then columns. The basis is symmetric about the block
+ * centre (B[7-x][u] == (-1)^u * B[x][u]), so each pass sums the even and odd
+ * terms for half the outputs and mirrors them. Rows with no nonzero
+ * coefficient are skipped, which is most of a quantised block. Row sums are
+ * descaled to 32 bits so every multiply-accumulate is one 32x32->64 step; the
+ * descale error is far below one output step.
+ */
 internal void NativeSTR_IDCT(const s32 *coefficients, s32 *out)
 {
+	s32 rowSums[8][8];
+	s32 evenRows[4];
+	s32 oddRows[4];
+	s32 evenCount = 0;
+	s32 oddCount = 0;
 	s32 x;
 	s32 y;
+	s32 v;
 
-	for (y = 0; y < 8; y++)
+	for (v = 0; v < 8; v++)
 	{
-		for (x = 0; x < 8; x++)
+		const s32 *c = &coefficients[v * 8];
+		s32 lastU = 7;
+
+		while ((lastU >= 0) && (c[lastU] == 0))
 		{
-			s64 sum = 0;
+			lastU--;
+		}
+
+		if (lastU < 0)
+		{
+			continue;
+		}
+
+		for (x = 0; x < 4; x++)
+		{
+			s64 even = 0;
+			s64 odd = 0;
 			s32 u;
-			s32 v;
 
-			for (v = 0; v < 8; v++)
+			for (u = 0; u <= lastU; u += 2)
 			{
-				for (u = 0; u < 8; u++)
-				{
-					sum += (s64)s_idctBasis[x][u] * s_idctBasis[y][v] * coefficients[v * 8 + u];
-				}
+				even += (s64)s_idctBasis[x][u] * c[u];
 			}
 
-			if (sum >= 0)
+			for (u = 1; u <= lastU; u += 2)
 			{
-				sum += (s64)NATIVE_STR_IDCT_SCALE * NATIVE_STR_IDCT_SCALE * 2;
-			}
-			else
-			{
-				sum -= (s64)NATIVE_STR_IDCT_SCALE * NATIVE_STR_IDCT_SCALE * 2;
+				odd += (s64)s_idctBasis[x][u] * c[u];
 			}
 
-			out[y * 8 + x] = (s32)(sum / ((s64)NATIVE_STR_IDCT_SCALE * NATIVE_STR_IDCT_SCALE * 4));
+			rowSums[v][x] = NativeSTR_RoundShift(even + odd, NATIVE_STR_IDCT_ROW_SHIFT);
+			rowSums[v][7 - x] = NativeSTR_RoundShift(even - odd, NATIVE_STR_IDCT_ROW_SHIFT);
+		}
+
+		if ((v & 1) == 0)
+		{
+			evenRows[evenCount++] = v;
+		}
+		else
+		{
+			oddRows[oddCount++] = v;
+		}
+	}
+
+	for (x = 0; x < 8; x++)
+	{
+		for (y = 0; y < 4; y++)
+		{
+			s64 even = 0;
+			s64 odd = 0;
+			s32 i;
+
+			for (i = 0; i < evenCount; i++)
+			{
+				even += (s64)s_idctBasis[y][evenRows[i]] * rowSums[evenRows[i]][x];
+			}
+
+			for (i = 0; i < oddCount; i++)
+			{
+				odd += (s64)s_idctBasis[y][oddRows[i]] * rowSums[oddRows[i]][x];
+			}
+
+			out[y * 8 + x] = NativeSTR_RoundShift(even + odd, NATIVE_STR_IDCT_OUT_SHIFT);
+			out[(7 - y) * 8 + x] = NativeSTR_RoundShift(even - odd, NATIVE_STR_IDCT_OUT_SHIFT);
 		}
 	}
 }
@@ -321,6 +395,7 @@ internal s32 NativeSTR_DecodeBlock(struct NativeSTRBitReader *br, s32 quant, s32
 	s32 k = 0;
 	s32 target;
 	u16 code;
+	s32 i;
 
 	memset(coefficients, 0, sizeof(coefficients));
 
@@ -350,25 +425,36 @@ internal s32 NativeSTR_DecodeBlock(struct NativeSTRBitReader *br, s32 quant, s32
 		coefficients[target] = (NativeSTR_Sign10(code) * s_mdecQuantTable[target] * quant + 4) / 8;
 	}
 
+	/* No AC terms: every output is the same DC value. */
+	if (k == 0)
+	{
+		const s32 dc = NativeSTR_RoundShift((s64)s_idctBasis[0][0] * s_idctBasis[0][0] * coefficients[0], 2 * NATIVE_STR_IDCT_SHIFT + 2);
+
+		for (i = 0; i < 64; i++)
+		{
+			out[i] = dc;
+		}
+
+		return 1;
+	}
+
 	NativeSTR_IDCT(coefficients, out);
 	return 1;
 }
 
-internal u16 NativeSTR_YCbCrToRGB555(s32 y, s32 cb, s32 cr)
-{
-	s32 r = NativeSTR_Clamp8(y + ((91881 * cr + 32768) >> 16) + 128);
-	s32 g = NativeSTR_Clamp8(y - ((22554 * cb + 46802 * cr + 32768) >> 16) + 128);
-	s32 b = NativeSTR_Clamp8(y + ((116130 * cb + 32768) >> 16) + 128);
-
-	return (u16)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
-}
-
+/*
+ * Blocks are Cr, Cb, then the four luma quadrants (top-left, top-right,
+ * bottom-left, bottom-right). Each chroma sample covers a 2x2 pixel square,
+ * so its colour offsets are computed once and applied to four luma values.
+ */
 internal s32 NativeSTR_DecodeMacroblock(struct NativeSTRBitReader *br, s32 quant, s32 baseX, s32 baseY)
 {
 	s32 blocks[6][64];
+	s32 xEnd = s_str.width - baseX;
+	s32 yEnd = s_str.height - baseY;
 	s32 i;
-	s32 x;
-	s32 y;
+	s32 cx;
+	s32 cy;
 
 	for (i = 0; i < 6; i++)
 	{
@@ -378,35 +464,46 @@ internal s32 NativeSTR_DecodeMacroblock(struct NativeSTRBitReader *br, s32 quant
 		}
 	}
 
-	for (y = 0; y < 16; y++)
+	if (xEnd > 16)
 	{
-		for (x = 0; x < 16; x++)
+		xEnd = 16;
+	}
+	if (yEnd > 16)
+	{
+		yEnd = 16;
+	}
+
+	for (cy = 0; cy < 8; cy++)
+	{
+		for (cx = 0; cx < 8; cx++)
 		{
-			s32 dstX = baseX + x;
-			s32 dstY = baseY + y;
-			s32 yBlockIndex;
-			s32 luma;
-			s32 cb;
-			s32 cr;
+			const s32 cr = blocks[0][cy * 8 + cx];
+			const s32 cb = blocks[1][cy * 8 + cx];
+			const s32 rAdd = ((91881 * cr + 32768) >> 16) + 128;
+			const s32 gAdd = 128 - ((22554 * cb + 46802 * cr + 32768) >> 16);
+			const s32 bAdd = ((116130 * cb + 32768) >> 16) + 128;
+			s32 sub;
 
-			if ((dstX >= s_str.width) || (dstY >= s_str.height))
+			for (sub = 0; sub < 4; sub++)
 			{
-				continue;
-			}
+				const s32 x = cx * 2 + (sub & 1);
+				const s32 y = cy * 2 + (sub >> 1);
+				s32 luma;
+				s32 r;
+				s32 g;
+				s32 b;
 
-			if (y < 8)
-			{
-				yBlockIndex = (x < 8) ? 2 : 3;
-			}
-			else
-			{
-				yBlockIndex = (x < 8) ? 4 : 5;
-			}
+				if ((x >= xEnd) || (y >= yEnd))
+				{
+					continue;
+				}
 
-			luma = blocks[yBlockIndex][(y & 7) * 8 + (x & 7)];
-			cr = blocks[0][(y >> 1) * 8 + (x >> 1)];
-			cb = blocks[1][(y >> 1) * 8 + (x >> 1)];
-			s_str.rgb555[dstY * s_str.width + dstX] = NativeSTR_YCbCrToRGB555(luma, cb, cr);
+				luma = blocks[2 + ((y >> 3) * 2) + (x >> 3)][(y & 7) * 8 + (x & 7)];
+				r = NativeSTR_Clamp8(luma + rAdd);
+				g = NativeSTR_Clamp8(luma + gAdd);
+				b = NativeSTR_Clamp8(luma + bAdd);
+				s_str.rgb555[(baseY + y) * s_str.width + baseX + x] = (u16)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
+			}
 		}
 	}
 
@@ -543,6 +640,7 @@ internal s32 NativeSTR_ReadDiscSectorBuffered(u8 *sector, s32 rawRecord)
 
 		s_str.readAheadStart = s_str.currentSector;
 		s_str.readAheadCount = run;
+		s_str.refilled = 1;
 	}
 
 	memcpy(sector, &s_str.readAhead[(size_t)(s_str.currentSector - s_str.readAheadStart) * stride], stride);
@@ -790,6 +888,7 @@ s32 NativeSTR_StartTrackPreviewFromBigfileSector(s32 bigfileSector, s32 frameCou
 	s_str.active = 1;
 	s_str.format = NATIVE_STR_FORMAT_EXTRACTED;
 	s_str.loop = 1;
+	s_str.deferDecodeAfterRefill = 1;
 	s_str.bigfileSector = bigfileSector;
 	s_str.frameIndex = 0;
 	s_str.frameLimit = frameCount;
@@ -858,6 +957,9 @@ void NativeSTR_Stop(void)
 	s_str.width = 0;
 	s_str.height = 0;
 	s_str.frameSize = 0;
+	s_str.refilled = 0;
+	s_str.framePending = 0;
+	s_str.deferDecodeAfterRefill = 0;
 }
 
 s32 NativeSTR_UploadNextFrame(s32 dstX, s32 dstY)
@@ -869,7 +971,26 @@ s32 NativeSTR_UploadNextFrame(s32 dstX, s32 dstY)
 		return 0;
 	}
 
-	if ((NativeSTR_ReadNextFrame() == 0) || (NativeSTR_DecodeFrame() == 0))
+	if (s_str.framePending == 0)
+	{
+		s_str.refilled = 0;
+		if (NativeSTR_ReadNextFrame() == 0)
+		{
+			return 0;
+		}
+
+		/* A disc-image refill (one ~26ms call on 3DS) plus a decode overruns
+		 * the frame, so the decode waits for the next call. */
+		if ((s_str.refilled != 0) && (s_str.deferDecodeAfterRefill != 0))
+		{
+			s_str.framePending = 1;
+			return 0;
+		}
+	}
+
+	s_str.framePending = 0;
+	NativeRenderQueue_Wait(s_str.uploadTicket);
+	if (NativeSTR_DecodeFrame() == 0)
 	{
 		return 0;
 	}
@@ -878,7 +999,24 @@ s32 NativeSTR_UploadNextFrame(s32 dstX, s32 dstY)
 	rect.y = dstY;
 	rect.w = s_str.width;
 	rect.h = s_str.height;
-	LoadImage(&rect, s_str.rgb555);
+
+	/* Posted without waiting: a synchronous LoadImage would block this thread
+	 * behind the worker's whole in-flight frame. rgb555 stays valid because the
+	 * next decode waits on this ticket first, and the frame's draw runs after
+	 * this job in queue order. */
+	if (NativeRenderQueue_Route())
+	{
+		struct NativeRenderJob job;
+
+		NativeRenderQueue_JobInit(&job, NATIVE_RENDER_JOB_LOAD_IMAGE);
+		job.rect = rect;
+		job.ptr = s_str.rgb555;
+		s_str.uploadTicket = NativeRenderQueue_Post(&job);
+	}
+	else
+	{
+		LoadImage(&rect, s_str.rgb555);
+	}
 	// NOTE(aalhendi): Track-preview STR draws these uploaded pixels as same-pass
 	// textured primitives. Retail LoadImage is GPU-visible immediately; refresh
 	// the host VRAM texture at that boundary.
