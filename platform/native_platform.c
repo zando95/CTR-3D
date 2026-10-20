@@ -733,6 +733,22 @@ void Platform_EndScene(void)
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_PLATFORM_END_SCENE);
 	s_platformBeginScene = 0;
 
+#if defined(__3DS__)
+	// The 3DS renderer submits the frame inside NativeRenderer_EndScene, so a
+	// present drawn after it would issue GPU commands outside any frame.
+	if (s_pinnedVramDisplayFrames > 0)
+	{
+		if (s_pinnedVramDisplayCustomRect)
+		{
+			NativeRenderer_QueueVRAMPresent(s_pinnedVramDisplayX, s_pinnedVramDisplayY, s_pinnedVramDisplayW, s_pinnedVramDisplayH);
+		}
+		else
+		{
+			NativeRenderer_QueueVRAMPresent(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
+		}
+	}
+#endif
+
 	NativeRenderer_EndScene();
 
 	if (s_pinnedVramDisplayFrames > 0)
@@ -741,6 +757,7 @@ void Platform_EndScene(void)
 		// Do not let the next DrawSync read stale framebuffer texture data back
 		// into PSX VRAM after a movie/frame upload.
 		NativeRenderer_DiscardFramebufferReadback();
+#if !defined(__3DS__)
 		if (s_pinnedVramDisplayCustomRect)
 		{
 			NativeRenderer_PresentVRAMRect(s_pinnedVramDisplayX, s_pinnedVramDisplayY, s_pinnedVramDisplayW, s_pinnedVramDisplayH);
@@ -749,6 +766,7 @@ void Platform_EndScene(void)
 		{
 			NativeRenderer_PresentVRAMDisplay();
 		}
+#endif
 		NativeRenderer_SwapWindow();
 		s_pinnedVramDisplayFrames--;
 		if (s_pinnedVramDisplayFrames <= 0)

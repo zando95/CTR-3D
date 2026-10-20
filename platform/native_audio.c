@@ -4960,6 +4960,10 @@ internal int NativeAudio_XAStreamOpenTrack(struct NativeAudioXaStream *stream, i
 	return 1;
 }
 
+// TEST.STR on the NTSC-U disc: total sectors, and audio sectors on channel 1.
+#define NATIVE_AUDIO_TEST_STR_SECTORS            44239
+#define NATIVE_AUDIO_TEST_STR_CH1_AUDIO_SECTORS  5494
+
 // Same as NativeAudio_XAStreamOpenTrack, but for an explicit relative path +
 // channelFilter (used by MM_Scrapbook.c's TEST.STR playback) instead of
 // resolving through the XNF track metadata.
@@ -4985,7 +4989,17 @@ internal int NativeAudio_XAStreamOpenFile(struct NativeAudioXaStream *stream, co
 		return 0;
 	}
 
-	audioSectors = NativeAudio_XAStreamCountAudioSectors(&stream->source);
+	/* Counting reads every sector of the file on this (main) thread: about 20 s
+	 * for the Scrapbook's TEST.STR on 3DS. On the one supported disc its
+	 * channel-1 count is fixed, so a file of exactly that length uses it. */
+	if ((strcmp(relativePath, "TEST.STR") == 0) && (channelFilter == 1) && (stream->source.totalSectors == NATIVE_AUDIO_TEST_STR_SECTORS))
+	{
+		audioSectors = NATIVE_AUDIO_TEST_STR_CH1_AUDIO_SECTORS;
+	}
+	else
+	{
+		audioSectors = NativeAudio_XAStreamCountAudioSectors(&stream->source);
+	}
 	if (audioSectors <= 0)
 	{
 		NativeAudio_XASourceClose(&stream->source);

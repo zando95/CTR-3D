@@ -4403,6 +4403,21 @@ void NativeRenderer_BeginScene(void)
 	s_uiOrdPrims = 0;
 }
 
+global_variable int s_vramPresentQueued;
+global_variable int s_vramPresentQueuedX;
+global_variable int s_vramPresentQueuedY;
+global_variable int s_vramPresentQueuedW;
+global_variable int s_vramPresentQueuedH;
+
+void NativeRenderer_QueueVRAMPresent(int x, int y, int w, int h)
+{
+	s_vramPresentQueued = 1;
+	s_vramPresentQueuedX = x;
+	s_vramPresentQueuedY = y;
+	s_vramPresentQueuedW = w;
+	s_vramPresentQueuedH = h;
+}
+
 void NativeRenderer_EndScene(void)
 {
 	if (!s_rendererInitialised)
@@ -4638,6 +4653,15 @@ void NativeRenderer_EndScene(void)
 		}
 	}
 #endif
+
+	/* A queued VRAM present (pinned display: the Scrapbook) covers the screen,
+	 * so it draws after every scene pass, and before the right-eye replay and
+	 * FrameEnd so both eyes and this frame's command list carry it. */
+	if (s_vramPresentQueued)
+	{
+		s_vramPresentQueued = 0;
+		NativeRenderer_PresentVRAMRect(s_vramPresentQueuedX, s_vramPresentQueuedY, s_vramPresentQueuedW, s_vramPresentQueuedH);
+	}
 
 	/*
 	 * Stereoscopic right eye (n3ds_backend.h's stereo block): replay this
@@ -5837,7 +5861,11 @@ void NativeRenderer_PresentVRAMRect(int displayX, int displayY, int displayW, in
 			 * Exact, not approximated: maxChunk (256) divides 2048 evenly.
 			 */
 			const s16 u1 = (s16)(chunkW * (2048 / maxChunk));
-			const s16 v1 = (s16)(chunkH * (2048 / maxChunk));
+			/* PICA's V = 1 is the texture's first stored row, which the tiler
+			 * filled with the chunk's top row. Rows past chunkH are padding,
+			 * so the quad spans V = 1 down to 1 - chunkH/256, not 0..chunkH. */
+			const s16 vTop = 2048;
+			const s16 vBottom = (s16)(2048 - (chunkH * (2048 / maxChunk)));
 			/* Which pool texture this chunk uploads to and draws from. Must
 			 * be distinct per chunk within this call -- see the header
 			 * comment on N3DS_C3DUploadVramDisplayChunk for why reusing one
@@ -5855,32 +5883,20 @@ void NativeRenderer_PresentVRAMRect(int displayX, int displayY, int displayW, in
 			N3DS_TileVRAMDisplayChunk(displayX + x, displayY + y, chunkW, chunkH, s_vramDisplayScratch);
 			N3DS_C3DUploadVramDisplayChunk(slot, s_vramDisplayScratch);
 
-			/* v0.0 experiment: source top-of-rect landed on
-			 * screen bottom on real output despite the quad's own screen-
-			 * space Y matching the same proven per-frame projection every
-			 * other draw uses, and despite the tile-address math being a
-			 * verbatim copy of N3DS_DecodeAndTilePage's proven-correct
-			 * formula. Swapping which screen edge samples V=0 vs V=v1 is the
-			 * most localized place left to try a fix, since everything else
-			 * here mirrors already-proven code; NOT independently confirmed
-			 * against a citro3d whole-texture-upload precedent (there isn't
-			 * one elsewhere in this codebase to check against). If this
-			 * looks wrong on the next capture, revert this V swap and look
-			 * upstream of this function instead. */
 			verts[0].x = (s16)x;
 			verts[0].y = (s16)y;
 			verts[0].u = 0;
-			verts[0].v = v1;
+			verts[0].v = vTop;
 
 			verts[1].x = (s16)x;
 			verts[1].y = (s16)(y + chunkH);
 			verts[1].u = 0;
-			verts[1].v = 0;
+			verts[1].v = vBottom;
 
 			verts[2].x = (s16)(x + chunkW);
 			verts[2].y = (s16)(y + chunkH);
 			verts[2].u = u1;
-			verts[2].v = 0;
+			verts[2].v = vBottom;
 
 			verts[3] = verts[0];
 			verts[4] = verts[2];
@@ -5888,7 +5904,7 @@ void NativeRenderer_PresentVRAMRect(int displayX, int displayY, int displayW, in
 			verts[5].x = (s16)(x + chunkW);
 			verts[5].y = (s16)y;
 			verts[5].u = u1;
-			verts[5].v = v1;
+			verts[5].v = vTop;
 
 			for (i = 0; i < 6; i++)
 			{
