@@ -20,7 +20,7 @@
 // platform/native_options.c -- repoints unused LNG slots for the native
 // options menu once the language table exists (local-extern idiom).
 extern void NativeOptions_InstallStrings(void);
-extern void NativeOptions_BootLanguage(void);
+extern void NativeOptions_BootSettings(void);
 #endif
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
@@ -649,7 +649,7 @@ void StateZero()
 	LOAD_LangFile((int)sdata->ptrBigfile1, 1);
 #ifdef CTR_NATIVE
 	NativeOptions_InstallStrings();
-	NativeOptions_BootLanguage();
+	NativeOptions_BootSettings();
 #endif
 	GAMEPROG_NewGame_OnBoot();
 	gGT->overlayIndex_null_notUsed = 0;

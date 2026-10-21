@@ -9,6 +9,10 @@
  * the same global its dumpreq word writes, so the menu and dumpreq stay
  * interchangeable.
  *
+ * Menu flips persist across launches: the toggles in <base dir>/options.cfg (one `key value`
+ * line per s_optToggles row, keyed by its saveKey), the language in <base dir>/language.cfg.
+ * Only a menu flip saves; dumpreq writes the same globals and never touches either file.
+ *
  * Row labels live in retail's own string table: LNG_UNUSED_0E4..0E9 are real
  * slots inside the loaded LANG range that no retail code references, repointed
  * at boot, on every toggle, and again after every language switch (LOAD_LangFile
@@ -33,7 +37,8 @@ struct NativeOptToggle
 {
 	s16 lngSlot;
 	int *flag;
-	void (*applyFn)(void); /* extra work a flip needs beyond the flag write */
+	void (*applyFn)(void); /* extra work a flip needs beyond the flag write (also run once after options.cfg loads) */
+	const char *saveKey;   /* the row's key in options.cfg: the dumpreq word of the same setting */
 };
 
 /* Row order here is the order of NativeOptText.toggleName below. The visible text of every row
@@ -44,13 +49,16 @@ struct NativeOptToggle
  * differ) -- so the ON and OFF versions of a row MUST have the same character count or the box
  * resizes on toggle. RefreshLabels right-aligns the state word to the longer of the two. Keep
  * labels short enough (small font) that the box clears the screen edge at the main menu's
- * right-of-center anchor: 18 characters is the widest row that is known to fit. */
+ * right-of-center anchor: 18 characters is the widest row that is known to fit.
+ *
+ * Every row is persisted to options.cfg under its saveKey (a flag holds 0 or 1); saveKeys must be
+ * unique and stay stable, since they name the setting in files already on players' SD cards. */
 static struct NativeOptToggle s_optToggles[] = {
-    {LNG_UNUSED_0E5, &g_pentaPal, NULL},
-    {LNG_UNUSED_0E6, &g_reservesMeter, NULL},
-    {LNG_UNUSED_0E7, &g_dbg_btmMap, NULL},
+    {LNG_UNUSED_0E5, &g_pentaPal, NULL, "pentapal"},
+    {LNG_UNUSED_0E6, &g_reservesMeter, NULL, "reserves"},
+    {LNG_UNUSED_0E7, &g_dbg_btmMap, NULL, "btmmap"},
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
-    {LNG_UNUSED_0E8, &g_dbg_trackBilinear, N3DS_TrackAtlas_ApplyFilter},
+    {LNG_UNUSED_0E8, &g_dbg_trackBilinear, N3DS_TrackAtlas_ApplyFilter, "bilinear"},
 #endif
 };
 #define OPT_TOGGLE_COUNT ((s32)(sizeof(s_optToggles) / sizeof(s_optToggles[0])))
@@ -197,8 +205,7 @@ static s32 s_optLangIndex = 0;
 void NativeOptions_InstallStrings(void);
 
 /* The chosen language is remembered in <base dir>/language.cfg (a single number: the file index
- * above), beside memcards/. The other toggles deliberately reset on every launch; a language you
- * have to re-pick every boot is not a setting anyone wants. */
+ * above), beside memcards/. The toggles are remembered separately, in options.cfg (below). */
 static s32 NativeOptions_LangSavePath(char *path, size_t pathSize)
 {
 	return NativePath_Join(path, pathSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NATIVE_STR8_LIT(OPT_LANG_SAVE_FILE));
@@ -274,6 +281,94 @@ static void NativeOptions_CycleLanguage(void)
 	NativeOptions_SaveLanguage();
 }
 
+/* The toggles are remembered in <base dir>/options.cfg, beside language.cfg: one `key value` line
+ * per s_optToggles row (the row's saveKey, then 0 or 1), the whole file rewritten on every menu
+ * flip. A missing file, an unknown key, a malformed line or a value other than 0 or 1 leaves that
+ * toggle at its compiled default. */
+#define OPT_SETTINGS_SAVE_FILE "options.cfg"
+
+static s32 NativeOptions_SettingsPath(char *path, size_t pathSize)
+{
+	return NativePath_Join(path, pathSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NATIVE_STR8_LIT(OPT_SETTINGS_SAVE_FILE));
+}
+
+static void NativeOptions_SaveSettings(void)
+{
+	char path[1024];
+	FILE *file;
+
+	if (!NativeOptions_SettingsPath(path, sizeof(path)))
+	{
+		return;
+	}
+
+	file = fopen(path, "wb");
+	if (file == NULL)
+	{
+		return; /* read-only or missing SD: the flip still applies for this session */
+	}
+
+	for (s32 i = 0; i < OPT_TOGGLE_COUNT; i++)
+	{
+		fprintf(file, "%s %d\n", s_optToggles[i].saveKey, (*s_optToggles[i].flag != 0) ? 1 : 0);
+	}
+
+	fclose(file);
+}
+
+/* Applies one options.cfg line ("key 0" or "key 1", LF/CRLF optional) to the toggle whose saveKey
+ * it names; any other line is ignored. */
+static void NativeOptions_ParseSettingsLine(const char *line)
+{
+	for (s32 i = 0; i < OPT_TOGGLE_COUNT; i++)
+	{
+		size_t keyLen = strlen(s_optToggles[i].saveKey);
+
+		if ((strncmp(line, s_optToggles[i].saveKey, keyLen) == 0) && (line[keyLen] == ' ') && ((line[keyLen + 1] == '0') || (line[keyLen + 1] == '1')) &&
+		    ((line[keyLen + 2] == 0) || (line[keyLen + 2] == '\n') || (line[keyLen + 2] == '\r')))
+		{
+			*s_optToggles[i].flag = line[keyLen + 1] - '0';
+			return;
+		}
+	}
+}
+
+static void NativeOptions_LoadSettings(void)
+{
+	char path[1024];
+	char line[64];
+	FILE *file;
+
+	if (!NativeOptions_SettingsPath(path, sizeof(path)))
+	{
+		return;
+	}
+
+	file = fopen(path, "rb");
+	if (file == NULL)
+	{
+		return;
+	}
+
+	while (fgets(line, sizeof(line), file) != NULL)
+	{
+		NativeOptions_ParseSettingsLine(line);
+
+		/* a line longer than the buffer comes back in pieces; its tail is not a line of its own */
+		if (strchr(line, '\n') == NULL)
+		{
+			int c;
+
+			do
+			{
+				c = fgetc(file);
+			} while ((c != EOF) && (c != '\n'));
+		}
+	}
+
+	fclose(file);
+}
+
 /* Nav targets must mirror s_optToggles row for row; the terminator is not a
  * valid nav target, so the last real row's down points at itself. */
 static struct MenuRow s_optMenuRows[] = {
@@ -345,6 +440,7 @@ static void NativeOptions_MenuProc(struct RectMenu *menu)
 			s_optToggles[row].applyFn();
 		}
 
+		NativeOptions_SaveSettings();
 		NativeOptions_RefreshLabels();
 	}
 	else if (row == OPT_TOGGLE_COUNT)
@@ -433,12 +529,27 @@ void NativeOptions_InstallStrings(void)
 }
 
 /* Boot hook (MainMain.c StateZero), called right after the default English file and the OPTIONS
- * strings are in place: switch to the language remembered in language.cfg, if there is one. */
-void NativeOptions_BootLanguage(void)
+ * strings are in place: restore the toggles remembered in options.cfg (running each one's applyFn
+ * so its subsystem sees the loaded value), then switch to the language remembered in language.cfg,
+ * if there is one. */
+void NativeOptions_BootSettings(void)
 {
 #ifdef __3DS__
-	s32 saved = NativeOptions_ReadSavedLanguage();
+	s32 saved;
 
+	NativeOptions_LoadSettings();
+
+	for (s32 i = 0; i < OPT_TOGGLE_COUNT; i++)
+	{
+		if (s_optToggles[i].applyFn != NULL)
+		{
+			s_optToggles[i].applyFn();
+		}
+	}
+
+	NativeOptions_RefreshLabels();
+
+	saved = NativeOptions_ReadSavedLanguage();
 	if (saved > 0)
 	{
 		NativeOptions_ApplyLanguage(saved);
