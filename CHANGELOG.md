@@ -12,6 +12,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - A disc read that fails mid-game ends on an error screen instead of hanging.
 - If the game can't start, it shows a message instead of a black screen. An original 3DS, 3DS XL or 2DS gets "New Nintendo 3DS required".
 - Fixed a timing bug that could make animated water and track textures glitch.
+- The boot screens' small legal text is smoothed instead of breaking up.
 
 ## beta 1.0 (2026-09-16)
 

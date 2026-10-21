@@ -1707,7 +1707,10 @@ int N3DS_C3DInit(void)
 				N3DS_DebugLog("[CTR-3DS] VRAM display texture FAILED to allocate");
 				return 0;
 			}
-			C3D_TexSetFilter(&s_vramDisplayTex[slot], GPU_NEAREST, GPU_NEAREST);
+			/* Linear: the 512-wide display shrinks to 320 panel px, and
+			 * nearest sampling skips 3 of every 8 columns, which breaks
+			 * up the splash screens' small text. */
+			C3D_TexSetFilter(&s_vramDisplayTex[slot], GPU_LINEAR, GPU_LINEAR);
 			C3D_TexSetWrap(&s_vramDisplayTex[slot], GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
 		}
 	}
