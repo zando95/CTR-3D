@@ -10,7 +10,7 @@ The PC port is still here and still builds; see [PC builds](#pc-builds-windows-a
 
 ## Play as Nitros Oxide
 
-Enter the code **ROSWELL** on the main menu to unlock Nitros Oxide, the final boss, as a racer. Hold **L** and **R**, then press on the D-Pad and face buttons, in order: **Right, A, Down, Left, Right, Left, Left**.
+Enter the code **ROSWELL** on the main menu, or beat Oxide's Final Challenge in Adventure, to unlock Nitros Oxide, the final boss, as a racer. Hold **L** and **R**, then press on the D-Pad and face buttons, in order: **Right, A, Down, Left, Right, Left, Left**.
 
 ## Philosophy
 
