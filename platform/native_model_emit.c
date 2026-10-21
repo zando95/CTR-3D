@@ -380,13 +380,13 @@ int NativeModelEmit_BeginInstance(const struct InstDrawPerPlayer *idpp, const st
 	}
 
 #if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
-	/* Paint-on-top models (the talking-mask class -- allowlist on
-	 * g_dbg_paintOnTop, native_gte_capture.h) draw via the retail packet path:
+	/* Paint-on-top members (the talking-mask models and the held shield
+	 * bubble -- allowlists on g_dbg_paintOnTop, native_gte_capture.h) draw via the retail packet path:
 	 * the walk-side range pin governs their occlusion there, whereas this
 	 * path's depth is shader-computed per pixel with no per-prim stamp to pin.
 	 * Declining also lets the depth bracket's prim-cursor latch see the
 	 * packets it registers -- an intercepted draw writes none. */
-	if (g_dbg_paintOnTop && (worldInst != NULL) && (worldInst->model != NULL) && GTECapture_ModelPaintsOnTop(worldInst->model->name))
+	if (g_dbg_paintOnTop && (worldInst != NULL) && (GTECapture_InstPaintsOnTop(worldInst) != 0))
 	{
 		return 0;
 	}

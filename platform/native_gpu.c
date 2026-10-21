@@ -2533,12 +2533,18 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 			 * treatment -- band on the PARALLAX channel only, so the X-ramp
 			 * exclusion above still holds.
 			 */
-			*out = PKTDEPTH_WORLD_MAX;
+			u16 pin = (u16)GTECapture_NodePaintNearPin();
+
+			if ((pin == 0) || (pin > PKTDEPTH_WORLD_MAX))
+			{
+				pin = PKTDEPTH_WORLD_MAX;
+			}
+			*out = pin;
 			if (perVert)
 			{
 				for (i = 0; i < n; i++)
 				{
-					perVert[i] = PKTDEPTH_WORLD_MAX;
+					perVert[i] = pin;
 				}
 			}
 			if (perVertPar)

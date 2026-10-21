@@ -249,8 +249,15 @@ int GTECapture_NodeExempt(void);
 // stamp -- under the UI band, so the HUD still covers them -- while PARALLAX
 // stays honest, same channel split as the flag. Runtime A/B: dumpreq 'ontop'
 // (default ON; OFF is the buried-in-ground behaviour).
+// The held shield bubble is the second member kind: retail has no depth buffer,
+// so its sphere draws whole over the ground. It is matched by INSTANCE name (the
+// thrown shield projectile reuses the models and stays a world object) and pins
+// just in front of its own kart rather than at the world maximum, so scenery
+// well in front of a distant racer's bubble still hides it.
 extern int g_dbg_paintOnTop;
 int GTECapture_ModelPaintsOnTop(const char *modelName);
+// Instance-level membership: 0 = no, 1 = model-name member, 2 = held shield bubble layer.
+int GTECapture_InstPaintsOnTop(const struct Instance *inst);
 // PAINT-UNDER members: the mirror class -- geometry retail hides purely by
 // painter's order (coincident with, or a hair OUTSIDE, the surface that covers
 // it; the intro crate's plain BOX_02A shell). Members draw through the packet
@@ -273,5 +280,10 @@ int GTECapture_NodePaintNear(void);
 // is no instance bracket to latch it from. flatParallax = 0/1/2, mapping to
 // NodePaintNear's 1/2/3.
 void GTECapture_AddPaintOnTopRange(const void *start, const void *end, int flatParallax);
+// Same, with an explicit occlusion stamp (0 = the nearest world stamp). Used by the held shield bubble,
+// which pins just in front of its own kart so only nearby ground is overdrawn.
+void GTECapture_AddPaintOnTopRangePinned(const void *start, const void *end, int flatParallax, u16 pinStamp);
+// Occlusion stamp of the registered range the current walk node sits in (valid while NodePaintNear != 0).
+int GTECapture_NodePaintNearPin(void);
 
 #endif

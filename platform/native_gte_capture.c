@@ -57,7 +57,7 @@ typedef struct
 // matrix states would make "dominant share" mushy, not wrong.
 #define GTE_CAPTURE_MTX_IDS 64
 
-#define GTE_CAPTURE_PAINTNEAR_MAX 4
+#define GTE_CAPTURE_PAINTNEAR_MAX 32
 
 typedef struct
 {
@@ -93,6 +93,8 @@ typedef struct
 	 * to the wide window (the finish/weapon lens flare -- retail sizes it for
 	 * the 4:3 screen). */
 	u8 paintNearFlat[GTE_CAPTURE_PAINTNEAR_MAX];
+	/* Per range: the occlusion stamp members pin to; 0 = PKTDEPTH_WORLD_MAX (beats all world content). */
+	u16 paintNearPin[GTE_CAPTURE_PAINTNEAR_MAX];
 	u32 paintNearN;
 	// The 8 CP2C words that opened each matrix run, so a census consumer can
 	// identify WHICH matrix a run id is (R+TR values, not just a count).
@@ -152,18 +154,23 @@ internal void GTECapture_InstanceAxisFlush(void);
 extern int g_dbg_modelDepthCheck;
 global_variable u32 s_instAxisFrames;
 
-/* PAINT-ON-TOP class (design comment in the header). Membership is by MODEL
- * name, not instance name -- the mask hint instance is literally named "head",
- * which is far too generic to key on. The two big talking-head models are the
- * only members; the in-race shield masks (akuaku/ukauka) orbit the kart at
- * honest positions and must keep the real depth test. */
+/* PAINT-ON-TOP class (design comment in the header). Two routes in. Membership
+ * by MODEL name covers the talking-head models: the mask hint instance is
+ * literally named "head", which is far too generic to key on, and the in-race
+ * shield masks (akuaku/ukauka) orbit the kart at honest positions and keep the
+ * real depth test. Membership by INSTANCE name covers the held shield bubble,
+ * whose three layers share model names with the thrown shield projectile (a
+ * world object that must stay occluded); only the held layers carry these
+ * instance names. */
 int g_dbg_paintOnTop = 1;
 global_variable const char *const s_paintOnTopModels[] = {"ukabig", "akubig"};
+global_variable const char *const s_paintOnTopInstances[] = {"shield", "shielddark", "highlight"};
 /* Bracket latch: set when BeginInstanceDepth matches the allowlist, consumed
  * by EndInstanceDepth into the write buffer's range array. Game-thread only,
  * same ownership as the bracket itself. */
 global_variable int s_paintNearArmed;
 global_variable const void *s_paintNearStartCursor;
+global_variable u16 s_paintNearPinArmed;
 
 int GTECapture_ModelPaintsOnTop(const char *modelName)
 {
@@ -181,6 +188,56 @@ int GTECapture_ModelPaintsOnTop(const char *modelName)
 		}
 	}
 	return 0;
+}
+
+/* 0 = not a member, 1 = model-name member (pins to the nearest world stamp),
+ * 2 = held-shield member (pins just in front of its own kart). */
+int GTECapture_InstPaintsOnTop(const struct Instance *inst)
+{
+	u32 i;
+
+	if (inst == NULL)
+	{
+		return 0;
+	}
+	if ((inst->model != NULL) && GTECapture_ModelPaintsOnTop(inst->model->name))
+	{
+		return 1;
+	}
+	for (i = 0; i < (sizeof(s_paintOnTopInstances) / sizeof(s_paintOnTopInstances[0])); i++)
+	{
+		if (strncmp(inst->name, s_paintOnTopInstances[i], 15) == 0)
+		{
+			return 2;
+		}
+	}
+	return 0;
+}
+
+/* Occlusion stamp for a held-shield layer (PKTDEPTH stamps are 0xFFFF minus
+ * view.z, nearer = larger). The bubble pins a margin in front of its own
+ * kart's origin: the margin covers the ground under the lower half of the
+ * sphere, which the camera sees from above, so it needs a few radii of depth
+ * to clear it; a world object nearer than that still hides the bubble. The
+ * margin follows the layer's instance scale, which tracks the sphere radius.
+ * Near the camera the pin saturates at the world maximum (the 64-unit floor
+ * below the UI band), the same stamp the talking heads use. */
+#define GTE_PAINT_NEAR_SHIELD_MARGIN_SHIFT 3
+#define GTE_PAINT_NEAR_FLOOR_Z 64
+internal u16 GTECapture_ShieldPinStamp(const struct Instance *inst, s64 trueZ)
+{
+	s64 margin = (s64)(u16)inst->scale.x >> GTE_PAINT_NEAR_SHIELD_MARGIN_SHIFT;
+	s64 z = trueZ - margin;
+
+	if (z < GTE_PAINT_NEAR_FLOOR_Z)
+	{
+		z = GTE_PAINT_NEAR_FLOOR_Z;
+	}
+	if (z > 0xFFFF)
+	{
+		z = 0xFFFF;
+	}
+	return (u16)(0xFFFF - z);
 }
 
 /* PAINT-UNDER class: members are geometry retail parks INSIDE or coincident
@@ -605,10 +662,16 @@ void GTECapture_BeginInstanceDepth(const struct Instance *inst, const struct Pus
 	 * and nothing else. The pool is the one RenderBucket_Execute draws into
 	 * (MainFrame_RenderFrame passes &gGT->backBuffer->primMem), which is the
 	 * same pool the OT walk later visits. */
-	if (g_dbg_paintOnTop && (inst->model != NULL) && GTECapture_ModelPaintsOnTop(inst->model->name))
+	if (g_dbg_paintOnTop)
 	{
-		s_paintNearArmed = 1;
-		s_paintNearStartCursor = sdata->gGT->backBuffer->primMem.cursor;
+		int paintClass = GTECapture_InstPaintsOnTop(inst);
+
+		if (paintClass != 0)
+		{
+			s_paintNearArmed = 1;
+			s_paintNearStartCursor = sdata->gGT->backBuffer->primMem.cursor;
+			s_paintNearPinArmed = (paintClass == 2) ? GTECapture_ShieldPinStamp(inst, trueZ) : 0;
+		}
 	}
 }
 
@@ -659,7 +722,7 @@ void GTECapture_EndInstanceDepth(void)
 	 * the model path intercepted the writes) registers nothing. */
 	if (s_paintNearArmed)
 	{
-		GTECapture_AddPaintOnTopRange(s_paintNearStartCursor, sdata->gGT->backBuffer->primMem.cursor, 0);
+		GTECapture_AddPaintOnTopRangePinned(s_paintNearStartCursor, sdata->gGT->backBuffer->primMem.cursor, 0, s_paintNearPinArmed);
 		s_paintNearArmed = 0;
 	}
 
@@ -1123,6 +1186,7 @@ int GTECapture_ReadMatrixWords(u8 id, u32 out[8])
 global_variable int s_gteCaptureSuppress;
 global_variable int s_gteCaptureExemptNode;
 global_variable int s_gteCapturePaintNearNode;
+global_variable u16 s_gteCapturePaintNearPin;
 
 void GTECapture_SetUIBand(const void *start, const void *end)
 {
@@ -1150,15 +1214,38 @@ void GTECapture_SetUIBandExemptRange(const void *start, const void *end)
  */
 void GTECapture_AddPaintOnTopRange(const void *start, const void *end, int flatParallax)
 {
-	GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureWriteIdx];
+	GTECapture_AddPaintOnTopRangePinned(start, end, flatParallax, 0);
+}
 
-	if ((g_dbg_paintOnTop == 0) || (buf->paintNearN >= GTE_CAPTURE_PAINTNEAR_MAX) || (end <= start))
+/*
+ * Same registration with an explicit occlusion stamp (0 = PKTDEPTH_WORLD_MAX).
+ * A range that continues the previous one with the same flavor and pin extends
+ * it: a held shield's three layers draw back to back, and the walk tests every
+ * OT node against every range.
+ */
+void GTECapture_AddPaintOnTopRangePinned(const void *start, const void *end, int flatParallax, u16 pinStamp)
+{
+	GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureWriteIdx];
+	u8 flavor = (u8)(((flatParallax >= 0) && (flatParallax <= 2)) ? flatParallax : 1);
+
+	if ((g_dbg_paintOnTop == 0) || (end <= start))
+	{
+		return;
+	}
+	if ((buf->paintNearN > 0) && (buf->paintNearEnd[buf->paintNearN - 1] == start) && (buf->paintNearFlat[buf->paintNearN - 1] == flavor) &&
+	    (buf->paintNearPin[buf->paintNearN - 1] == pinStamp))
+	{
+		buf->paintNearEnd[buf->paintNearN - 1] = end;
+		return;
+	}
+	if (buf->paintNearN >= GTE_CAPTURE_PAINTNEAR_MAX)
 	{
 		return;
 	}
 	buf->paintNearStart[buf->paintNearN] = start;
 	buf->paintNearEnd[buf->paintNearN] = end;
-	buf->paintNearFlat[buf->paintNearN] = (u8)(((flatParallax >= 0) && (flatParallax <= 2)) ? flatParallax : 1);
+	buf->paintNearFlat[buf->paintNearN] = flavor;
+	buf->paintNearPin[buf->paintNearN] = pinStamp;
 	buf->paintNearN++;
 }
 
@@ -1200,6 +1287,7 @@ void GTECapture_MarkOTNode(const void *node)
 			if ((node >= buf->paintNearStart[i]) && (node < buf->paintNearEnd[i]))
 			{
 				s_gteCapturePaintNearNode = 1 + (int)buf->paintNearFlat[i];
+				s_gteCapturePaintNearPin = buf->paintNearPin[i];
 				break;
 			}
 		}
@@ -1248,6 +1336,12 @@ int GTECapture_NodeExempt(void)
 int GTECapture_NodePaintNear(void)
 {
 	return s_gteCapturePaintNearNode;
+}
+
+// Occlusion stamp of the range NodePaintNear matched; 0 = the world maximum.
+int GTECapture_NodePaintNearPin(void)
+{
+	return (int)s_gteCapturePaintNearPin;
 }
 
 #endif /* defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE */
