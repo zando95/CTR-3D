@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 enum
 {
@@ -1172,7 +1173,7 @@ void VehPhysGeneral_SetHeldItem(struct Driver *driver)
 	// In Boss race
 	if (gGT->gameMode1 & ADVENTURE_BOSS)
 	{
-		s8 bossFails = sdata->advProgress.timesLostBossRace[gGT->bossID];
+		s8 bossFails = (s8)NativeArcade_BossTimesLost(gGT->bossID);
 
 		if (bossFails < ITEMSET_BOSS_LOSSES_REPLACE_MASK_CLOCK_WARPBALL)
 		{
@@ -1199,7 +1200,13 @@ void VehPhysGeneral_SetHeldItem(struct Driver *driver)
 		}
 
 		// Replace 3 Missiles with 1 Missile if racing Komodo Joe
-		if (gGT->levelID == DRAGON_MINES && driver->heldItemID == HELD_ITEM_MISSILE_3X)
+		b32 racingKomodoJoe = (gGT->levelID == DRAGON_MINES);
+		if (NativeArcade_BossRace())
+		{
+			// Joe races on every track of his hub, not only his own
+			racingKomodoJoe = (gGT->bossID == 2);
+		}
+		if (racingKomodoJoe && driver->heldItemID == HELD_ITEM_MISSILE_3X)
 		{
 			driver->heldItemID = HELD_ITEM_MISSILE_1X;
 		}

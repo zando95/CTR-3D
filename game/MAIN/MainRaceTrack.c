@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8003cf7c-0x8003cfc0.
 void MainRaceTrack_StartLoad(s16 levelID)
@@ -17,6 +18,10 @@ void MainRaceTrack_StartLoad(s16 levelID)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8003cfc0-0x8003d024.
 void MainRaceTrack_RequestLoad(s16 levelID)
 {
+#ifdef CTR_NATIVE
+	NativeArcade_OnLoadRequest(levelID);
+#endif
+
 	// Turn off HUD
 	sdata->gGT->hudFlags &= HUD_FLAG_CLEAR_RACE_HUD_MASK;
 

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 #ifdef CTR_NATIVE
 // Menu-content hooks (platform/native_options.c) -- same local-extern idiom as
@@ -63,6 +64,7 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 
 #ifdef CTR_NATIVE
 	mainMenu->rows = NativeOptions_MainMenuRows(mainMenu->rows);
+	D230.menuRaceType.rows = NativeArcade_RaceTypeRows(D230.menuRaceType.rows);
 #endif
 
 	MM_ParseCheatCodes();
@@ -157,6 +159,10 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 	gGT->gameMode2 &= ~(CUP_ANY_KIND);
 
 	mainMenu->state |= ONLY_DRAW_TITLE;
+
+#ifdef CTR_NATIVE
+	NativeArcade_ResetMode();
+#endif
 
 	// Default to 3,
 	// this intentionally disables the 1-lap cheat
@@ -474,6 +480,14 @@ void MM_MenuProc_SingleCup(struct RectMenu *menu)
 		return;
 	}
 
+#ifdef CTR_NATIVE
+	// 3DS rows below SINGLE and CUP (platform/native_arcade_modes.c); never true on PC
+	if (NativeArcade_HandleRaceTypeRow(menu, row))
+	{
+		return;
+	}
+#endif
+
 	if ((row >= 0) && (row < MM_RACE_TYPE_SELECTABLE_ROWS))
 	{
 		// disable Cup mode
@@ -588,6 +602,10 @@ void MM_JumpTo_Title_Returning(void)
 void MM_JumpTo_Title_FirstTime(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
+
+#ifdef CTR_NATIVE
+	NativeArcade_ResetMode();
+#endif
 
 	MM_ResetAllMenus();
 

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800abcac-0x800ac178.
 void MM_Title_MenuUpdate(void)
@@ -170,6 +171,11 @@ void MM_Title_MenuUpdate(void)
 	case MM_EXIT_ROUTE_DEMO:
 
 		MM_Title_KillThread();
+
+#ifdef CTR_NATIVE
+		// the attract race is never one of the Arcade-menu modes
+		NativeArcade_ResetMode();
+#endif
 
 		gGT->gameMode1 &= ~(BATTLE_MODE | ADVENTURE_MODE | TIME_TRIAL | ADVENTURE_ARENA | ARCADE_MODE | ADVENTURE_CUP);
 		gGT->gameMode2 &= ~(CUP_ANY_KIND);

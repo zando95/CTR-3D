@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 void PickupBots_Init(void)
 {
@@ -253,7 +254,7 @@ static void PickupBots_SetBossCooldown(struct MetaDataBOSS *bossMeta)
 
 	sdata->bossWeaponCooldown = (RngDeadCoed(&sdata->advRng) & PICKUPBOTS_BOSS_COOLDOWN_RANDOM_MASK) + bossMeta->weaponCooldown +
 	                            PICKUPBOTS_BOSS_COOLDOWN_BASE_FRAMES +
-	                            ((s8)sdata->advProgress.timesLostBossRace[gGT->bossID] * PICKUPBOTS_BOSS_LOSS_COOLDOWN_STEP);
+	                            ((s8)NativeArcade_BossTimesLost(gGT->bossID) * PICKUPBOTS_BOSS_LOSS_COOLDOWN_STEP);
 }
 
 static struct MetaDataBOSS *PickupBots_GetInitialBossMeta(void)
@@ -268,11 +269,64 @@ static struct MetaDataBOSS *PickupBots_GetInitialBossMeta(void)
 	return data.bossWeaponMetaPtr[data.metaDataLEV[gGT->levelID].hubID];
 }
 
+// A boss's weapon meta places its sections by restart-point index on the boss's own retail track, so
+// on another track the indices point at unrelated places. There the sections split the lap's distance
+// evenly instead (the section scheme of Rinnegatamante's Crash-Team-Racing-High-Octane, GPL-3.0).
+static void PickupBots_AdvanceBossMetaEven(struct Driver *boss)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	struct MetaDataBOSS *baseMeta = PickupBots_GetInitialBossMeta();
+	struct MetaDataBOSS *bossMeta = sdata->bossWeaponMeta;
+	int metaCount = 0;
+
+	// a section list ends at the entry whose throwFlag is 0
+	while (baseMeta[metaCount].throwFlag != 0)
+	{
+		metaCount++;
+	}
+
+	int metaIndex = (int)(bossMeta - baseMeta);
+
+	if ((metaIndex < 0) || (metaIndex >= metaCount))
+	{
+		bossMeta = baseMeta;
+		metaIndex = 0;
+	}
+
+	int totalDistance = gGT->level1->ptr_restart_points[0].distToFinish << PICKUPBOTS_BOSS_CHECKPOINT_DISTANCE_SHIFT;
+
+	if ((totalDistance > 0) && (metaCount > 0))
+	{
+		if (metaIndex + 1 < metaCount)
+		{
+			int nextSection = metaIndex + 1;
+			int threshold = (int)(((s64)totalDistance * (metaCount - nextSection)) / metaCount);
+
+			if ((int)boss->distanceToFinish_curr < threshold)
+			{
+				bossMeta = &baseMeta[nextSection];
+			}
+		}
+		else if ((int)boss->distanceToFinish_curr > ((totalDistance * 3) / 4))
+		{
+			bossMeta = baseMeta;
+		}
+	}
+
+	sdata->bossWeaponMeta = bossMeta;
+}
+
 static void PickupBots_AdvanceBossMeta(struct Driver *boss)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	struct MetaDataBOSS *bossMeta = sdata->bossWeaponMeta;
 	struct MetaDataBOSS *nextMeta = &bossMeta[1];
+
+	if (NativeArcade_BossOffHome())
+	{
+		PickupBots_AdvanceBossMetaEven(boss);
+		return;
+	}
 
 	if (nextMeta->throwFlag == 0)
 	{
@@ -324,6 +378,12 @@ static void PickupBots_AdvanceBossMeta(struct Driver *boss)
 
 static void PickupBots_UpdateBossPathRequest(struct Driver *boss)
 {
+	// the boss's path switches belong to the geometry of its own retail track
+	if (NativeArcade_BossOffHome())
+	{
+		return;
+	}
+
 	if (sdata->bossWeaponMeta->pathChangeDisabled != 0)
 	{
 		return;

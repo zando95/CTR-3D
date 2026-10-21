@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
 // Register the track-select map sheet's packet span for the 3DS far-edge UV
@@ -347,6 +348,14 @@ b32 MM_TrackSelect_boolTrackOpen(struct MainMenu_LevelRow *menuSelect)
 {
 	s16 flag = menuSelect->unlock;
 
+#ifdef CTR_NATIVE
+	// the 3DS Arcade-menu modes list only the tracks they can run on, on top of the retail unlocks
+	if (!NativeArcade_TrackAllowed(menuSelect->levID))
+	{
+		return false;
+	}
+#endif
+
 	if (flag == MM_TRACK_UNLOCK_ALWAYS)
 	{
 		return true;
@@ -619,7 +628,12 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 				OtherFX_Play(1, 1);
 
 				// if not Battle or Time Trial, open LapSelectMenu
+#ifdef CTR_NATIVE
+				// the Arcade-menu modes run a fixed three laps
+				if (((gGT->gameMode1 & (BATTLE_MODE | TIME_TRIAL)) == 0) && !NativeArcade_FixedLaps())
+#else
 				if ((gGT->gameMode1 & (BATTLE_MODE | TIME_TRIAL)) == 0)
+#endif
 				{
 					// open lap select menu
 					D230.trackSelect.lapBoxOpen = D230.trackSelect.transition.state;

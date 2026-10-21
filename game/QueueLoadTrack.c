@@ -1,10 +1,16 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80043b30-0x80043c04.
 void QueueLoadTrack_MenuProc(struct RectMenu *menu)
 {
 	struct GameTracker *gGT = sdata->gGT;
+
+#ifdef CTR_NATIVE
+	// 3DS Arcade-menu modes: queue their race flags with this load (no-op in every other mode)
+	NativeArcade_ArmRace();
+#endif
 
 	// If you're in Time Trial,
 	// set P3 to N Tropy, and P4 to N Oxide

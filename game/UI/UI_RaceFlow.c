@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 #ifdef CTR_NATIVE
 // platform/native_ghost_best.c -- writes the pending best ghost (local-extern idiom).
@@ -150,6 +151,15 @@ void UI_RaceStart_IntroText1P(void)
 				{
 					// ARCADE
 					textID = LNG_ARCADE;
+
+#if defined(CTR_NATIVE)
+					// a BOSS RACES race announces its boss, as the Adventure boss garage does
+					if (NativeArcade_BossRace())
+					{
+						textID = data.lng_challenge[gGT->bossID];
+						goto LAB_80055930;
+					}
+#endif
 
 					if (
 					    // If you're in Arcade Mode

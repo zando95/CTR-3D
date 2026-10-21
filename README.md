@@ -61,9 +61,11 @@ The screens:
 - A frame-rate readout sits in the top-right corner of the bottom screen.
 - The 3D slider works in real time.
 
-The main menu has an **OPTIONS** entry with four toggles: PAL PENTA (Penta Penguin's PAL/Japanese stats), RESERVES METER (the boost-reserves bar), BOTTOM MAP, and TEXTURE FILTER. They return to their defaults on every launch.
+The main menu rows are ADVENTURE, TIME TRIAL, ARCADE, HIGH SCORE, SCRAPBOOK once it is unlocked, OPTIONS and QUIT (YES or NO, NO preselected; YES exits like HOME > Close). VS and Battle are not on the menu.
 
-Below the toggles is a **LANGUAGE** row: confirm cycles through English, French, German, Italian, Spanish and Dutch, and the game text changes immediately. Unlike the toggles, the choice is remembered in `/3ds/ctr_native/language.cfg`; delete that file to go back to English. The OPTIONS menu itself is translated too (title, every option, and ON/OFF as SI/NO, JA/NEIN, OUI/NON and so on). Voices stay English unless you install PAL voices (see below), because the NTSC-U disc has no other voice tracks. VS and Battle modes are not on the menu; one console has one controller.
+OPTIONS has five toggles: PAL PENTA (Penta Penguin's PAL/Japanese stats), RESERVES METER (the boost-reserves bar), BOTTOM MAP, AUTOSAVE GHOST (your fastest Time Trial run on each track is saved and raced), and TEXTURE FILTER. Flipping one saves it to `/3ds/ctr_native/options.cfg`, so the settings are remembered between launches; delete that file to go back to the defaults.
+
+Below the toggles is a **LANGUAGE** row: confirm cycles through English, French, German, Italian, Spanish and Dutch, and the game text changes immediately. The choice is remembered in `/3ds/ctr_native/language.cfg`; delete that file to go back to English. The OPTIONS menu itself is translated too (title, every option, and ON/OFF as SI/NO, JA/NEIN, OUI/NON and so on). Voices stay English unless you install PAL voices (see below), because the NTSC-U disc has no other voice tracks.
 
 ### PAL voices
 
@@ -101,6 +103,7 @@ Everything here is on by default unless it says otherwise. The toggles are the O
 - **The Super Turbo Pads cheat code (ARROW) also turns on Retro-Fueled mode**, which ports the community Retro-Fueled mod's gameplay. Any boost that isn't a pad (power slides, hang time, turbo items, the start boost) no longer knocks you out of USF. Square+Down, or Square in the air, keeps your reserves, and without Cross held you really brake or reverse. Every pad is a blue pad, and each gives a 1-second reserve. The exhaust fire burns blue at USF speed and the menu flag turns blue. 3DS build only.
 - **Language selection** (English, French, German, Italian, Spanish, Dutch), using the localized text files that are already on the NTSC-U disc. The n-tilde, inverted `¡` `¿`, the ordinal `º` and quotation marks that those files rely on are drawn from existing font icons, because the NTSC-U font code does not know them. Remembered between launches.
 - **Voices in the selected language** (French, German, Italian, Spanish, Dutch) from PAL voice packs on the SD card. English keeps the NTSC-U disc's own voices.
+- **BOSS RACES** is a new row of the ARCADE race-type menu: a three-lap race against the boss of the track's hub (Ripper Roo, Papu Papu, Komodo Joe or Pinstripe; Oxide on Oxide Station, Slide Coliseum and Turbo Track), using the boss's Adventure difficulty and weapons. It starts fresh every time and never touches an Adventure save. Off the boss's own track the boss throws its weapons at even points of the lap (the scheme of the PS Vita port, [Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0). 3DS build only.
 - **Nitros Oxide as a playable character**, unlocked with the cheat code ROSWELL (see the top of this page). The retail select screen was built for 15 racers, so entering the code switches it to a 16-slot layout (the slot layout follows the PS Vita port, [Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0). His select-screen model is read from the disc's own files at runtime; nothing of the game is included in this repository.
 - **VS and Battle modes** are not offered.
 
@@ -202,6 +205,7 @@ GPL-3.0, inherited from CTR Native and CTR-ModSDK; see [LICENSE](LICENSE). Third
 - [CTR-ModSDK](https://github.com/CTR-tools/CTR-ModSDK) — the decompilation project both are built on
 - [ReservesMeter](https://github.com/CTR-tools/CTR-ModSDK/tree/main/mods/Modules/ReservesMeter) by Superstarxalien — the in-race boost-reserves meter's design (geometry, fill scale, colors) follows this community mod
 - [Retro-Fueled](https://github.com/CTR-tools/CTR-ModSDK/tree/main/mods/Modules/Retro-Fueled) by TheRedhotbr, blue fire palette by Avery — the ARROW cheat's Retro-Fueled mode ports this community mod's gameplay
+- [Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane) by Rinnegatamante (GPL-3.0) — the PS Vita port: the Oxide select-screen layout, the PAL voice mapping and extractor, and the BOSS RACES off-track weapon scheme
 - [PsyCross](https://github.com/OpenDriver2/PsyCross) — original PS1 compatibility code from which parts of the owned platform layer and PsyQ facade headers are derived
 - [SDL3](https://github.com/libsdl-org/SDL) — cross-platform multimedia for the PC build
 - [devkitPro](https://devkitpro.org/), libctru and citro3d — the 3DS homebrew toolchain and GPU library the 3DS port is built on

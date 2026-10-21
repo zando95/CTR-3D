@@ -85,6 +85,7 @@
 #include "platform/native_memcard.c"
 #include "platform/native_memcard_adapter.c"
 #include "platform/native_ghost_best.c"
+#include "platform/native_arcade_modes.c"
 #include "platform/native_perf.c"
 #include "platform/native_platform.c"
 #include "platform/native_render_queue.c"
