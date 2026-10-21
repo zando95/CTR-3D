@@ -283,16 +283,27 @@ const bool *SDL_GetKeyboardState(int *numkeys)
 
 /* ============================================================== events === */
 
+static int s_sdlN3dsQuitRequested;
+
+void N3DS_RequestQuit(void)
+{
+	s_sdlN3dsQuitRequested = 1;
+}
+
 bool SDL_PollEvent(SDL_Event *event)
 {
+	int mainLoopActive;
+
 	N3DS_PumpInput();
 
 	/*
-	 * HOME/power close the applet. Report it as a quit event so the existing
-	 * handler in Platform_PollHostEvents performs the normal shutdown, rather
-	 * than adding a second exit path.
+	 * HOME/power close the applet, and the main menu's QUIT row asks for the same. Report either as a
+	 * quit event so the existing handler in Platform_PollHostEvents performs the normal shutdown,
+	 * rather than adding a second exit path. N3DS_MainLoopActive runs every poll (it ticks the
+	 * worker-thread heartbeat monitor), so the request flag never short-circuits it.
 	 */
-	if (!N3DS_MainLoopActive())
+	mainLoopActive = N3DS_MainLoopActive();
+	if ((mainLoopActive == 0) || (s_sdlN3dsQuitRequested != 0))
 	{
 		if (event != NULL)
 		{

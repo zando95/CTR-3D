@@ -7,7 +7,8 @@
  * loses VS and BATTLE (one screen, one pad -- both modes are dead ends) and
  * gains an OPTIONS row opening a RectMenu of runtime toggles; each row writes
  * the same global its dumpreq word writes, so the menu and dumpreq stay
- * interchangeable.
+ * interchangeable. A last QUIT row opens a YES/NO confirm whose YES takes the
+ * same exit as a HOME-menu Close (N3DS_RequestQuit).
  *
  * Menu flips persist across launches: the toggles in <base dir>/options.cfg (one `key value`
  * line per s_optToggles row, keyed by its saveKey), the language in <base dir>/language.cfg.
@@ -472,13 +473,56 @@ static struct RectMenu s_optMenu = {
     .funcPtr = NativeOptions_MenuProc,
 };
 
-/* 3DS main-menu row sets: retail minus VS/BATTLE, plus OPTIONS last. */
+/* QUIT confirm, the child box of the main menu's QUIT row. The row, YES and NO are retail's own strings
+ * (the pause menu's quit confirm uses the same three), so every language file already carries them.
+ * YES leaves through N3DS_RequestQuit, the same exit a HOME-menu Close takes. NO and back close the box.
+ * rowSelected persists between visits, so opening the box re-selects NO (HandleMainMenuChoice). */
+#define OPT_QUIT_ROW_YES 0
+#define OPT_QUIT_ROW_NO  1
+
+static struct MenuRow s_optQuitRows[] = {
+    {LNG_YES, 0, 1, 0, 0},
+    {LNG_NO, 0, 1, 1, 1},
+    {RECTMENU_STRING_NONE, 0, 0, 0, 0},
+};
+
+static void NativeOptions_QuitMenuProc(struct RectMenu *menu)
+{
+	/* Same rule as NativeOptions_MenuProc: only a real input event may act. */
+	if (menu->funcState != RECTMENU_FUNC_STATE_INPUT)
+	{
+		return;
+	}
+
+	if (menu->rowSelected == OPT_QUIT_ROW_YES)
+	{
+		N3DS_RequestQuit();
+		return;
+	}
+
+	/* NO, or rowSelected -1 (the engine's back signal) */
+	if ((menu->rowSelected == OPT_QUIT_ROW_NO) || (menu->rowSelected == -1))
+	{
+		menu->ptrPrevBox_InHierarchy->state &= ~(ONLY_DRAW_TITLE | DRAW_NEXT_MENU_IN_HIERARCHY);
+	}
+}
+
+/* No own title: the main menu draws the selected row ("QUIT") above the child box. */
+static struct RectMenu s_optQuitMenu = {
+    .stringIndexTitle = RECTMENU_STRING_NONE,
+    .state = CENTER_ON_X | USE_SMALL_FONT,
+    .rows = &s_optQuitRows[0],
+    .funcPtr = NativeOptions_QuitMenuProc,
+};
+
+/* 3DS main-menu row sets: retail minus VS/BATTLE, plus OPTIONS and QUIT last. */
 static struct MenuRow s_optMainRowsBasic[] = {
     {LNG_ADVENTURE, 0, 1, 0, 0},
     {LNG_TIME_TRIAL, 0, 2, 1, 1},
     {LNG_ARCADE, 1, 3, 2, 2},
     {LNG_HIGH_SCORE, 2, 4, 3, 3},
-    {LNG_UNUSED_0E4, 3, 4, 4, 4},
+    {LNG_UNUSED_0E4, 3, 5, 4, 4},
+    {LNG_QUIT, 4, 5, 5, 5},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
 
@@ -488,7 +532,8 @@ static struct MenuRow s_optMainRowsScrapbook[] = {
     {LNG_ARCADE, 1, 3, 2, 2},
     {LNG_HIGH_SCORE, 2, 4, 3, 3},
     {LNG_SCRAPBOOK, 3, 5, 4, 4},
-    {LNG_UNUSED_0E4, 4, 5, 5, 5},
+    {LNG_UNUSED_0E4, 4, 6, 5, 5},
+    {LNG_QUIT, 5, 6, 6, 6},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
 
@@ -519,6 +564,14 @@ s32 NativeOptions_HandleMainMenuChoice(struct RectMenu *mainMenu, s32 choose)
 	if (choose == LNG_UNUSED_0E4)
 	{
 		mainMenu->ptrNextBox_InHierarchy = &s_optMenu;
+		mainMenu->state |= DRAW_NEXT_MENU_IN_HIERARCHY;
+		return 1;
+	}
+
+	if (choose == LNG_QUIT)
+	{
+		s_optQuitMenu.rowSelected = OPT_QUIT_ROW_NO;
+		mainMenu->ptrNextBox_InHierarchy = &s_optQuitMenu;
 		mainMenu->state |= DRAW_NEXT_MENU_IN_HIERARCHY;
 		return 1;
 	}

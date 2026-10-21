@@ -200,6 +200,10 @@ typedef union SDL_Event
 bool SDL_PollEvent(SDL_Event *event);
 void SDL_PumpEvents(void);
 
+/* Asks for the same exit a HOME-menu Close takes: the next SDL_PollEvent reports SDL_EVENT_QUIT, so the
+ * one shutdown path in Platform_PollHostEvents runs. The request is never cleared. */
+void N3DS_RequestQuit(void);
+
 /* ------------------------------------------------------------ keyboard --- */
 
 const bool *SDL_GetKeyboardState(int *numkeys);
