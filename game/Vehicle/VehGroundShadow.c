@@ -232,6 +232,14 @@ static void VehGroundShadow_TransformLocalAxes(struct VehGroundShadowEntry *entr
 	localX = (height * VEH_GROUND_SHADOW_LOCAL_X_FACTOR) >> VEH_GROUND_SHADOW_LOCAL_SCALE_SHIFT;
 	localZ0 = (height * VEH_GROUND_SHADOW_LOCAL_Z0_FACTOR) >> VEH_GROUND_SHADOW_LOCAL_SCALE_SHIFT;
 	localZ1 = (height * VEH_GROUND_SHADOW_LOCAL_Z1_FACTOR) >> VEH_GROUND_SHADOW_LOCAL_SCALE_SHIFT;
+	{
+		// the shadow is sized for a kart; Oxide's craft is larger
+		s32 characterID = data.characterIDs[driver->driverID];
+
+		localX = OxideFit_Grow(characterID, localX, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+		localZ0 = OxideFit_Grow(characterID, localZ0, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+		localZ1 = OxideFit_Grow(characterID, localZ1, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+	}
 	local.x = (s16)localX;
 	local.y = 0;
 	local.z = 0;

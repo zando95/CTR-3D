@@ -12,6 +12,7 @@
 #include <prim.h>
 
 #include <game_layouts.h>
+#include <oxide_fit.h>
 
 #if defined(CTR_NATIVE)
 #include <platform.h>

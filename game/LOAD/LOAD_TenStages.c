@@ -399,6 +399,16 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			sdata->PLYROBJECTLIST = 0;
 		}
 
+#if defined(CTR_NATIVE)
+		if (sdata->PLYROBJECTLIST != 0)
+		{
+			for (struct Model **racerModels = (struct Model **)sdata->PLYROBJECTLIST; *racerModels != NULL; racerModels++)
+			{
+				OxideFit_SizeRacerModel(*racerModels);
+			}
+		}
+#endif
+
 		LOAD_GlobalModelPtrs_MPK();
 		DecalGlobal_Clear(gGT);
 
@@ -468,6 +478,9 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			if (data.driverModelExtras[i].fileBase != NULL)
 			{
 				data.driverModelExtras[i].model = (struct Model *)((u8 *)data.driverModelExtras[i].fileBase + LOAD_MODEL_FILE_HEADER_BYTES);
+#if defined(CTR_NATIVE)
+				OxideFit_SizeRacerModel(data.driverModelExtras[i].model);
+#endif
 			}
 		}
 

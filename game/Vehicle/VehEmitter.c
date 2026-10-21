@@ -918,10 +918,21 @@ static void VehEmitter_ExhaustPair(struct Thread *thread, struct Driver *d)
 	local.vx = (s16)((inst->scale.x * VEH_EMITTER_EXHAUST_POS_X_NUM) >> VEH_EMITTER_EXHAUST_POS_X_SHIFT);
 	local.vy = (s16)((inst->scale.y * VEH_EMITTER_EXHAUST_POS_Y_NUM) >> VEH_EMITTER_EXHAUST_POS_Y_SHIFT);
 	local.vz = (s16)((inst->scale.z * VEH_EMITTER_EXHAUST_POS_Z_NUM) >> VEH_EMITTER_EXHAUST_POS_Z_SHIFT);
+	s16 secondPipeX = (s16)((inst->scale.x * VEH_EMITTER_EXHAUST_POS_SECOND_X_NUM) >> VEH_EMITTER_EXHAUST_POS_SECOND_X_SHIFT);
+#if defined(CTR_NATIVE)
+	if (data.characterIDs[d->driverID] == NITROS_OXIDE)
+	{
+		// his pipes sit where his own craft puts them, at the size he is raced at
+		local.vx = (s16)((inst->scale.x * OxideFit_ModelPos(OXIDE_FIT_EXHAUST_X)) >> FRACTIONAL_BITS);
+		local.vy = (s16)((inst->scale.y * OxideFit_ModelPos(OXIDE_FIT_EXHAUST_Y)) >> FRACTIONAL_BITS);
+		local.vz = (s16)((inst->scale.z * OxideFit_ModelPos(OXIDE_FIT_EXHAUST_Z)) >> FRACTIONAL_BITS);
+		secondPipeX = (s16)-local.vx;
+	}
+#endif
 	VehEmitter_RotVec(&local, &exhaustPos);
 	VehEmitter_Exhaust(d, &exhaustPos, &exhaustVel);
 
-	local.vx = (s16)((inst->scale.x * VEH_EMITTER_EXHAUST_POS_SECOND_X_NUM) >> VEH_EMITTER_EXHAUST_POS_SECOND_X_SHIFT);
+	local.vx = secondPipeX;
 	VehEmitter_RotVec(&local, &exhaustPos);
 	VehEmitter_Exhaust(d, &exhaustPos, &exhaustVel);
 }

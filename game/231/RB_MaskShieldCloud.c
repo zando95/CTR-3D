@@ -15,6 +15,9 @@ void RB_MaskWeapon_FadeAway(struct Thread *t)
 	driverInst = t->parentThread->inst;
 	maskBeamInst = mask->maskBeamInst;
 
+	// the shrink step is sized for a kart-sized mask; Oxide's larger mask shrinks by a larger step
+	int shrinkStep = OxideFit_Grow(data.characterIDs[((struct Driver *)t->parentThread->object)->driverID], 0x100, OXIDE_FIT_MASK_AT_FULL_SIZE);
+
 	struct MaskHeadScratch *mhs = CTR_SCRATCHPAD_PTR(struct MaskHeadScratch, 0x108);
 
 	// Set up First pass (maskInst)
@@ -35,9 +38,9 @@ void RB_MaskWeapon_FadeAway(struct Thread *t)
 	{
 		LHMatrix_Parent(instCurr, driverInst, &mhs->posOffset);
 
-		instCurr->scale.x += -0x100;
-		instCurr->scale.y += -0x100;
-		instCurr->scale.z += -0x100;
+		instCurr->scale.x -= shrinkStep;
+		instCurr->scale.y -= shrinkStep;
+		instCurr->scale.z -= shrinkStep;
 
 		// position offset
 		mhs->posOffset.x = 0;
@@ -266,6 +269,7 @@ void RB_ShieldDark_ThTick_Pop(struct Thread *t)
 	instDark = t->inst;
 	instColor = sh->instColor;
 	driverOwner = t->parentThread->object;
+	int ownerCharacter = data.characterIDs[driverOwner->driverID];
 
 	rot.x = 0;
 	rot.y = 0;
@@ -283,15 +287,19 @@ void RB_ShieldDark_ThTick_Pop(struct Thread *t)
 
 	if (animFrame < 0xb)
 	{
-		// set scale
-		instDark->scale.x = s_shieldPopScale[animFrame][0];
-		instDark->scale.y = s_shieldPopScale[animFrame][1];
-		instDark->scale.z = s_shieldPopScale[animFrame][0];
+		// the tables are sized for a kart's bubble; Oxide's craft needs a larger one
+		s16 popXZ = (s16)OxideFit_Grow(ownerCharacter, s_shieldPopScale[animFrame][0], OXIDE_FIT_SHIELD_AT_FULL_SIZE);
+		s16 popY = (s16)OxideFit_Grow(ownerCharacter, s_shieldPopScale[animFrame][1], OXIDE_FIT_SHIELD_AT_FULL_SIZE);
 
 		// set scale
-		instColor->scale.x = s_shieldPopScale[animFrame][0];
-		instColor->scale.y = s_shieldPopScale[animFrame][1];
-		instColor->scale.z = s_shieldPopScale[animFrame][0];
+		instDark->scale.x = popXZ;
+		instDark->scale.y = popY;
+		instDark->scale.z = popXZ;
+
+		// set scale
+		instColor->scale.x = popXZ;
+		instColor->scale.y = popY;
+		instColor->scale.z = popXZ;
 
 		// next frame
 		sh->animFrame += 1;
@@ -440,11 +448,14 @@ void RB_ShieldDark_ThTick_Grow(struct Thread *th)
 	s16 scaleXZ;
 	s16 scaleY;
 
+	// the tables are sized for a kart's bubble; Oxide's craft needs a larger one
+	int ownerCharacter = data.characterIDs[player->driverID];
+
 	// if animation is not done
 	if (shield->animFrame < 8)
 	{
-		scaleXZ = s_shieldGrowScale[shield->animFrame][0];
-		scaleY = s_shieldGrowScale[shield->animFrame][1];
+		scaleXZ = (s16)OxideFit_Grow(ownerCharacter, s_shieldGrowScale[shield->animFrame][0], OXIDE_FIT_SHIELD_AT_FULL_SIZE);
+		scaleY = (s16)OxideFit_Grow(ownerCharacter, s_shieldGrowScale[shield->animFrame][1], OXIDE_FIT_SHIELD_AT_FULL_SIZE);
 
 		// set scale
 		shieldInst->scale.x = scaleXZ;
@@ -465,8 +476,8 @@ void RB_ShieldDark_ThTick_Grow(struct Thread *th)
 	{
 		s16 timerIndex = ((gGT->timer >> 0) % 6);
 
-		scaleXZ = s_shieldPulseScale[timerIndex][0];
-		scaleY = s_shieldPulseScale[timerIndex][1];
+		scaleXZ = (s16)OxideFit_Grow(ownerCharacter, s_shieldPulseScale[timerIndex][0], OXIDE_FIT_SHIELD_AT_FULL_SIZE);
+		scaleY = (s16)OxideFit_Grow(ownerCharacter, s_shieldPulseScale[timerIndex][1], OXIDE_FIT_SHIELD_AT_FULL_SIZE);
 
 		// set scale
 		shieldInst->scale.x = scaleXZ;
