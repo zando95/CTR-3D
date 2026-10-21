@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_retro_fueled.h>
 
 enum
 {
@@ -489,6 +490,10 @@ void BOTS_UpdateGlobals(void)
 	}
 
 	sdata->aiCollisionDelayFrameCount++;
+
+#ifdef CTR_NATIVE
+	NativeRetroFueled_UpdateFlamePalette();
+#endif
 }
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80013444-0x800135d8

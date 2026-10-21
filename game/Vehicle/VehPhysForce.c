@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_retro_fueled.h>
 
 
 // NOTE(aalhendi): ASM-verified helper for NTSC-U 926 0x8005e104-0x8005e214.
@@ -621,9 +622,19 @@ void VehPhysForce_CollideDrivers(struct Thread *thread, struct Driver *driver)
 		driver->collisionFlags |= DRIVER_COLL_FLAG_MASK_GRAB_REQUEST;
 	}
 
+	int superPadReserves = VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES;
+
+#ifdef CTR_NATIVE
+	// Retro-Fueled: every super-turbo pad gives the regular pad's reserve
+	if (NativeRetroFueled_Active())
+	{
+		superPadReserves = VEH_PHYS_FORCE_TURBO_PAD_RESERVES;
+	}
+#endif
+
 	if ((stepFlagSet & COLL_STEP_TRIGGER_SUPER_TURBO_PAD) != 0)
 	{
-		VehFire_Increment(driver, VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD, VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
+		VehFire_Increment(driver, superPadReserves, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD, VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
 	}
 	else if ((stepFlagSet & COLL_STEP_TRIGGER_TURBO_PAD) != 0)
 	{
@@ -633,8 +644,7 @@ void VehPhysForce_CollideDrivers(struct Thread *thread, struct Driver *driver)
 		}
 		else
 		{
-			VehFire_Increment(driver, VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD,
-			                  VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
+			VehFire_Increment(driver, superPadReserves, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD, VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
 		}
 	}
 

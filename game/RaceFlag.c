@@ -493,7 +493,7 @@ void RaceFlag_DrawLoadingString(void)
  * idiom used for NativeWide_CullMarginX below, because the use site is deep
  * inside RaceFlag_DrawSelf's nested loops and a block-scoped declaration
  * would not be visible there. 0 = retail checkers, 1 = pride stripes,
- * 2 = purple checkers. */
+ * 2 = purple checkers, 3 = blue-on-blue checkers. */
 extern int g_dbg_flagStyle;
 
 /*
@@ -513,6 +513,15 @@ extern int g_dbg_flagStyle;
  * dimmer half.
  */
 static const u8 s_rfSpyroPurpleRGB[3] = {140, 117, 188};
+
+/*
+ * Retro-Fueled flag (g_dbg_flagStyle == 3): blue-on-blue checkers, a light and a
+ * deeper blue. Unlike the Spyro flag BOTH tiles are tinted, since neither is white.
+ * The tiles use the checker parity of every other style and the light-tile
+ * brightness curve, so the wave shading reads the same.
+ */
+static const u8 s_rfBlueLightRGB[3] = {110, 190, 255};
+static const u8 s_rfBlueDarkRGB[3] = {30, 90, 200};
 
 /*
  * Pride-flag stripe colours, top to bottom (the six-colour flag). Used when
@@ -1013,6 +1022,21 @@ SKIP_LOADING_TEXT:
 							setRGB1(p, lumL, lumL, lumL);
 						}
 						CTR_WriteU32LE(&p->r2, CTR_ReadU32LE(&p->r0));
+						CTR_WriteU32LE(&p->r3, CTR_ReadU32LE(&p->r1));
+					}
+					else if (g_dbg_flagStyle == 3)
+					{
+						/* Retro-Fueled blue-on-blue checkers: same parity and
+						 * lighting as style 2, both tiles tinted. */
+						const u8 boolDark = (((((u32)column / RACE_FLAG_CHECKER_QUADS) + ((u32)i / RACE_FLAG_CHECKER_QUADS)) & 1U) != 0);
+						const u8 *tint = boolDark ? s_rfBlueDarkRGB : s_rfBlueLightRGB;
+						u8 lumR = RaceFlag_CalculateBrightness(lightR, 0);
+						u8 lumL = RaceFlag_CalculateBrightness(lightL, 0);
+
+						setRGB0(p, (u8)((lumR * tint[0]) >> 8), (u8)((lumR * tint[1]) >> 8), (u8)((lumR * tint[2]) >> 8));
+						CTR_WriteU32LE(&p->r2, CTR_ReadU32LE(&p->r0));
+
+						setRGB1(p, (u8)((lumL * tint[0]) >> 8), (u8)((lumL * tint[1]) >> 8), (u8)((lumL * tint[2]) >> 8));
 						CTR_WriteU32LE(&p->r3, CTR_ReadU32LE(&p->r1));
 					}
 					else

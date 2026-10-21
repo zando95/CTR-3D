@@ -4552,21 +4552,22 @@ unsigned int N3DS_ReadButtons(void)
 				else if (strncmp(word, "flagstyle", 9) == 0)
 				{
 					extern int g_dbg_flagStyle;
-					static const char *const flagStyleNames[3] = {"retail grey checkers", "PRIDE stripes", "PURPLE/WHITE checkers (Spyro)"};
+					static const char *const flagStyleNames[4] = {"retail grey checkers", "PRIDE stripes", "PURPLE/WHITE checkers (Spyro)",
+					                                              "BLUE checkers (Retro-Fueled)"};
 					char styleMsg[80];
 
 					/* Menu/loading flag style. 'flagstyle N' sets, bare token
-					 * cycles 0->1->2->0. Both non-retail styles are also
-					 * reachable in-game by their cheat codes (WONDER, SOAR). */
+					 * cycles 0->1->2->3->0. The non-retail styles are also
+					 * reachable in-game by their cheat codes (WONDER, SOAR, ARROW). */
 					if (word[9] == ' ')
 					{
 						const int n = atoi(&word[10]);
 
-						g_dbg_flagStyle = ((n >= 0) && (n <= 2)) ? n : 0;
+						g_dbg_flagStyle = ((n >= 0) && (n <= 3)) ? n : 0;
 					}
 					else
 					{
-						g_dbg_flagStyle = (g_dbg_flagStyle + 1) % 3;
+						g_dbg_flagStyle = (g_dbg_flagStyle + 1) % 4;
 					}
 					snprintf(styleMsg, sizeof(styleMsg), "[CTR-3DS] race flag: %s", flagStyleNames[g_dbg_flagStyle]);
 					N3DS_DebugLog(styleMsg);

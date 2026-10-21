@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_retro_fueled.h>
 
 enum
 {
@@ -368,6 +369,10 @@ void VehFire_Increment(struct Driver *driver, int reserves, u32 type, int fireLe
 	    // you have USF, and boosted on a non-STP,
 	    // resize fire to lose size
 	    (
+#ifdef CTR_NATIVE
+	        // Retro-Fueled: a boost never shrinks a USF fire
+	        !NativeRetroFueled_Active() &&
+#endif
 	        // Current speed cap is greater than 0x1000
 	        // AND
 	        // You are not on a super turbo pad
@@ -439,3 +444,90 @@ void VehFire_Increment(struct Driver *driver, int reserves, u32 type, int fireLe
 	}
 	// #endif
 }
+
+#ifdef CTR_NATIVE
+// Retro-Fueled blue fire. The exhaust flame and plume palettes are 16-colour rows in NTSC-U VRAM, stored
+// as little-endian 1555 pairs (the layout LoadImage takes). The rows live in shared.vrm, which is written
+// once at boot, so the tracked state always matches VRAM. Every kart's fire samples the same two rows, so
+// the swap follows the local kart (drivers[0]) alone.
+static const u32 s_retroFuelFlamesRed[8] = {0x80DA809A, 0x805A80BA, 0x811A803A, 0x819A81DA, 0x813A817A, 0x829A821A, 0x835A839A, 0x82DA831A};
+static const u32 s_retroFuelFlamesBlue[8] = {0xFF25FF65, 0xFFA5FF45, 0xFEE5FFC5, 0xFE65FE25, 0xFEC5FE85, 0xFD65FDE5, 0xFCA5FC65, 0xFD25FCE5};
+static const u32 s_retroFuelPlumesRed[8] = {0x000083FF, 0x821B833E, 0x829D81B8, 0x80F6800D, 0x819A8054, 0x80D98011, 0x80078019, 0x84008015};
+static const u32 s_retroFuelPlumesBlue[8] = {0x7FFFF260, 0xFC20F980, 0xF400FC20, 0xF980AC00, 0xF260F980, 0xB400FCA0, 0x8800FC20, 0x8800FC20};
+
+enum
+{
+	RETRO_FUEL_FLAME_CLUT_X = 176,
+	RETRO_FUEL_FLAME_CLUT_Y = 256,
+	RETRO_FUEL_PLUME_CLUT_X = 464,
+	RETRO_FUEL_PLUME_CLUT_Y = 257,
+	RETRO_FUEL_CLUT_WIDTH = 16,
+
+	// What the two rows hold. Boot VRAM is red.
+	RETRO_FUEL_PAL_RED = 0,
+	RETRO_FUEL_PAL_BLUE = 1,
+};
+
+static s32 s_retroFuelPalState = RETRO_FUEL_PAL_RED;
+
+static void NativeRetroFueled_UploadFlamePalette(const u32 *flames, const u32 *plumes)
+{
+	RECT rect;
+
+	rect.w = RETRO_FUEL_CLUT_WIDTH;
+	rect.h = 1;
+
+	rect.x = RETRO_FUEL_FLAME_CLUT_X;
+	rect.y = RETRO_FUEL_FLAME_CLUT_Y;
+	LoadImage(&rect, (void *)flames);
+
+	rect.x = RETRO_FUEL_PLUME_CLUT_X;
+	rect.y = RETRO_FUEL_PLUME_CLUT_Y;
+	LoadImage(&rect, (void *)plumes);
+}
+
+// Runs once per gameplay frame. Uploads only when the wanted palette differs from the tracked one: every
+// VRAM write invalidates the 3DS texture decode cache for the rows' cells.
+void NativeRetroFueled_UpdateFlamePalette(void)
+{
+	struct Driver *driver;
+	s32 wanted = RETRO_FUEL_PAL_RED;
+	int active = NativeRetroFueled_Active();
+
+	if (!active && (s_retroFuelPalState == RETRO_FUEL_PAL_RED))
+	{
+		return;
+	}
+
+	if (active)
+	{
+		driver = sdata->gGT->drivers[0];
+
+		// no reserves, no fire: keep whatever the rows hold until the next boost decides
+		if ((driver == NULL) || (driver->reserves == 0))
+		{
+			return;
+		}
+
+		// same USF test as VehFire_Increment's fire-resize clause
+		if ((int)driver->fireSpeedCap > (int)driver->const_SacredFireSpeed)
+		{
+			wanted = RETRO_FUEL_PAL_BLUE;
+		}
+	}
+
+	// wanted stays red while the mode is off, so switching it off at runtime restores red
+	if (s_retroFuelPalState != wanted)
+	{
+		if (wanted == RETRO_FUEL_PAL_BLUE)
+		{
+			NativeRetroFueled_UploadFlamePalette(s_retroFuelFlamesBlue, s_retroFuelPlumesBlue);
+		}
+		else
+		{
+			NativeRetroFueled_UploadFlamePalette(s_retroFuelFlamesRed, s_retroFuelPlumesRed);
+		}
+		s_retroFuelPalState = wanted;
+	}
+}
+#endif

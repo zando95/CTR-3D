@@ -21,6 +21,15 @@
  * only one with F5/F8 checkpoints, never links this menu into the hierarchy.
  */
 
+/* Master switch of Retro-Fueled mode (include/native_retro_fueled.h). The mode also needs the ARROW
+ * cheat, so this only decides whether the cheat brings it along. ON on 3DS; PC stays retail. Nothing
+ * writes it at runtime. */
+#ifdef __3DS__
+int g_retroFueled = 1;
+#else
+int g_retroFueled = 0;
+#endif
+
 #ifdef __3DS__
 
 extern int g_pentaPal;      /* platform/native_gpu.c, dumpreq `pentapal` */

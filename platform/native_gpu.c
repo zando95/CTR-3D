@@ -248,6 +248,8 @@ int g_dbg_otzWiden = 0;
  *   1 = six-colour pride stripes   -- cheat WONDER, or a June date check
  *   2 = purple checkers ("respect the dragon") -- cheat SOAR, retail's dead
  *       Spyro 2 demo code repurposed
+ *   3 = blue-on-blue checkers -- cheat ARROW (Super Turbo Pads) while Retro-Fueled
+ *       mode is on (include/native_retro_fueled.h)
  *
  * Read by RaceFlag_DrawSelf (game/RaceFlag.c); the pattern rules and colour
  * tables live there, this is only the selector.
@@ -264,7 +266,8 @@ enum
 {
 	FLAG_STYLE_RETAIL = 0,
 	FLAG_STYLE_PRIDE = 1,
-	FLAG_STYLE_PURPLE = 2
+	FLAG_STYLE_PURPLE = 2,
+	FLAG_STYLE_BLUE = 3
 };
 
 int g_dbg_flagStyle = FLAG_STYLE_RETAIL;

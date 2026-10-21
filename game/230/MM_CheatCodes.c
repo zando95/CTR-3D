@@ -1,9 +1,11 @@
 #include <common.h>
+#include <native_retro_fueled.h>
 
 #if defined(CTR_NATIVE)
 /*
  * Native-only flag easter eggs. The style selector lives
- * platform-side (native_gpu.c): 0 retail checkers, 1 pride stripes, 2 purple.
+ * platform-side (native_gpu.c): 0 retail checkers, 1 pride stripes, 2 purple,
+ * 3 blue (set by ARROW, below, while Retro-Fueled mode is on).
  *
  * MM_Cheat_SpyroFlag REPLACES MainKillGame_LaunchSpyro2 as the SOAR handler,
  * and doing so fixes a hard-lock rather than merely repurposing a dead code:
@@ -174,6 +176,17 @@ void MM_Cheat_IcyTracks(void)
 void MM_Cheat_SuperTurboPads(void)
 {
 	sdata->gGT->gameMode2 |= CHEAT_TURBOPAD;
+
+#ifdef CTR_NATIVE
+	// Retro-Fueled: the cheat also turns the menu flag blue (flag style 3). The last flag cheat entered wins.
+	if (g_retroFueled)
+	{
+		extern int g_dbg_flagStyle;
+
+		g_dbg_flagStyle = 3;
+	}
+#endif
+
 	OtherFX_Play(MM_CHEAT_SUCCESS_SFX, 1);
 }
 

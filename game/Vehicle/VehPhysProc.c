@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_retro_fueled.h>
 
 // budget: 4624
 // curr: 4380
@@ -247,6 +248,7 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 	struct GamepadBuffer *ptrgamepad;
 	u32 cross;
 	u32 square;
+	u32 assumedCross = VEH_PHYS_PROC_ASSUMED_CROSS_BUTTON;
 
 	int msPerFrame;
 	RainCloudEffect rainCloudEffect;
@@ -791,8 +793,22 @@ CheckJumpButtons:
 	    // if you're not on any turbo pad
 	    ((driver->stepFlagSet & COLL_STEP_TRIGGER_TURBO_PAD_MASK) == 0))
 	{
-		// Set Reserves to zero
-		driver->reserves = 0;
+#ifdef CTR_NATIVE
+		// Retro-Fueled U-turn: Square+Down, or Square during a landing boost, keeps the reserves.
+		// Without Cross held the kart then really brakes/reverses instead of assuming Cross.
+		if (NativeRetroFueled_Active() && (((buttonsHeld & BTN_DOWN) != 0) || (driver->jump_LandingBoost != 0)))
+		{
+			if (cross == 0)
+			{
+				assumedCross = 0;
+			}
+		}
+		else
+#endif
+		{
+			// Set Reserves to zero
+			driver->reserves = 0;
+		}
 	}
 
 	// assume normal gas pedal
@@ -838,7 +854,7 @@ CheckJumpButtons:
 
 		// Assume you're holding Cross, because
 		// you have Reserves and you aren't slowing down
-		cross = VEH_PHYS_PROC_ASSUMED_CROSS_BUTTON;
+		cross = assumedCross;
 	}
 
 
