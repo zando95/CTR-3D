@@ -14,6 +14,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - Fixed a timing bug that could make animated water and track textures glitch.
 - The boot screens' small legal text is smoothed instead of breaking up.
 - OPTIONS settings are remembered between launches.
+- New AUTOSAVE GHOST option (on by default): your fastest Time Trial run on each track is saved automatically, and picking that track races you against it.
 
 ## beta 1.0 (2026-09-16)
 

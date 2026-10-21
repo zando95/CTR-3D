@@ -7,6 +7,12 @@
 extern void NativeGpu_MarkUiPicRange(uintptr_t start, uintptr_t end);
 #endif
 
+#ifdef CTR_NATIVE
+// platform/native_ghost_best.c -- the Time Trial best ghost replaces the ghost menu (local-extern idiom).
+extern int NativeGhostBest_SkipsGhostMenu(void);
+extern int NativeGhostBest_TryLoad(s16 levelID, struct GhostHeader *dst);
+#endif
+
 enum TrackSelectVideoState
 {
 	MM_TRACK_VIDEO_ICON = 1,
@@ -485,6 +491,25 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 					// by default, dont show ghost in race
 					sdata->boolReplayHumanGhost = 0;
 
+#ifdef CTR_NATIVE
+					// With the best ghost on, the ghost menu never opens: the track's best ghost, if one is stored, is the ghost in
+					// the race. This leaves what the menu's exit leaves (SelectProfile_FinalizeGhost, RefreshCard_StopMemcardAction,
+					// SelectProfile_ToggleMode's load action) and queues the track load the same way.
+					if (NativeGhostBest_SkipsGhostMenu())
+					{
+						if (NativeGhostBest_TryLoad(gGT->currLEV, sdata->ptrGhostTapePlaying))
+						{
+							sdata->boolReplayHumanGhost = 1;
+						}
+
+						data.characterIDs[1] = sdata->ptrGhostTapePlaying->characterID;
+						sdata->memcardAction = SELECT_PROFILE_ACTION_LOAD;
+						RefreshCard_StopMemcardAction();
+						sdata->ptrDesiredMenu = &data.menuQueueLoadTrack;
+						return;
+					}
+#endif
+
 					SelectProfile_ToggleMode(SELECT_PROFILE_SCREEN_GHOST);
 
 					// open the ghost selection menu
@@ -808,6 +833,14 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 			{
 				// Check if this track has Ghost Data
 				s16 ghostProfileCount = RefreshCard_CountGhostProfilesForLEV(selectMenu[currTrack].levID);
+
+#ifdef CTR_NATIVE
+				// The saved ghosts are not offered while the best ghost skips the ghost menu.
+				if (NativeGhostBest_SkipsGhostMenu())
+				{
+					ghostProfileCount = 0;
+				}
+#endif
 
 				// If this track has Ghost Data
 				if (ghostProfileCount != 0)

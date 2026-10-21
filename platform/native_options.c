@@ -13,7 +13,7 @@
  * line per s_optToggles row, keyed by its saveKey), the language in <base dir>/language.cfg.
  * Only a menu flip saves; dumpreq writes the same globals and never touches either file.
  *
- * Row labels live in retail's own string table: LNG_UNUSED_0E4..0E9 are real
+ * Row labels live in retail's own string table: LNG_UNUSED_0E4..0E9 and LNG_UNUSED_0ED are real
  * slots inside the loaded LANG range that no retail code references, repointed
  * at boot, on every toggle, and again after every language switch (LOAD_LangFile
  * rebuilds the whole table). Their text comes from s_optText, one entry per language. s_optMenu is not checkpoint-tracked (native_checkpoint.c
@@ -26,6 +26,8 @@
 extern int g_pentaPal;      /* platform/native_gpu.c, dumpreq `pentapal` */
 extern int g_reservesMeter; /* platform/native_gpu.c, dumpreq `reserves` */
 extern int g_dbg_btmMap;    /* platform/n3ds/native_renderer_3ds.c, dumpreq `btmmap` */
+/* platform/native_ghost_best.c; has no dumpreq word */
+extern int g_ghostBestEnabled;
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
 /* Both live in the n3ds_backend TU; the flag is plain int and the call is
  * void(void), so they cross the scalar boundary without header help. */
@@ -38,7 +40,7 @@ struct NativeOptToggle
 	s16 lngSlot;
 	int *flag;
 	void (*applyFn)(void); /* extra work a flip needs beyond the flag write (also run once after options.cfg loads) */
-	const char *saveKey;   /* the row's key in options.cfg: the dumpreq word of the same setting */
+	const char *saveKey;   /* the row's key in options.cfg: the dumpreq word of the same setting, where one exists */
 };
 
 /* Row order here is the order of NativeOptText.toggleName below. The visible text of every row
@@ -57,6 +59,7 @@ static struct NativeOptToggle s_optToggles[] = {
     {LNG_UNUSED_0E5, &g_pentaPal, NULL, "pentapal"},
     {LNG_UNUSED_0E6, &g_reservesMeter, NULL, "reserves"},
     {LNG_UNUSED_0E7, &g_dbg_btmMap, NULL, "btmmap"},
+    {LNG_UNUSED_0ED, &g_ghostBestEnabled, NULL, "bestghost"},
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
     {LNG_UNUSED_0E8, &g_dbg_trackBilinear, N3DS_TrackAtlas_ApplyFilter, "bilinear"},
 #endif
@@ -87,7 +90,7 @@ static const s16 s_optLangFile[OPT_LANG_COUNT] = {1, 3, 4, 5, 6, 7};
  * them here. Language names are written in their own language everywhere else (so you can still
  * find your language in a menu you cannot read), which is why these rows also fit in 18.
  */
-#define OPT_TEXT_TOGGLES 4
+#define OPT_TEXT_TOGGLES 5
 
 struct NativeOptText
 {
@@ -103,7 +106,7 @@ struct NativeOptText
 static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
     /* English (NTSC-U file 1): unchanged */
     {"OPTIONS",
-     {"PAL PENTA", "RESERVES METER", "BOTTOM MAP", "TEXTURE FILTER"},
+     {"PAL PENTA", "RESERVES METER", "BOTTOM MAP", "AUTOSAVE GHOST", "TEXTURE FILTER"},
      "OFF",
      "ON",
      "LANGUAGE",
@@ -111,7 +114,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      9},
     /* French */
     {"OPTIONS",
-     {"PENTA PAL", "JAUGE RESERVE", "CARTE EN BAS", "FILTRE TEXTURE"},
+     {"PENTA PAL", "JAUGE RESERVE", "CARTE EN BAS", "SAUV. FANTOME", "FILTRE TEXTURE"},
      "NON",
      "OUI",
      "LANGUE",
@@ -119,7 +122,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* German */
     {"OPTIONEN",
-     {"PAL PENTA", "RESERVEANZEIGE", "KARTE UNTEN", "TEXTURFILTER"},
+     {"PAL PENTA", "RESERVEANZEIGE", "KARTE UNTEN", "AUTOSAVE GEIST", "TEXTURFILTER"},
      "AUS",
      "EIN",
      "SPRACHE",
@@ -127,7 +130,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Italian */
     {"OPZIONI",
-     {"PENTA PAL", "BARRA RISERVA", "MAPPA IN BASSO", "FILTRO TEXTURE"},
+     {"PENTA PAL", "BARRA RISERVA", "MAPPA IN BASSO", "SALVA FANTASMA", "FILTRO TEXTURE"},
      "NO",
      "SI",
      "LINGUA",
@@ -135,7 +138,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Spanish */
     {"OPCIONES",
-     {"PENTA PAL", "MEDIDOR RESERVA", "MAPA INFERIOR", "FILTRO TEXTURAS"},
+     {"PENTA PAL", "MEDIDOR RESERVA", "MAPA INFERIOR", "FANTASMA AUTO", "FILTRO TEXTURAS"},
      "NO",
      "SI",
      "IDIOMA",
@@ -143,7 +146,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Dutch */
     {"OPTIES",
-     {"PAL PENTA", "RESERVEMETER", "KAART ONDER", "TEXTUURFILTER"},
+     {"PAL PENTA", "RESERVEMETER", "KAART ONDER", "SPOOK OPSLAAN", "TEXTUURFILTER"},
      "UIT",
      "AAN",
      "TAAL",
@@ -376,12 +379,14 @@ static struct MenuRow s_optMenuRows[] = {
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
     {LNG_UNUSED_0E6, 0, 2, 1, 1},
     {LNG_UNUSED_0E7, 1, 3, 2, 2},
-    {LNG_UNUSED_0E8, 2, 4, 3, 3},
-    {LNG_UNUSED_0E9, 3, 4, 4, 4}, /* language selector = row OPT_TOGGLE_COUNT */
+    {LNG_UNUSED_0ED, 2, 4, 3, 3},
+    {LNG_UNUSED_0E8, 3, 5, 4, 4},
+    {LNG_UNUSED_0E9, 4, 5, 5, 5}, /* language selector = row OPT_TOGGLE_COUNT */
 #else
     {LNG_UNUSED_0E6, 0, 2, 1, 1},
     {LNG_UNUSED_0E7, 1, 3, 2, 2},
-    {LNG_UNUSED_0E9, 2, 3, 3, 3}, /* language selector = row OPT_TOGGLE_COUNT */
+    {LNG_UNUSED_0ED, 2, 4, 3, 3},
+    {LNG_UNUSED_0E9, 3, 4, 4, 4}, /* language selector = row OPT_TOGGLE_COUNT */
 #endif
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
@@ -392,7 +397,7 @@ static void NativeOptions_RefreshLabels(void)
 	s32 stateWidth = NativeOptions_VisibleLen(text->stateOff);
 
 	/* every slot written below must exist in the loaded language's string table */
-	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= LNG_UNUSED_0E9))
+	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= LNG_UNUSED_0ED))
 	{
 		return;
 	}
@@ -518,7 +523,7 @@ s32 NativeOptions_HandleMainMenuChoice(struct RectMenu *mainMenu, s32 choose)
 void NativeOptions_InstallStrings(void)
 {
 #ifdef __3DS__
-	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= LNG_UNUSED_0E9))
+	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= LNG_UNUSED_0ED))
 	{
 		return;
 	}

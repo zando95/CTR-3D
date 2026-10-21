@@ -1,5 +1,10 @@
 #include <common.h>
 
+#ifdef CTR_NATIVE
+// platform/native_ghost_best.c -- writes the pending best ghost (local-extern idiom).
+extern void NativeGhostBest_Flush(void);
+#endif
+
 enum UIRaceEndMenuOption
 {
 	UI_RACE_END_OPTION_QUIT = 3,
@@ -386,6 +391,14 @@ void UI_RaceEnd_MenuProc(struct RectMenu *menu)
 		sdata->menuReadyToPass |= 1;
 		return;
 	}
+
+#ifdef CTR_NATIVE
+	// Every remaining option except SAVE GHOST leaves the results screen.
+	if (option != UI_RACE_END_OPTION_SAVE_GHOST)
+	{
+		NativeGhostBest_Flush();
+	}
+#endif
 
 	switch (option)
 	{

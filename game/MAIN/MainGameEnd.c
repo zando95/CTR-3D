@@ -1,5 +1,10 @@
 #include <common.h>
 
+#ifdef CTR_NATIVE
+// platform/native_ghost_best.c -- keeps a finished Time Trial tape as the track's best ghost (local-extern idiom).
+extern void NativeGhostBest_OnRaceEnd(s16 levelID, const struct GhostHeader *gh);
+#endif
+
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80039fa8-0x8003a2b4
 void MainGameEnd_SoloRaceGetReward(int subtractTimeCrateBonus)
 {
@@ -515,7 +520,20 @@ static void MainGameEnd_CheckTimeTrialGhost(struct GameTracker *gGT, struct Driv
 		return;
 	}
 
+#ifdef CTR_NATIVE
+	// GhostTape_End finalizes the tape only if recording was still open (overflow clears it mid-race).
+	int tapeWasOpen = (sdata->boolCanSaveGhost != 0);
+#endif
+
 	GhostTape_End();
+
+#ifdef CTR_NATIVE
+	if (tapeWasOpen)
+	{
+		NativeGhostBest_OnRaceEnd(gGT->levelID, sdata->GhostRecording.ptrGhost);
+	}
+#endif
+
 	gGT->gameModeEnd |= PLAYER_GHOST_BEAT;
 }
 
