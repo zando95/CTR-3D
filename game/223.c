@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 enum RelicRaceEndMenuConstants
 {
@@ -50,6 +51,10 @@ enum RelicRaceEndMenuConstants
 	RR_HIGH_SCORE_ICON_SCALE = 0x1000,
 };
 
+#if defined(CTR_NATIVE)
+extern struct RectMenu menu224NoSave;
+#endif
+
 global_variable s32 s_rankString223 = 0x20;      // " \0"
 global_variable s32 s_timeCrateXString223 = 'x'; // "x\0"
 global_variable char s_crateCountFormat223[12] = "%2.02d/%ld";
@@ -61,9 +66,16 @@ void RR_EndEvent_UnlockAward(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	struct Driver *driver = gGT->drivers[0];
-	struct AdvProgress *adv = &sdata->advProgress;
+	// Adventure's relics, or the player's own in a RELIC RACES race
+	u32 *rewards = NativeArcade_RelicRewards();
 	s32 levelID = gGT->levelID;
 	s32 raceTime = driver->timeElapsedInRace;
+
+	// a cheat that can change the time awards nothing in a RELIC RACES race
+	if (NativeRelic_SkipAward())
+	{
+		return;
+	}
 
 	// 10 seconds for getting all crates
 	if (driver->numTimeCrates == gGT->timeCratesInLEV)
@@ -84,7 +96,7 @@ void RR_EndEvent_UnlockAward(void)
 		s32 rewardBit = ADV_REWARD_FIRST_SAPPHIRE_RELIC + ADV_REWARD_RELIC_TIER_STRIDE * relicIndex + levelID;
 
 		// if relic already unlocked, check next relic
-		if (CHECK_ADV_BIT(adv->rewards, rewardBit))
+		if (CHECK_ADV_BIT(rewards, rewardBit))
 		{
 			continue;
 		}
@@ -92,10 +104,13 @@ void RR_EndEvent_UnlockAward(void)
 		// == beat relic, and unlocked relic ==
 
 		// unlock
-		UNLOCK_ADV_BIT(adv->rewards, rewardBit);
+		UNLOCK_ADV_BIT(rewards, rewardBit);
 
-		// relic model
-		gGT->podiumRewardID = STATIC_RELIC;
+		// relic model (the Adventure podium; a RELIC RACES race has none and must not leave one queued)
+		if (!NativeArcade_RelicRace())
+		{
+			gGT->podiumRewardID = STATIC_RELIC;
+		}
 
 		// won relic
 		gGT->gameModeEnd |= NEW_RELIC;
@@ -104,7 +119,7 @@ void RR_EndEvent_UnlockAward(void)
 		// do not make this an AND (&&) if statement
 		if (relicIndex == RR_SAPPHIRE_RELIC_INDEX)
 		{
-			if (gGT->levelID == TURBO_TRACK)
+			if ((gGT->levelID == TURBO_TRACK) && !NativeArcade_RelicRace())
 			{
 				// unlock turbo track
 				sdata->gameProgress.unlockFlags |= GAME_UNLOCK_TURBO_TRACK_MASK;
@@ -145,7 +160,7 @@ void RR_EndEvent_DrawMenu(void)
 	struct GameTracker *gGT = sdata->gGT;
 	struct Driver *driver = gGT->drivers[0];
 	struct Instance *relic = sdata->ptrRelic;
-	struct AdvProgress *adv = &sdata->advProgress;
+	u32 *rewards = NativeArcade_RelicRewards();
 
 	// testing
 	// driver->numTimeCrates = gGT->timeCratesInLEV;
@@ -156,13 +171,13 @@ void RR_EndEvent_DrawMenu(void)
 	rewardBit = gGT->levelID + ADV_REWARD_FIRST_PLATINUM_RELIC;
 
 	// check if platinum is unlocked, set platinum color
-	if (CHECK_ADV_BIT(adv->rewards, rewardBit))
+	if (CHECK_ADV_BIT(rewards, rewardBit))
 	{
 		relic->colorRGBA = RR_PLATINUM_RELIC_COLOR;
 	}
 
 	// check if gold is unlocked, set gold color
-	else if (CHECK_ADV_BIT(adv->rewards, gGT->levelID + ADV_REWARD_FIRST_GOLD_RELIC))
+	else if (CHECK_ADV_BIT(rewards, gGT->levelID + ADV_REWARD_FIRST_GOLD_RELIC))
 	{
 		relic->colorRGBA = RR_GOLD_RELIC_COLOR;
 	}
@@ -497,7 +512,12 @@ skipRelicAwarded:
 		if ((sdata->AnyPlayerTap & RR_CONFIRM_BUTTON_MASK) != 0)
 		{
 			RECTMENU_ClearInput();
+#if defined(CTR_NATIVE)
+			// RETRY / CHANGE LEVEL / CHANGE CHARACTER / QUIT; RETRY / EXIT TO MAP leads to the Adventure hub
+			RECTMENU_Show(NativeArcade_RelicRace() ? &menu224NoSave : &data.menuRetryExit);
+#else
 			RECTMENU_Show(&data.menuRetryExit);
+#endif
 
 			// record that you have pressed X to continue
 			sdata->menuReadyToPass |= RR_MENU_READY_FLAG;
@@ -523,6 +543,14 @@ void RR_EndEvent_DrawHighScore(s16 startX, int startY, s16 scoreMode)
 
 	// 12 entries per track, 6 for Time Trial and 6 for Relic Race
 	struct HighScoreEntry *scoreEntries = &sdata->gameProgress.highScoreTracks[gGT->levelID].scoreEntry[RR_HIGH_SCORE_ENTRIES_PER_MODE * scoreMode];
+
+#if defined(CTR_NATIVE)
+	// the table the race was ranked against (GAMEPROG_GetPtrHighScoreTrack)
+	if (NativeArcade_RelicRace())
+	{
+		scoreEntries = sdata->ptrActiveHighScoreEntry;
+	}
+#endif
 
 	// === Naughty Dog Bug ===
 	// Start and End are the same

@@ -45,7 +45,8 @@ static struct MenuRow s_namRaceTypeRows[] = {
     {LNG_SINGLE, 0, 1, 0, 0},
     {LNG_CUP, 0, 2, 1, 1},
     {NAM_LNG_BOSS_RACES, 1, 3, 2, 2},
-    {LNG_CTR_CHALLENGE_TITLE, 2, 3, 3, 3},
+    {LNG_CTR_CHALLENGE_TITLE, 2, 4, 3, 3},
+    {LNG_RELIC_RACE, 3, 4, 4, 4},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
 
@@ -125,11 +126,11 @@ s32 NativeArcade_HandleRaceTypeRow(struct RectMenu *menu, s32 row)
 	gGT->gameMode2 &= ~(CUP_ANY_KIND);
 	gGT->numPlyrNextGame = 1;
 
-	if (choose == NAM_LNG_BOSS_RACES)
+	if ((choose == NAM_LNG_BOSS_RACES) || (choose == LNG_RELIC_RACE))
 	{
-		g_nativeArcadeMode = NATIVE_ARCADE_BOSS;
+		g_nativeArcadeMode = (choose == LNG_RELIC_RACE) ? NATIVE_ARCADE_RELIC : NATIVE_ARCADE_BOSS;
 
-		/* no difficulty: a boss race uses the boss's own */
+		/* no difficulty: a boss race uses the boss's own and a relic race has no opponents */
 		D230.titleMenuState = TITLE_MENU_STATE_EXITING;
 		D230.desiredMenuIndex = MM_EXIT_ROUTE_CHARACTER_SELECT;
 		menu->state |= ONLY_DRAW_TITLE;
@@ -208,6 +209,15 @@ void NativeArcade_ArmRace(void)
 	{
 		sdata->Loading.OnBegin.AddBitsConfig8 |= TOKEN_RACE;
 	}
+	else if (g_nativeArcadeMode == NATIVE_ARCADE_RELIC)
+	{
+		/* The records and the relic bits derived from them have to be in place before the race's HUD is
+		 * built. ARCADE_MODE goes for the race: the end-of-race overlay and results screen are chosen
+		 * ARCADE_MODE first, which would hide the relic results (retail relic races never carry it). */
+		NativeRelic_Prepare();
+		sdata->Loading.OnBegin.AddBitsConfig0 |= RELIC_RACE;
+		sdata->Loading.OnBegin.RemBitsConfig0 |= ARCADE_MODE;
+	}
 #endif
 }
 
@@ -221,8 +231,14 @@ void NativeArcade_OnLoadRequest(s16 levelID)
 
 	/* The menus the race returns to run without the race's flags. The mode stays: CHANGE LEVEL and
 	 * CHANGE CHARACTER lead back to a race of the same kind, and QueueLoadTrack arms it again. */
-	sdata->Loading.OnBegin.RemBitsConfig0 |= ADVENTURE_BOSS;
+	sdata->Loading.OnBegin.RemBitsConfig0 |= ADVENTURE_BOSS | RELIC_RACE;
 	sdata->Loading.OnBegin.RemBitsConfig8 |= TOKEN_RACE;
+
+	if (g_nativeArcadeMode == NATIVE_ARCADE_RELIC)
+	{
+		/* the menus are Arcade menus again */
+		sdata->Loading.OnBegin.AddBitsConfig0 |= ARCADE_MODE;
+	}
 #else
 	(void)levelID;
 #endif

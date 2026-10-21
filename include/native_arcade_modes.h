@@ -9,6 +9,9 @@
  *                 1 player + 1 boss, 3 laps
  *   CTR CHALLENGE ARCADE_MODE plus gameMode2 TOKEN_RACE: the C-T-R letters are on the track and a
  *                 first place finish with all three is a win; 3 laps. No token is awarded.
+ *   RELIC RACES   RELIC_RACE with ARCADE_MODE taken off for the race (the results screen and
+ *                 overlay choice test ARCADE_MODE first), 3 laps. The relics and best times are
+ *                 the player's own file, never Adventure's (platform/native_relic_records.c).
  *
  * g_nativeArcadeMode is the single switch. Only the 3DS menu rows set it, so on PC it stays 0 and
  * every site below runs the retail path. The retail flags are armed when the race load is queued
@@ -23,7 +26,11 @@ enum NativeArcadeMode
 	NATIVE_ARCADE_NONE = 0,
 	NATIVE_ARCADE_BOSS = 1,
 	NATIVE_ARCADE_CTR = 2,
+	NATIVE_ARCADE_RELIC = 3,
 };
+
+/* Words of the relic reward-bit view: bits ADV_REWARD_FIRST_SAPPHIRE_RELIC .. +3 tiers * 18 tracks. */
+#define NATIVE_RELIC_REWARD_WORDS 3
 
 #ifdef CTR_NATIVE
 
@@ -40,6 +47,28 @@ static inline int NativeArcade_CtrChallenge(void)
 {
 	return (g_nativeArcadeMode == NATIVE_ARCADE_CTR) && ((sdata->gGT->gameMode2 & TOKEN_RACE) != 0);
 }
+
+/* True while a RELIC RACES race is running (mode set and the retail relic flag armed). */
+static inline int NativeArcade_RelicRace(void)
+{
+	return (g_nativeArcadeMode == NATIVE_ARCADE_RELIC) && ((sdata->gGT->gameMode1 & RELIC_RACE) != 0);
+}
+
+extern u32 g_nativeRelicRewards[NATIVE_RELIC_REWARD_WORDS];
+
+/* The reward bits the relic code reads and sets: the player's own relics in a RELIC RACES race,
+ * Adventure's otherwise. */
+static inline u32 *NativeArcade_RelicRewards(void)
+{
+	return NativeArcade_RelicRace() ? g_nativeRelicRewards : sdata->advProgress.rewards;
+}
+
+/* RELIC RACES records (platform/native_relic_records.c). */
+void NativeRelic_Prepare(void);
+struct HighScoreEntry *NativeRelic_Entries(s32 levelID);
+int NativeRelic_SkipAward(void);
+void NativeRelic_Commit(void);
+void NativeRelic_Flush(void);
 
 /* Retail's per-boss loss counter feeds boss difficulty and weapons; a BOSS RACES race starts from zero
  * and never reads or writes the Adventure counter. */
@@ -80,6 +109,31 @@ static inline int NativeArcade_BossRace(void)
 static inline int NativeArcade_CtrChallenge(void)
 {
 	return 0;
+}
+
+static inline int NativeArcade_RelicRace(void)
+{
+	return 0;
+}
+
+static inline u32 *NativeArcade_RelicRewards(void)
+{
+	return sdata->advProgress.rewards;
+}
+
+static inline int NativeRelic_SkipAward(void)
+{
+	return 0;
+}
+
+static inline void NativeRelic_Commit(void)
+{
+}
+
+static inline struct HighScoreEntry *NativeRelic_Entries(s32 levelID)
+{
+	(void)levelID;
+	return NULL;
 }
 
 static inline int NativeArcade_BossTimesLost(int bossID)

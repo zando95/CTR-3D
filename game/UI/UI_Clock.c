@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 enum
 {
@@ -364,7 +365,8 @@ void UI_DrawRaceClock(u16 labelPosX, u16 labelPosY, u32 flags, struct Driver *dr
 
 	// === Relic Race Only ===
 
-	u32 *rewardsSet = sdata->advProgress.rewards;
+	// Adventure's relics, or the player's own in a RELIC RACES race
+	u32 *rewardsSet = NativeArcade_RelicRewards();
 
 	// If did not unlock relic, draw NEXT goal
 	if ((gGT->gameModeEnd & NEW_RELIC) == 0)
