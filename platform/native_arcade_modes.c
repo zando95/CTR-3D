@@ -44,7 +44,8 @@ static s32 s_namLang = 0;
 static struct MenuRow s_namRaceTypeRows[] = {
     {LNG_SINGLE, 0, 1, 0, 0},
     {LNG_CUP, 0, 2, 1, 1},
-    {NAM_LNG_BOSS_RACES, 1, 2, 2, 2},
+    {NAM_LNG_BOSS_RACES, 1, 3, 2, 2},
+    {LNG_CTR_CHALLENGE_TITLE, 2, 3, 3, 3},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
 
@@ -135,6 +136,16 @@ s32 NativeArcade_HandleRaceTypeRow(struct RectMenu *menu, s32 row)
 		return 1;
 	}
 
+	if (choose == LNG_CTR_CHALLENGE_TITLE)
+	{
+		g_nativeArcadeMode = NATIVE_ARCADE_CTR;
+
+		/* an Arcade race with the AI of the chosen difficulty: on to the difficulty box */
+		menu->ptrNextBox_InHierarchy = &D230.menuDifficulty;
+		menu->state |= ONLY_DRAW_TITLE | DRAW_NEXT_MENU_IN_HIERARCHY;
+		return 1;
+	}
+
 	return 0;
 #else
 	(void)menu;
@@ -145,6 +156,14 @@ s32 NativeArcade_HandleRaceTypeRow(struct RectMenu *menu, s32 row)
 
 s32 NativeArcade_TrackAllowed(s16 levID)
 {
+#ifdef __3DS__
+	/* the 16 tracks of the hubs carry the C-T-R letters; Slide Coliseum and Turbo Track have none */
+	if (g_nativeArcadeMode == NATIVE_ARCADE_CTR)
+	{
+		return levID < SLIDE_COLISEUM;
+	}
+#endif
+
 	(void)levID;
 	return 1;
 }
@@ -185,6 +204,10 @@ void NativeArcade_ArmRace(void)
 		data.characterIDs[1] = data.metaDataLEV[R232.bossRaceLevelIDs[hub]].characterID_Boss;
 		sdata->Loading.OnBegin.AddBitsConfig0 |= ADVENTURE_BOSS;
 	}
+	else if (g_nativeArcadeMode == NATIVE_ARCADE_CTR)
+	{
+		sdata->Loading.OnBegin.AddBitsConfig8 |= TOKEN_RACE;
+	}
 #endif
 }
 
@@ -199,6 +222,7 @@ void NativeArcade_OnLoadRequest(s16 levelID)
 	/* The menus the race returns to run without the race's flags. The mode stays: CHANGE LEVEL and
 	 * CHANGE CHARACTER lead back to a race of the same kind, and QueueLoadTrack arms it again. */
 	sdata->Loading.OnBegin.RemBitsConfig0 |= ADVENTURE_BOSS;
+	sdata->Loading.OnBegin.RemBitsConfig8 |= TOKEN_RACE;
 #else
 	(void)levelID;
 #endif

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 enum UIInstanceConstants
 {
@@ -400,8 +401,8 @@ void UI_INSTANCE_InitAll(void)
 		UI_INSTANCE_BirthWithThread(STATIC_BIG1, (int)UI_ThTick_big1, UI_HUD_SLOT_BIG1, 0, 0, (int)sdata->s_big1);
 	}
 
-	// If you're not in Adventure Mode
-	if ((gameMode1 & ADVENTURE_MODE) == 0)
+	// If you're not in Adventure Mode (or a CTR CHALLENGE race)
+	if (((gameMode1 & ADVENTURE_MODE) == 0) && !NativeArcade_CtrChallenge())
 	{
 		return;
 	}
@@ -435,6 +436,13 @@ void UI_INSTANCE_InitAll(void)
 
 	// make copy of Token pointer
 	token = sdata->ptrToken;
+
+#if defined(CTR_NATIVE)
+	if (token == NULL)
+	{
+		return;
+	}
+#endif
 
 	// set Token scale (x, y, z) to zero
 	token->scale.x = 0;

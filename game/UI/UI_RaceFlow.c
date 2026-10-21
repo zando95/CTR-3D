@@ -159,6 +159,13 @@ void UI_RaceStart_IntroText1P(void)
 						textID = data.lng_challenge[gGT->bossID];
 						goto LAB_80055930;
 					}
+
+					// a CTR CHALLENGE race is titled as the Adventure token race is
+					if (NativeArcade_CtrChallenge())
+					{
+						textID = LNG_CTR_CHALLENGE_TITLE;
+						goto LAB_80055930;
+					}
 #endif
 
 					if (

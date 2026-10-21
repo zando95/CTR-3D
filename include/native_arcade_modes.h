@@ -7,6 +7,8 @@
  *   BOSS RACES    ARCADE_MODE|ADVENTURE_BOSS, the boss of the track's hub (Ripper Roo, Papu Papu,
  *                 Komodo Joe, Pinstripe; Oxide for Oxide Station and the two bonus tracks),
  *                 1 player + 1 boss, 3 laps
+ *   CTR CHALLENGE ARCADE_MODE plus gameMode2 TOKEN_RACE: the C-T-R letters are on the track and a
+ *                 first place finish with all three is a win; 3 laps. No token is awarded.
  *
  * g_nativeArcadeMode is the single switch. Only the 3DS menu rows set it, so on PC it stays 0 and
  * every site below runs the retail path. The retail flags are armed when the race load is queued
@@ -20,6 +22,7 @@ enum NativeArcadeMode
 {
 	NATIVE_ARCADE_NONE = 0,
 	NATIVE_ARCADE_BOSS = 1,
+	NATIVE_ARCADE_CTR = 2,
 };
 
 #ifdef CTR_NATIVE
@@ -30,6 +33,12 @@ extern int g_nativeArcadeMode;
 static inline int NativeArcade_BossRace(void)
 {
 	return (g_nativeArcadeMode == NATIVE_ARCADE_BOSS) && ((sdata->gGT->gameMode1 & ADVENTURE_BOSS) != 0);
+}
+
+/* True while a CTR CHALLENGE race is running (mode set and the retail token-race flag armed). */
+static inline int NativeArcade_CtrChallenge(void)
+{
+	return (g_nativeArcadeMode == NATIVE_ARCADE_CTR) && ((sdata->gGT->gameMode2 & TOKEN_RACE) != 0);
 }
 
 /* Retail's per-boss loss counter feeds boss difficulty and weapons; a BOSS RACES race starts from zero
@@ -64,6 +73,11 @@ void NativeArcade_OnLanguage(int langFileIndex);
 #else
 
 static inline int NativeArcade_BossRace(void)
+{
+	return 0;
+}
+
+static inline int NativeArcade_CtrChallenge(void)
 {
 	return 0;
 }

@@ -19,6 +19,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - Saving a ghost over an existing one now stores the new run under its own file name. Before, the memory card kept the old run's name, so after a restart the ghost list showed the old run's character, track and time for the new tape.
 - The main menu has a new last row, QUIT. Picking it asks YES or NO (NO is preselected), and YES exits the game the same way HOME > Close does, back to the Homebrew Launcher or the HOME Menu.
 - New BOSS RACES row in the ARCADE race-type menu: race the boss of the track's hub (Ripper Roo, Papu Papu, Komodo Joe, Pinstripe, or Oxide on Oxide Station, Slide Coliseum and Turbo Track) on any track you have unlocked, three laps, with the boss's Adventure difficulty. It never changes your Adventure save.
+- New CTR CHALLENGE row in the ARCADE race-type menu: the Adventure token race as an Arcade race. Pick a difficulty and a track (the 16 Adventure tracks), collect the letters C, T and R scattered on the track and finish first with all three. No token or save is involved.
 
 ## beta 1.0 (2026-09-16)
 

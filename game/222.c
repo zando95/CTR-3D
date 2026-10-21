@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 enum ArcadeAdventureEndMenuConstants
 {
@@ -98,8 +99,8 @@ void AA_EndEvent_DrawMenu(void)
 	b32 didWin = (driver->driverRank == 0);
 	b32 didEarnCtrToken = didWin && (driver->PickupLetterHUD.numCollected == 3);
 
-	// If adventure mode
-	if ((gGT->gameMode1 & ADVENTURE_MODE) != 0)
+	// If adventure mode (a CTR CHALLENGE race plays the letters' part of it)
+	if (((gGT->gameMode1 & ADVENTURE_MODE) != 0) || NativeArcade_CtrChallenge())
 	{
 		if (didEarnCtrToken)
 		{
@@ -119,7 +120,10 @@ void AA_EndEvent_DrawMenu(void)
 			b32 shouldDrawToken = false;
 			b32 shouldScaleLetters = false;
 			s32 tokenAwardTextFrame = -1;
-			if (!CHECK_ADV_BIT(adv->rewards, rewardBit))
+			// CTR CHALLENGE awards no token and reads no Adventure state: it always takes the owned path
+			b32 tokenOwned = NativeArcade_CtrChallenge() || CHECK_ADV_BIT(adv->rewards, rewardBit);
+
+			if (!tokenOwned)
 			{
 				letterScaleOffset = hudC->scale.x;
 				letterScaleOffset -= (letterScaleOffset < AA_CTR_LETTER_BASE_SCALE) ? AA_CTR_LETTER_SCALE_BIAS_LOW : AA_CTR_LETTER_BASE_SCALE;

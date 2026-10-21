@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80030778-0x8003086c.
 void INSTANCE_Birth(struct Instance *inst, struct Model *model, const char *name, struct Thread *th, int flags)
@@ -349,8 +350,8 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 		}
 
 		if (
-		    // If not in Adventure Mode, or CTR Token Race
-		    ((gGT->gameMode1 & ADVENTURE_MODE) == 0) || ((gGT->gameMode2 & TOKEN_RACE) == 0))
+		    // If not in Adventure Mode (or a CTR CHALLENGE race), or CTR Token Race
+		    (((gGT->gameMode1 & ADVENTURE_MODE) == 0) && !NativeArcade_CtrChallenge()) || ((gGT->gameMode2 & TOKEN_RACE) == 0))
 		{
 			// disable C-T-R letters
 			if ((u32)(modelID - STATIC_C) < 3)
