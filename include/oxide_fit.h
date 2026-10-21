@@ -8,7 +8,7 @@
 // OXIDE_RACE_SCALE is his race size as a 12-bit fraction of his model file: 4096 is the size the model file
 // carries (the shipped default), 2731 is two-thirds of it. Change this one line to resize him; the effects
 // below follow.
-#define OXIDE_RACE_SCALE 4096
+#define OXIDE_RACE_SCALE 2731
 
 // His effects at full model size, as 12-bit multiples of the kart-sized value: the shield bubble, the ground
 // shadow and the Aku/Uka mask (head, orbit and beam) grow by these when OXIDE_RACE_SCALE is 4096, and by these
