@@ -16,6 +16,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - OPTIONS settings are remembered between launches.
 - New AUTOSAVE GHOST option (on by default): your fastest Time Trial run on each track is saved automatically, and picking that track races you against it.
 - The Super Turbo Pads cheat code (ARROW) now also turns on Retro-Fueled mode. Any boost that isn't a pad (power slides, hang time, turbo items, the start boost) no longer knocks you out of USF. Square+Down, or Square in the air, keeps your reserves, and without Cross held you really brake or reverse. Every pad is a blue pad, and each gives a 1-second reserve. The exhaust fire burns blue at USF speed and the menu flag turns blue.
+- Saving a ghost over an existing one now stores the new run under its own file name. Before, the memory card kept the old run's name, so after a restart the ghost list showed the old run's character, track and time for the new tape.
 
 ## beta 1.0 (2026-09-16)
 

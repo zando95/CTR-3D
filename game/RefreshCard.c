@@ -492,6 +492,9 @@ void RefreshCard_Unknown3(void)
 			if (sdata->ghostProfile_rowSelect >= 0)
 			{
 				sdata->ghostProfile_rowSelect = -1;
+				// The erase borrowed the shared file-name buffer for the old file's name; the save needs the new tape's name
+				// (the one GhostEncodeProfile built into ghostProfile_current), or the tape lands under the old name.
+				memcpy(data.s_BASCUS_94426G_Question, sdata->ghostProfile_current.profile_name, sizeof(data.s_BASCUS_94426G_Question));
 				RefreshCard_SetScreenText(MC_SCREEN_SAVING);
 				RefreshCard_QueueGhostSave();
 				sdata->boolError = 0;
