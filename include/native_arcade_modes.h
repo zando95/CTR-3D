@@ -13,8 +13,9 @@
  *                 overlay choice test ARCADE_MODE first), 3 laps. The best times are the memory
  *                 card's relic high scores (the table Adventure relic races record into and the
  *                 main menu's HIGH SCORE shows), ranked, named and saved by retail's own new-high-
- *                 score flow. The relics are a bit view derived from them (g_nativeRelicRewards);
- *                 Adventure's advProgress.rewards is never read or set.
+ *                 score flow. The relics are a bit view (g_nativeRelicRewards) rebuilt at every race start:
+ *                 earned when the relic times or any Adventure profile on the card holds them.
+ *                 advProgress.rewards is only read (as one of those profiles), never set.
  *
  * g_nativeArcadeMode is the single switch. Only the 3DS menu rows set it, so on PC it stays 0 and
  * every site below runs the retail path. The retail flags are armed when the race load is queued
@@ -60,16 +61,16 @@ static inline int NativeArcade_RelicRace(void)
 
 extern u32 g_nativeRelicRewards[NATIVE_RELIC_REWARD_WORDS];
 
-/* The reward bits the relic code reads and sets: in a RELIC RACES race the relics derived from the memory
- * card's relic high scores (set at each race load), Adventure's otherwise. */
+/* The reward bits the relic code reads and sets: in a RELIC RACES race the relics earned by the memory card's
+ * relic high scores or any Adventure profile on it (rebuilt at each race start), Adventure's otherwise. */
 static inline u32 *NativeArcade_RelicRewards(void)
 {
 	return NativeArcade_RelicRace() ? g_nativeRelicRewards : sdata->advProgress.rewards;
 }
 
-/* The highest relic earned on a track by the memory card's relic high scores (the table Adventure and
- * RELIC RACES both record into): 0 none, 1 sapphire, 2 gold, 3 platinum. 0 for a level that is not one
- * of the 18 race tracks, and always 0 on PC. */
+/* The highest relic anyone on this save file has earned on a track (the memory card's relic high scores, which
+ * Adventure and RELIC RACES both record into, or any Adventure profile on the card): 0 none, 1 sapphire, 2 gold,
+ * 3 platinum. 0 for a level that is not one of the 18 race tracks, and always 0 on PC. */
 int NativeRelic_TierOfTrack(s32 levID);
 
 /* Track select (game/230/MM_TrackSelect.c) in a RELIC RACES run: a spinning relic beside each track row
@@ -106,8 +107,10 @@ s32 NativeArcade_TrackAllowed(s16 levID);
 s32 NativeArcade_FixedLaps(void);
 void NativeArcade_ResetMode(void);
 
-/* Race start and exit (game/QueueLoadTrack.c, game/MAIN/MainRaceTrack.c). */
+/* Race start and exit (game/QueueLoadTrack.c, game/MAIN/MainRaceTrack.c). OnRaceStart runs from MainInit_FinalizeInit,
+ * the world init of every race load and of RETRY (LOAD_RESTART), before the HUD is built. */
 void NativeArcade_ArmRace(void);
+void NativeArcade_OnRaceStart(void);
 void NativeArcade_OnLoadRequest(s16 levelID);
 
 /* Called by LOAD_LangFile after the string table is rebuilt. */

@@ -86,24 +86,67 @@ static s32 NativeArcade_HubOf(s32 levelID)
 
 CTR_STATIC_ASSERT(NATIVE_RELIC_REWARD_WORDS * 32 > ADV_REWARD_FIRST_PLATINUM_RELIC + MEMCARD_HIGH_SCORE_TRACK_COUNT);
 
-/* A relic tier is owned when the best time in the memory card's relic high scores (the table Adventure relic races record
- * into) is at or under its RelicTime. The default time of an untouched track is above every RelicTime. */
+/* The slots file the memory card holds (RefreshCard's 0x1680-byte buffer, sdata->ptrToMemcardBuffer1) starts with a
+ * struct MemcardProfile: header[2] (version -18, size 0x1600), the four Adventure profiles' struct AdvProgress at 0x4..0x144
+ * (0x50 bytes each, rewards[6] first), then the card-wide gameProgress. The buffer is the card as last read or saved. */
+CTR_STATIC_ASSERT(sizeof(struct MemcardProfile) == 0x1600);
+CTR_STATIC_ASSERT(OFFSETOF(struct MemcardProfile, advProgress) == 0x4);
+
+/* True when anyone on this save file has the Adventure reward bit (ADV_REWARD_*): the profile loaded for Adventure, or any
+ * used profile slot of the card. Read only; never writes either. */
+static int NativeCard_AnyProfileHasBit(s32 bit)
+{
+	const struct MemcardProfile *card = (const struct MemcardProfile *)sdata->ptrToMemcardBuffer1;
+
+	if (((u16)sdata->advProfileIndex < MEMCARD_ADV_PROFILE_COUNT) && CHECK_ADV_BIT(sdata->advProgress.rewards, bit))
+	{
+		return 1;
+	}
+
+	/* no buffer, or a slots file that is not a current-version profile (no card, a failed load): nothing to read */
+	if ((card == NULL) || (card->header[0] != MEMCARD_PROFILE_VERSION) || (card->header[1] != (s16)sizeof(struct MemcardProfile)))
+	{
+		return 0;
+	}
+
+	for (s32 slot = 0; slot < MEMCARD_ADV_PROFILE_COUNT; slot++)
+	{
+		const struct AdvProgress *adv = &card->advProgress[slot];
+
+		/* an empty slot has no character (GAMEPROG_InitFullMemcard) */
+		if ((adv->characterID >= 0) && CHECK_ADV_BIT(adv->rewards, bit))
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static s32 NativeRelic_RewardBit(s32 level, s32 tier)
+{
+	return ADV_REWARD_FIRST_SAPPHIRE_RELIC + tier * ADV_REWARD_RELIC_TIER_STRIDE + level;
+}
+
+/* A relic tier is earned when anyone on this save file has it: the best time in the memory card's relic high scores (the
+ * table Adventure and RELIC RACES both record into) is at or under its RelicTime, or any Adventure profile on the card holds
+ * its relic bit. The default time of an untouched track is above every RelicTime. */
 static int NativeRelic_Earned(s32 level, s32 tier)
 {
 	u32 bestTime = sdata->gameProgress.highScoreTracks[level].scoreEntry[NAM_RELIC_BEST_ENTRY].time;
 
-	return bestTime <= (u32)data.RelicTime[level * NAM_RELIC_TIERS + tier];
+	return (bestTime <= (u32)data.RelicTime[level * NAM_RELIC_TIERS + tier]) || NativeCard_AnyProfileHasBit(NativeRelic_RewardBit(level, tier));
 }
 
-/* The relic bits of every track from the card's relic high scores. Run when a RELIC RACES race is queued, so the HUD goal
- * and the award test read the card as it is then. */
+/* The relic bits of every track from NativeRelic_Earned. Run at every start of a RELIC RACES race (NativeArcade_OnRaceStart),
+ * so the HUD goal and the award test read the card as it is then and a relic that was never saved does not carry over. */
 static void NativeRelic_Prepare(void)
 {
 	for (s32 level = 0; level < MEMCARD_HIGH_SCORE_TRACK_COUNT; level++)
 	{
 		for (s32 tier = 0; tier < NAM_RELIC_TIERS; tier++)
 		{
-			s32 bit = ADV_REWARD_FIRST_SAPPHIRE_RELIC + tier * ADV_REWARD_RELIC_TIER_STRIDE + level;
+			s32 bit = NativeRelic_RewardBit(level, tier);
 
 			if (NativeRelic_Earned(level, tier))
 			{
@@ -431,12 +474,21 @@ void NativeArcade_ArmRace(void)
 	}
 	else if (g_nativeArcadeMode == NATIVE_ARCADE_RELIC)
 	{
-		/* The relic bits derived from the card's relic high scores have to be in place before the race's HUD
-		 * is built. ARCADE_MODE goes for the race: the end-of-race overlay and results screen are chosen
-		 * ARCADE_MODE first, which would hide the relic results (retail relic races never carry it). */
-		NativeRelic_Prepare();
+		/* ARCADE_MODE goes for the race: the end-of-race overlay and results screen are chosen ARCADE_MODE first,
+		 * which would hide the relic results (retail relic races never carry it). */
 		sdata->Loading.OnBegin.AddBitsConfig0 |= RELIC_RACE;
 		sdata->Loading.OnBegin.RemBitsConfig0 |= ARCADE_MODE;
+	}
+#endif
+}
+
+void NativeArcade_OnRaceStart(void)
+{
+#ifdef __3DS__
+	/* Once per race world: after a load and after RETRY (LOAD_RESTART), before the HUD reads the bits */
+	if (NativeArcade_RelicRace())
+	{
+		NativeRelic_Prepare();
 	}
 #endif
 }

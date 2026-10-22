@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 #ifdef CTR_NATIVE
 static void MainInit_InitVisMemBspListNodes(struct VisMem *visMem, struct mesh_info *mesh)
@@ -416,6 +417,11 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 	struct Driver *d;
 	struct Level *lev1;
 	struct Instance *inst;
+
+#ifdef CTR_NATIVE
+	// 3DS Arcade-menu modes: per-race-start state, before the HUD reads it (no-op in every other mode)
+	NativeArcade_OnRaceStart();
+#endif
 
 	// === Naughty Dog Bug ===
 	// Quitting a race while heldItem is warpball,
