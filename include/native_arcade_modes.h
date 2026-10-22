@@ -67,6 +67,18 @@ static inline u32 *NativeArcade_RelicRewards(void)
 	return NativeArcade_RelicRace() ? g_nativeRelicRewards : sdata->advProgress.rewards;
 }
 
+/* The highest relic earned on a track by the memory card's relic high scores (the table Adventure and
+ * RELIC RACES both record into): 0 none, 1 sapphire, 2 gold, 3 platinum. 0 for a level that is not one
+ * of the 18 race tracks, and always 0 on PC. */
+int NativeRelic_TierOfTrack(s32 levID);
+
+/* Track select (game/230/MM_TrackSelect.c) in a RELIC RACES run: a spinning relic beside each track row
+ * that has one, tinted with the track's highest tier. Every hook is a no-op outside that run and on PC. */
+void NativeRelic_TrackIconsInit(void);                                  /* menu entry: forgets the icons without freeing them */
+void NativeRelic_TrackIconsBegin(void);                                 /* each frame, before the rows: hides every icon, advances the spin */
+void NativeRelic_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row); /* one visible row: shows its icon if the track has a relic */
+void NativeRelic_TrackIconsEnd(void);                                   /* menu exit: frees the icons */
+
 /* A cheat that can change a time (the best ghost's set) records nothing and awards no relic in a RELIC
  * RACES race. Takes back the finish frame's NEW HIGH SCORE / NEW BEST LAP, so retail's name entry and
  * memory-card save never open, and returns 1 when the award is to be skipped. */
@@ -125,6 +137,12 @@ static inline u32 *NativeArcade_RelicRewards(void)
 
 static inline int NativeRelic_SkipAward(void)
 {
+	return 0;
+}
+
+static inline int NativeRelic_TierOfTrack(s32 levID)
+{
+	(void)levID;
 	return 0;
 }
 

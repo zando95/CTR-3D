@@ -86,20 +86,26 @@ static s32 NativeArcade_HubOf(s32 levelID)
 
 CTR_STATIC_ASSERT(NATIVE_RELIC_REWARD_WORDS * 32 > ADV_REWARD_FIRST_PLATINUM_RELIC + MEMCARD_HIGH_SCORE_TRACK_COUNT);
 
-/* The relic bits of every track from the best time in the memory card's relic high scores (the table Adventure relic
- * races record into): a relic is owned when the best time is at or under its RelicTime. Run when a RELIC RACES race is
- * queued, so the HUD goal and the award test read the card as it is then. */
+/* A relic tier is owned when the best time in the memory card's relic high scores (the table Adventure relic races record
+ * into) is at or under its RelicTime. The default time of an untouched track is above every RelicTime. */
+static int NativeRelic_Earned(s32 level, s32 tier)
+{
+	u32 bestTime = sdata->gameProgress.highScoreTracks[level].scoreEntry[NAM_RELIC_BEST_ENTRY].time;
+
+	return bestTime <= (u32)data.RelicTime[level * NAM_RELIC_TIERS + tier];
+}
+
+/* The relic bits of every track from the card's relic high scores. Run when a RELIC RACES race is queued, so the HUD goal
+ * and the award test read the card as it is then. */
 static void NativeRelic_Prepare(void)
 {
 	for (s32 level = 0; level < MEMCARD_HIGH_SCORE_TRACK_COUNT; level++)
 	{
-		u32 bestTime = sdata->gameProgress.highScoreTracks[level].scoreEntry[NAM_RELIC_BEST_ENTRY].time;
-
 		for (s32 tier = 0; tier < NAM_RELIC_TIERS; tier++)
 		{
 			s32 bit = ADV_REWARD_FIRST_SAPPHIRE_RELIC + tier * ADV_REWARD_RELIC_TIER_STRIDE + level;
 
-			if (bestTime <= (u32)data.RelicTime[level * NAM_RELIC_TIERS + tier])
+			if (NativeRelic_Earned(level, tier))
 			{
 				UNLOCK_ADV_BIT(g_nativeRelicRewards, bit);
 			}
@@ -111,7 +117,168 @@ static void NativeRelic_Prepare(void)
 	}
 }
 
+/* Track select's relic icons: one instance per visible row slot, in the UI pushbuffer so the 3DS UI band applies. The main
+ * menu's instance pool is 32, so a failed birth just leaves that row without its icon. */
+#define NRT_SLOTS       9      /* MM_TRACK_SELECT_VISIBLE_ROWS */
+#define NRT_ICON_X      12     /* centre, right of the row box */
+#define NRT_ICON_SCALE  0x300  /* the load/save boxes' relic is 0x400 */
+#define NRT_SCREEN_X    0x100  /* screen centre; at depth NRT_DEPTH one translation unit is one pixel */
+#define NRT_SCREEN_Y    0x6c
+#define NRT_DEPTH       0x100
+#define NRT_SPIN_STEP   0x40
+#define NRT_TILT        0x155  /* the load/save boxes' relic tilt */
+
+static struct Instance *s_nrtRelic[NRT_SLOTS];
+static char s_nrtInstName[16] = "trackrelic";
+static s16 s_nrtSpin = 0;
+
+static const u32 s_nrtTierColor[NAM_RELIC_TIERS] = {INST_COLOR_SAPPHIRE_RELIC, INST_COLOR_GOLD_RELIC, INST_COLOR_PLATINUM_RELIC};
+
+static struct Instance *NativeRelic_TrackIconGet(s32 slot)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	struct Model *model = gGT->modelPtr[STATIC_RELIC];
+	struct InstDrawPerPlayer *idpp;
+	struct Instance *inst = s_nrtRelic[slot];
+
+	if ((inst != NULL) || (model == NULL))
+	{
+		return inst;
+	}
+
+	inst = INSTANCE_Birth3D(model, s_nrtInstName, NULL);
+
+	if (inst == NULL)
+	{
+		return NULL;
+	}
+
+	inst->flags |= HIDE_MODEL | SCREENSPACE_INSTANCE | USE_SPECULAR_LIGHT;
+	inst->scale.x = NRT_ICON_SCALE;
+	inst->scale.y = NRT_ICON_SCALE;
+	inst->scale.z = NRT_ICON_SCALE;
+
+	idpp = INST_GETIDPP(inst);
+	idpp[0].pushBuffer = &gGT->pushBuffer_UI;
+
+	for (s32 player = 1; player < gGT->numPlyrCurrGame; player++)
+	{
+		idpp[player].pushBuffer = NULL;
+	}
+
+	s_nrtRelic[slot] = inst;
+	return inst;
+}
+
 #endif /* __3DS__ */
+
+int NativeRelic_TierOfTrack(s32 levID)
+{
+#ifdef __3DS__
+	if ((levID < 0) || (levID >= MEMCARD_HIGH_SCORE_TRACK_COUNT))
+	{
+		return 0;
+	}
+
+	for (s32 tier = NAM_RELIC_TIERS - 1; tier >= 0; tier--)
+	{
+		if (NativeRelic_Earned(levID, tier))
+		{
+			return tier + 1;
+		}
+	}
+#else
+	(void)levID;
+#endif
+
+	return 0;
+}
+
+void NativeRelic_TrackIconsInit(void)
+{
+#ifdef __3DS__
+	/* A level load resets the instance pool, so a pointer left from the last visit can be stale: forget it, never free it */
+	for (s32 slot = 0; slot < NRT_SLOTS; slot++)
+	{
+		s_nrtRelic[slot] = NULL;
+	}
+#endif
+}
+
+void NativeRelic_TrackIconsBegin(void)
+{
+#ifdef __3DS__
+	for (s32 slot = 0; slot < NRT_SLOTS; slot++)
+	{
+		if (s_nrtRelic[slot] != NULL)
+		{
+			s_nrtRelic[slot]->flags |= HIDE_MODEL;
+		}
+	}
+
+	s_nrtSpin = (s16)(s_nrtSpin + NRT_SPIN_STEP);
+#endif
+}
+
+void NativeRelic_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row)
+{
+#ifdef __3DS__
+	struct Instance *inst;
+	SVec3 rot;
+	int tier;
+
+	/* the mode alone, not NativeArcade_RelicRace(): the RELIC_RACE bit is only added when the race is queued */
+	if ((g_nativeArcadeMode != NATIVE_ARCADE_RELIC) || ((sdata->gGT->gameMode1 & (BATTLE_MODE | TIME_TRIAL)) != 0) || (slot < 0) || (slot >= NRT_SLOTS))
+	{
+		return;
+	}
+
+	tier = NativeRelic_TierOfTrack(levID);
+
+	if (tier == 0)
+	{
+		return;
+	}
+
+	inst = NativeRelic_TrackIconGet(slot);
+
+	if (inst == NULL)
+	{
+		return;
+	}
+
+	rot.x = 0;
+	rot.y = s_nrtSpin;
+	rot.z = NRT_TILT;
+
+	ConvertRotToMatrix(&inst->matrix, &rot);
+	inst->matrix.t[0] = row->x + row->w + NRT_ICON_X - NRT_SCREEN_X;
+	inst->matrix.t[1] = row->y + (row->h >> 1) - NRT_SCREEN_Y;
+	inst->matrix.t[2] = NRT_DEPTH;
+	Vector_SpecLightSpin3D(inst, &rot, &data.MetaDataLoadSave[0].vec3_specular_inverted);
+
+	inst->colorRGBA = s_nrtTierColor[tier - 1];
+	inst->flags &= ~HIDE_MODEL;
+#else
+	(void)slot;
+	(void)levID;
+	(void)row;
+#endif
+}
+
+void NativeRelic_TrackIconsEnd(void)
+{
+#ifdef __3DS__
+	for (s32 slot = 0; slot < NRT_SLOTS; slot++)
+	{
+		if (s_nrtRelic[slot] != NULL)
+		{
+			INSTANCE_Death(s_nrtRelic[slot]);
+			s_nrtRelic[slot] = NULL;
+		}
+	}
+#endif
+}
 
 int NativeRelic_SkipAward(void)
 {

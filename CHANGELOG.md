@@ -21,6 +21,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - New BOSS RACES row in the ARCADE race-type menu: race the boss of the track's hub (Ripper Roo, Papu Papu, Komodo Joe, Pinstripe, or Oxide on Oxide Station, Slide Coliseum and Turbo Track) on any track you have unlocked, three laps, with the boss's Adventure difficulty. It never changes your Adventure save.
 - New CTR CHALLENGE row in the ARCADE race-type menu: the Adventure token race as an Arcade race. Pick a difficulty and a track (the 16 Adventure tracks), collect the letters C, T and R scattered on the track and finish first with all three. No token or save is involved.
 - New RELIC RACE row in the ARCADE race-type menu: the Adventure relic race on any track you have unlocked (all 18, with the time crates and the sapphire, gold and platinum times), three laps. Your five best times per track go into the memory card's relic high scores, the same table Adventure relic races use and the main menu's HIGH SCORE screen shows, through the usual NEW HIGH SCORE name entry and memory card save. The relics shown in this mode follow those times (Adventure relic times count too), and a relic won here never changes an Adventure profile. A cheat that can change a time records nothing.
+- In RELIC RACE, the track-select list shows a spinning relic beside every track you have a relic on, tinted sapphire, gold or platinum for the best one earned (Adventure relic times count). Tracks with no relic show nothing.
 
 ## beta 1.0 (2026-09-16)
 

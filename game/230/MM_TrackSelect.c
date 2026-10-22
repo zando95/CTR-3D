@@ -384,6 +384,10 @@ void MM_TrackSelect_Init(void)
 	D230.trackSelect.lapBoxOpen = false;
 	D230.trackSelect.transition.state = ENTERING_MENU;
 
+#ifdef CTR_NATIVE
+	NativeRelic_TrackIconsInit();
+#endif
+
 	// set track index to the index selected in track selection menu, starts at 0 for both Arcade and Battle
 	D230.menuTrackSelect.rowSelected = sdata->trackSelBackup;
 
@@ -466,6 +470,10 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 			if (elapsedFrames > MM_TRACK_SELECT_TRANSITION_FRAMES)
 			{
 				sdata->errorMessagePosIndex = 0;
+
+#ifdef CTR_NATIVE
+				NativeRelic_TrackIconsEnd();
+#endif
 
 				// if track has not been chosen
 				if (D230.trackSelect.transition.startAfterExit == 0)
@@ -760,6 +768,10 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 	s32 rowIndex = 0;
 	s32 rowPhase = 0;
 
+#ifdef CTR_NATIVE
+	NativeRelic_TrackIconsBegin();
+#endif
+
 	// loop through tracks in track list
 	do
 	{
@@ -835,6 +847,11 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 			// (useless?)
 			GAMEPROG_GetPtrHighScoreTrack();
 		}
+
+#ifdef CTR_NATIVE
+		// RELIC RACES: the track's relic spins in the slot Time Trial's stars use
+		NativeRelic_TrackIconsRow(rowIndex, selectMenu[currTrack].levID, &rowRect);
+#endif
 
 		// Draw string
 		DecalFont_DrawLine(sdata->lngStrings[data.metaDataLEV[selectMenu[currTrack].levID].name_LNG], (rowX + MM_TRACK_SELECT_ROW_NAME_X_OFFSET),
