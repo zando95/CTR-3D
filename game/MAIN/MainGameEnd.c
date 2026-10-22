@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_retro_fueled.h>
 
 #ifdef CTR_NATIVE
 // platform/native_ghost_best.c -- keeps a finished Time Trial tape as the track's best ghost (local-extern idiom).
@@ -14,6 +15,16 @@ void MainGameEnd_SoloRaceGetReward(int subtractTimeCrateBonus)
 
 	gGT->newHighScoreIndex = -1;
 	gGT->gameModeEnd &= 0x7bffffff;
+
+#ifdef CTR_NATIVE
+	// A Retro-Fueled race ranks nothing: no high score, no best lap, no N. Tropy or N. Oxide ghost
+	// beaten. The stored best lap still shows.
+	if (NativeRetroFueled_Active())
+	{
+		gGT->bestLapTime = sdata->ptrActiveHighScoreEntry[0].time;
+		return;
+	}
+#endif
 
 	int timeBonus = 0;
 
