@@ -515,13 +515,15 @@ extern int g_dbg_flagStyle;
 static const u8 s_rfSpyroPurpleRGB[3] = {140, 117, 188};
 
 /*
- * Retro-Fueled flag (g_dbg_flagStyle == 3): blue-on-blue checkers, a light and a
- * deeper blue. Unlike the Spyro flag BOTH tiles are tinted, since neither is white.
- * The tiles use the checker parity of every other style and the light-tile
- * brightness curve, so the wave shading reads the same.
+ * Retro-Fueled flag (g_dbg_flagStyle == 3): blue-on-blue checkers matching the
+ * middle of Nitro-Fueled's menu flag (#4AA7D0 / #4095C3). The values are the
+ * fully lit colours; the wave shading darkens them to about half in the folds.
+ * Unlike the Spyro flag BOTH tiles are tinted, since neither is white. The tiles
+ * use the checker parity of every other style and the light-tile brightness
+ * curve, so the wave shading reads the same.
  */
-static const u8 s_rfBlueLightRGB[3] = {110, 190, 255};
-static const u8 s_rfBlueDarkRGB[3] = {30, 90, 200};
+static const u8 s_rfBlueLightRGB[3] = {74, 167, 208};
+static const u8 s_rfBlueDarkRGB[3] = {64, 149, 195};
 
 /*
  * Pride-flag stripe colours, top to bottom (the six-colour flag). Used when
