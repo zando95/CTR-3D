@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_arcade_modes.h>
 
 enum PlayLevelConstants
 {
@@ -134,7 +135,8 @@ void PlayLevel_UpdateLapStats(void)
 				    // If you're in Arcade, or
 				    // If you're in Adventure, or
 				    // If you're in Time Trial
-				    ((gGT->gameMode1 & GAME_MODE_SAVE_LAP_TIME_MASK) != 0) &&
+				    // (or a RELIC RACES race: it carries none of the three but ranks its best lap from these times)
+				    (((gGT->gameMode1 & GAME_MODE_SAVE_LAP_TIME_MASK) != 0) || NativeArcade_RelicRace()) &&
 
 				    // player of any kind
 				    (currDriver->instSelf->thread->modelIndex == DYNAMIC_PLAYER))

@@ -238,7 +238,7 @@ void UI_DrawRaceClock(u16 labelPosX, u16 labelPosY, u32 flags, struct Driver *dr
 	{
 		// If you're not in Arcade mode,
 		// nor Time Trial, nor adventure mode
-		if ((gGT->gameMode1 & (ARCADE_MODE | TIME_TRIAL | ADVENTURE_MODE)) == 0)
+		if (((gGT->gameMode1 & (ARCADE_MODE | TIME_TRIAL | ADVENTURE_MODE)) == 0) && !NativeArcade_RelicRace())
 		{
 			return;
 		}

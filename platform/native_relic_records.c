@@ -20,7 +20,12 @@
  * (NativeRelic_Commit, from MainFrame_GameLogic) and written when the results are left or the
  * platform shuts down (NativeRelic_Flush); the finish frame does no file I/O. A cheat that can
  * change a time (the same set that blocks the best ghost) records nothing and awards no relic.
- * On PC every function here is a no-op or returns 0. */
+ *
+ * Only an absent file (or one whose copies read fully but fail their checks) starts a fresh table.
+ * If either copy cannot be read (an I/O or open error), the table in RAM is for display only: it
+ * is never written, so a transient card error cannot replace the real file or its backup. The
+ * read is retried at the next relic race load (NativeRelic_Prepare). On PC every function here is
+ * a no-op or returns 0. */
 
 #include <common.h>
 #include <native_arcade_modes.h>
@@ -62,8 +67,10 @@ struct NativeRelicFile
 CTR_STATIC_ASSERT(NATIVE_RELIC_REWARD_WORDS * 32 > ADV_REWARD_FIRST_PLATINUM_RELIC + NRR_LEVELS);
 
 static struct NativeRelicFile s_rrFile;
+static struct NativeRelicFile s_rrRead; /* a read lands here; s_rrFile is replaced only by a usable copy */
 static s32 s_rrLoaded;
 static s32 s_rrDirty;
+static s32 s_rrLocked; /* a copy could not be read: s_rrFile is not written until a read succeeds */
 
 static void NativeRelic_SaveName(char *dst)
 {
@@ -103,9 +110,9 @@ static void NativeRelic_FillDefaults(void)
 /* A file the retail screens can draw from: right magic and version, a known character per entry and
  * a terminated name. (A record can belong to any selectable character, Penta Penguin and Oxide
  * included, while retail's empty table only uses the first 13.) */
-static int NativeRelic_FileValid(void)
+static int NativeRelic_FileValid(const struct NativeRelicFile *file)
 {
-	if ((s_rrFile.magic != NRR_MAGIC) || (s_rrFile.version != NRR_VERSION))
+	if ((file->magic != NRR_MAGIC) || (file->version != NRR_VERSION))
 	{
 		return 0;
 	}
@@ -114,7 +121,7 @@ static int NativeRelic_FileValid(void)
 	{
 		for (s32 k = 0; k < NRR_ENTRIES; k++)
 		{
-			const struct HighScoreEntry *entry = &s_rrFile.entries[level][k];
+			const struct HighScoreEntry *entry = &file->entries[level][k];
 
 			if ((entry->characterID >= NRR_CHARACTER_COUNT) || (memchr(entry->name, 0, MEMCARD_HIGH_SCORE_NAME_LENGTH) == NULL))
 			{
@@ -126,20 +133,57 @@ static int NativeRelic_FileValid(void)
 	return 1;
 }
 
-static int NativeRelic_ReadFile(void)
+enum NativeRelicCopy
+{
+	NRR_COPY_USABLE,
+	NRR_COPY_ABSENT,
+	NRR_COPY_BAD,   /* read fully but failed its checks */
+	NRR_COPY_ERROR, /* could not be read */
+};
+
+/* Reads the primary or the backup copy into s_rrRead. */
+static enum NativeRelicCopy NativeRelic_ReadCopy(const char *name, int backup)
+{
+	enum NativeMemcardResult result;
+
+	result = backup ? NativeMemcard_ReadBackupSaveData(name, (unsigned char *)&s_rrRead, NRR_FILE_BYTES, NRR_ICON_BYTES)
+	                : NativeMemcard_ReadSaveData(name, (unsigned char *)&s_rrRead, NRR_FILE_BYTES, NRR_ICON_BYTES);
+
+	if (result == NATIVE_MEMCARD_NOT_FOUND)
+	{
+		return NRR_COPY_ABSENT;
+	}
+
+	if (result != NATIVE_MEMCARD_OK)
+	{
+		return NRR_COPY_ERROR;
+	}
+
+	return (MEMCARD_NativeChecksumMatches((u8 *)&s_rrRead, NRR_FILE_BYTES) && NativeRelic_FileValid(&s_rrRead)) ? NRR_COPY_USABLE : NRR_COPY_BAD;
+}
+
+/* Leaves the primary, else the backup, in s_rrRead and returns 1. Returns 0 when neither copy is usable.
+ * *unreadable is set when a copy could not be read, whether or not the other one was usable. */
+static int NativeRelic_ReadFile(int *unreadable)
 {
 	char name[NRR_SAVE_NAME_BYTES];
+	enum NativeRelicCopy primary;
+	enum NativeRelicCopy backup;
 
 	NativeRelic_SaveName(name);
 
-	if ((NativeMemcard_ReadSaveData(name, (unsigned char *)&s_rrFile, NRR_FILE_BYTES, NRR_ICON_BYTES) == NATIVE_MEMCARD_OK) &&
-	    MEMCARD_NativeChecksumMatches((u8 *)&s_rrFile, NRR_FILE_BYTES) && NativeRelic_FileValid())
+	*unreadable = 0;
+
+	primary = NativeRelic_ReadCopy(name, 0);
+	if (primary == NRR_COPY_USABLE)
 	{
 		return 1;
 	}
 
-	if ((NativeMemcard_ReadBackupSaveData(name, (unsigned char *)&s_rrFile, NRR_FILE_BYTES, NRR_ICON_BYTES) == NATIVE_MEMCARD_OK) &&
-	    MEMCARD_NativeChecksumMatches((u8 *)&s_rrFile, NRR_FILE_BYTES) && NativeRelic_FileValid())
+	backup = NativeRelic_ReadCopy(name, 1);
+	*unreadable = (primary == NRR_COPY_ERROR) || (backup == NRR_COPY_ERROR);
+
+	if (backup == NRR_COPY_USABLE)
 	{
 		Platform_LogWarn("[CTR 3D] relic records: %s unreadable, loaded its backup\n", name);
 		return 1;
@@ -168,8 +212,18 @@ static void NativeRelic_RebuildRewards(s32 level)
 	}
 }
 
+static void NativeRelic_RebuildAllRewards(void)
+{
+	for (s32 level = 0; level < NRR_LEVELS; level++)
+	{
+		NativeRelic_RebuildRewards(level);
+	}
+}
+
 static void NativeRelic_EnsureLoaded(void)
 {
+	int unreadable;
+
 	if (s_rrLoaded != 0)
 	{
 		return;
@@ -177,14 +231,46 @@ static void NativeRelic_EnsureLoaded(void)
 
 	s_rrLoaded = 1;
 
-	if (!NativeRelic_ReadFile())
+	if (NativeRelic_ReadFile(&unreadable))
+	{
+		memcpy(&s_rrFile, &s_rrRead, sizeof(s_rrFile));
+	}
+	else
 	{
 		NativeRelic_FillDefaults();
 	}
 
-	for (s32 level = 0; level < NRR_LEVELS; level++)
+	s_rrLocked = unreadable;
+
+	if (unreadable)
 	{
-		NativeRelic_RebuildRewards(level);
+		Platform_LogInstrument("[RELICREC] read failed: records are kept in RAM only until a read succeeds\n");
+	}
+
+	NativeRelic_RebuildAllRewards();
+}
+
+/* A read that failed is tried again; the first usable copy replaces the table in RAM, and a file found absent
+ * lets the table be written as a fresh one. */
+static void NativeRelic_RetryRead(void)
+{
+	int unreadable;
+
+	if (NativeRelic_ReadFile(&unreadable))
+	{
+		if (!unreadable)
+		{
+			memcpy(&s_rrFile, &s_rrRead, sizeof(s_rrFile));
+			s_rrLocked = 0;
+			s_rrDirty = 0;
+			NativeRelic_RebuildAllRewards();
+			Platform_LogInstrument("[RELICREC] read recovered\n");
+		}
+	}
+	else if (!unreadable)
+	{
+		s_rrLocked = 0;
+		Platform_LogInstrument("[RELICREC] read recovered, no file: starting fresh\n");
 	}
 }
 
@@ -193,7 +279,14 @@ static void NativeRelic_EnsureLoaded(void)
 void NativeRelic_Prepare(void)
 {
 #ifdef __3DS__
-	NativeRelic_EnsureLoaded();
+	if (s_rrLoaded == 0)
+	{
+		NativeRelic_EnsureLoaded();
+	}
+	else if (s_rrLocked != 0)
+	{
+		NativeRelic_RetryRead();
+	}
 #endif
 }
 
@@ -281,6 +374,13 @@ void NativeRelic_Flush(void)
 
 	if ((s_rrLoaded == 0) || (s_rrDirty == 0))
 	{
+		return;
+	}
+
+	if (s_rrLocked != 0)
+	{
+		/* the file on the card was never read: what is in RAM must not replace it or its backup */
+		Platform_LogInstrument("[RELICREC] write refused: the records file could not be read\n");
 		return;
 	}
 
