@@ -14,6 +14,10 @@
 
 #include <common.h>
 #include <native_arcade_modes.h>
+#include <platform/native_log.h>
+#include <platform/native_memcard.h>
+
+#include <string.h>
 
 int g_nativeArcadeMode = NATIVE_ARCADE_NONE;
 
@@ -160,46 +164,203 @@ static void NativeRelic_Prepare(void)
 	}
 }
 
-/* Track select's relic icons: one instance per visible row slot, in the UI pushbuffer so the 3DS UI band applies. The main
- * menu's instance pool is 32, so a failed birth just leaves that row without its icon. */
-#define NRT_SLOTS       9      /* MM_TRACK_SELECT_VISIBLE_ROWS */
-#define NRT_ICON_X      12     /* centre, right of the row box */
-#define NRT_ICON_SCALE  0x300  /* the load/save boxes' relic is 0x400 */
-#define NRT_SCREEN_X    0x100  /* screen centre; at depth NRT_DEPTH one translation unit is one pixel */
+/* CTR CHALLENGE's token marks. A track (levels 0-15) shows its CTR token when anyone on this save file has earned it: any
+ * Adventure profile on the card (the reward bit ADV_REWARD_FIRST_CTR_TOKEN + level) or an Arcade CTR CHALLENGE win with all
+ * three letters, recorded here. The wins are a 16-bit mask kept in the file CTR3DTOKENS of memory-card slot 0, written through
+ * the same .tmp/.bak path as the best-ghost files and named outside the retail BASCUS-94426* pattern. File: a zero icon
+ * header (NCT_ICON_BYTES), then the payload
+ *   0  char[4]  "CTKN"
+ *   4  u16      version (NCT_VERSION)
+ *   6  u16      mask, bit n = a win on level n
+ *   8  u16      CRC16 (MEMCARD_CRC16, two zero bytes appended) of bytes 0..7
+ * all little-endian. A file that is absent, or read fine but fails its checks, starts the mask fresh. A read that fails (I/O
+ * or open error) keeps the RAM mask and refuses every write until a later read succeeds, so the file is never overwritten from
+ * a failed read; wins recorded meanwhile are merged into the file's mask by that read. The file is read on first use. */
+#define NCT_SAVE_NAME     "CTR3DTOKENS"
+#define NCT_SAVE_SLOT     0
+#define NCT_NAME_BYTES    64 /* MEMCARD_StringSet's destination size */
+#define NCT_ICON_BYTES    0x100
+#define NCT_PAYLOAD_BYTES 10
+#define NCT_VERSION       1
+#define NCT_LEVELS        ADV_REWARD_CTR_TOKEN_TRACK_COUNT
+
+enum NativeCtrTokensState
+{
+	NCT_NOT_READ = 0,
+	NCT_READY = 1,       /* the file has been read (or is absent): writes allowed */
+	NCT_READ_FAILED = 2, /* writes refused until a read succeeds */
+};
+
+static u16 s_nctMask;
+static s32 s_nctState;
+static s32 s_nctDirty;
+
+static u16 NativeCtrTokens_Crc(const u8 *bytes, s32 count)
+{
+	u32 crc = 0;
+
+	for (s32 i = 0; i < count; i++)
+	{
+		crc = MEMCARD_CRC16(crc, bytes[i]);
+	}
+
+	crc = MEMCARD_CRC16(crc, 0);
+	crc = MEMCARD_CRC16(crc, 0);
+	return (u16)crc;
+}
+
+static void NativeCtrTokens_Pack(u8 *dst, u16 mask)
+{
+	u16 crc;
+
+	memcpy(dst, "CTKN", 4);
+	dst[4] = (u8)(NCT_VERSION & 0xff);
+	dst[5] = (u8)(NCT_VERSION >> 8);
+	dst[6] = (u8)(mask & 0xff);
+	dst[7] = (u8)(mask >> 8);
+	crc = NativeCtrTokens_Crc(dst, 8);
+	dst[8] = (u8)(crc & 0xff);
+	dst[9] = (u8)(crc >> 8);
+}
+
+static int NativeCtrTokens_Unpack(const u8 *src, u16 *maskOut)
+{
+	if ((memcmp(src, "CTKN", 4) != 0) || ((u16)(src[4] | (src[5] << 8)) != NCT_VERSION))
+	{
+		return 0;
+	}
+
+	if ((u16)(src[8] | (src[9] << 8)) != NativeCtrTokens_Crc(src, 8))
+	{
+		return 0;
+	}
+
+	*maskOut = (u16)(src[6] | (src[7] << 8));
+	return 1;
+}
+
+static void NativeCtrTokens_SaveName(char *dst)
+{
+	char fileName[16] = NCT_SAVE_NAME;
+
+	MEMCARD_StringSet(dst, NCT_SAVE_SLOT, fileName);
+}
+
+/* Reads the file into the RAM mask (merged, never replacing a win recorded this session) and sets the state. */
+static void NativeCtrTokens_Load(void)
+{
+	char name[NCT_NAME_BYTES];
+	u8 bytes[NCT_PAYLOAD_BYTES];
+	u16 fileMask = 0;
+	enum NativeMemcardResult primary;
+	enum NativeMemcardResult backup;
+
+	NativeCtrTokens_SaveName(name);
+	primary = NativeMemcard_ReadSaveData(name, bytes, NCT_PAYLOAD_BYTES, NCT_ICON_BYTES);
+
+	if ((primary == NATIVE_MEMCARD_OK) && NativeCtrTokens_Unpack(bytes, &fileMask))
+	{
+		s_nctMask |= fileMask;
+		s_nctState = NCT_READY;
+		Platform_LogInstrument("[CTRTOKENS] read mask=%04x\n", (unsigned)s_nctMask);
+		return;
+	}
+
+	backup = NativeMemcard_ReadBackupSaveData(name, bytes, NCT_PAYLOAD_BYTES, NCT_ICON_BYTES);
+
+	if ((backup == NATIVE_MEMCARD_OK) && NativeCtrTokens_Unpack(bytes, &fileMask))
+	{
+		s_nctMask |= fileMask;
+		s_nctState = NCT_READY;
+		Platform_LogInstrument("[CTRTOKENS] primary unreadable, read its backup mask=%04x\n", (unsigned)s_nctMask);
+		return;
+	}
+
+	/* no usable copy: absent, or read fine and failed its checks, starts fresh; an I/O or open error must never lead to an overwrite */
+	if (((primary == NATIVE_MEMCARD_NOT_FOUND) || (primary == NATIVE_MEMCARD_OK)) && ((backup == NATIVE_MEMCARD_NOT_FOUND) || (backup == NATIVE_MEMCARD_OK)))
+	{
+		s_nctState = NCT_READY;
+		Platform_LogInstrument("[CTRTOKENS] no usable file, starting fresh\n");
+		return;
+	}
+
+	s_nctState = NCT_READ_FAILED;
+	Platform_LogInstrument("[CTRTOKENS] read FAILED (primary=%d backup=%d), writes refused\n", (int)primary, (int)backup);
+}
+
+/* retryFailed: also try again after a failed read (track-select entry, a write); otherwise only the first read is made */
+static void NativeCtrTokens_Ensure(int retryFailed)
+{
+	if ((s_nctState == NCT_NOT_READ) || ((s_nctState == NCT_READ_FAILED) && (retryFailed != 0)))
+	{
+		NativeCtrTokens_Load();
+	}
+}
+
+static u32 NativeCtrToken_TintOf(s32 level)
+{
+	s32 group = data.metaDataLEV[level].ctrTokenGroupID;
+
+	if ((group < 0) || (group >= (s32)(sizeof(data.AdvCups) / sizeof(data.AdvCups[0]))))
+	{
+		group = 0;
+	}
+
+	/* the colour Adventure's warp pads and HUD give the track's token */
+	return INST_PackColorRGB(data.AdvCups[group].color[0], data.AdvCups[group].color[1], data.AdvCups[group].color[2]);
+}
+
+/* Track select's icons: one instance per visible row slot, in the UI pushbuffer so the 3DS UI band applies. RELIC RACES shows a
+ * relic tinted by the track's highest tier, CTR CHALLENGE the CTR token tinted as Adventure tints it; the modes are exclusive, so
+ * one array serves both. The main menu's instance pool is 32, so a failed birth just leaves that row without its icon. Both
+ * models live in the packs the menu level loads (1P arcade, Adventure, Time Trial, 2P) and their textures in resident VRAM, so
+ * neither needs a load. */
+#define NRT_SLOTS       9     /* MM_TRACK_SELECT_VISIBLE_ROWS */
+#define NRT_ICON_X      12    /* centre, right of the row box */
+#define NRT_RELIC_SCALE 0x300 /* the load/save boxes' relic is 0x400 */
+#define NRT_TOKEN_SCALE 0x200 /* the HUD draws the token at 2/3 of the relic's size (hud_1P_P1: scale 2048 at depth 512 against 1536 at 256) */
+#define NRT_SCREEN_X    0x100 /* screen centre; at depth NRT_DEPTH one translation unit is one pixel */
 #define NRT_SCREEN_Y    0x6c
 #define NRT_DEPTH       0x100
 #define NRT_SPIN_STEP   0x40
-#define NRT_TILT        0x155  /* the load/save boxes' relic tilt */
+#define NRT_RELIC_TILT  0x155 /* the load/save boxes' relic tilt */
+#define NRT_TOKEN_TILT  0     /* the token stands upright as on Adventure's warp pads */
 
-static struct Instance *s_nrtRelic[NRT_SLOTS];
-static char s_nrtInstName[16] = "trackrelic";
+static struct Instance *s_nrtIcon[NRT_SLOTS];
+static char s_nrtRelicName[16] = "trackrelic";
+static char s_nrtTokenName[16] = "tracktoken";
 static s16 s_nrtSpin = 0;
 
 static const u32 s_nrtTierColor[NAM_RELIC_TIERS] = {INST_COLOR_SAPPHIRE_RELIC, INST_COLOR_GOLD_RELIC, INST_COLOR_PLATINUM_RELIC};
 
-static struct Instance *NativeRelic_TrackIconGet(s32 slot)
+/* Adventure's lightDirToken (D232.lightDirToken; all five token groups share it) */
+static const SVec3 s_nrtTokenLight = {{-0xA0A, 0x787, 0xA0A}};
+
+static struct Instance *NativeArcade_TrackIconGet(s32 slot, s32 modelID)
 {
 	struct GameTracker *gGT = sdata->gGT;
-	struct Model *model = gGT->modelPtr[STATIC_RELIC];
+	struct Model *model = gGT->modelPtr[modelID];
 	struct InstDrawPerPlayer *idpp;
-	struct Instance *inst = s_nrtRelic[slot];
+	struct Instance *inst = s_nrtIcon[slot];
+	s16 scale = (modelID == STATIC_TOKEN) ? NRT_TOKEN_SCALE : NRT_RELIC_SCALE;
 
 	if ((inst != NULL) || (model == NULL))
 	{
 		return inst;
 	}
 
-	inst = INSTANCE_Birth3D(model, s_nrtInstName, NULL);
+	inst = INSTANCE_Birth3D(model, (modelID == STATIC_TOKEN) ? s_nrtTokenName : s_nrtRelicName, NULL);
 
 	if (inst == NULL)
 	{
 		return NULL;
 	}
 
-	inst->flags |= HIDE_MODEL | SCREENSPACE_INSTANCE | USE_SPECULAR_LIGHT;
-	inst->scale.x = NRT_ICON_SCALE;
-	inst->scale.y = NRT_ICON_SCALE;
-	inst->scale.z = NRT_ICON_SCALE;
+	/* a token is translucent and specular lit, as Adventure's HUD and warp pad draw it */
+	inst->flags |= HIDE_MODEL | SCREENSPACE_INSTANCE | USE_SPECULAR_LIGHT | ((modelID == STATIC_TOKEN) ? DRAW_TRANSPARENT : 0);
+	inst->scale.x = scale;
+	inst->scale.y = scale;
+	inst->scale.z = scale;
 
 	idpp = INST_GETIDPP(inst);
 	idpp[0].pushBuffer = &gGT->pushBuffer_UI;
@@ -209,7 +370,7 @@ static struct Instance *NativeRelic_TrackIconGet(s32 slot)
 		idpp[player].pushBuffer = NULL;
 	}
 
-	s_nrtRelic[slot] = inst;
+	s_nrtIcon[slot] = inst;
 	return inst;
 }
 
@@ -237,25 +398,113 @@ int NativeRelic_TierOfTrack(s32 levID)
 	return 0;
 }
 
-void NativeRelic_TrackIconsInit(void)
+int NativeCtrToken_Earned(s32 levID)
+{
+#ifdef __3DS__
+	if ((levID < 0) || (levID >= NCT_LEVELS))
+	{
+		return 0;
+	}
+
+	if (NativeCard_AnyProfileHasBit(ADV_REWARD_FIRST_CTR_TOKEN + levID))
+	{
+		return 1;
+	}
+
+	NativeCtrTokens_Ensure(0);
+	return ((s_nctMask >> levID) & 1) != 0;
+#else
+	(void)levID;
+	return 0;
+#endif
+}
+
+void NativeArcade_OnCtrWin(void)
+{
+#ifdef __3DS__
+	struct GameTracker *gGT = sdata->gGT;
+	s32 level = gGT->levelID;
+
+	/* a cheat that can change the race records no win (the relic and best-ghost rule) */
+	if (!NativeArcade_CtrChallenge() || (level < 0) || (level >= NCT_LEVELS) || ((gGT->gameMode2 & NATIVE_GHOST_BEST_BLOCKING_CHEATS) != 0))
+	{
+		return;
+	}
+
+	NativeCtrTokens_Ensure(0);
+
+	if (((s_nctMask >> level) & 1) != 0)
+	{
+		return;
+	}
+
+	s_nctMask |= (u16)(1u << level);
+	s_nctDirty = 1;
+	Platform_LogInstrument("[CTRTOKENS] win level=%d mask=%04x\n", (int)level, (unsigned)s_nctMask);
+#endif
+}
+
+void NativeCtrTokens_Flush(void)
+{
+#ifdef __3DS__
+	char name[NCT_NAME_BYTES];
+	u8 icon[NCT_ICON_BYTES];
+	u8 payload[NCT_PAYLOAD_BYTES];
+	enum NativeMemcardResult result;
+
+	if (s_nctDirty == 0)
+	{
+		return;
+	}
+
+	/* a failed first read is retried here: its merge keeps wins recorded since, and a success lifts the refusal */
+	NativeCtrTokens_Ensure(1);
+
+	if (s_nctState != NCT_READY)
+	{
+		Platform_LogInstrument("[CTRTOKENS] write refused: the file could not be read\n");
+		return;
+	}
+
+	NativeCtrTokens_SaveName(name);
+	memset(icon, 0, sizeof(icon));
+	NativeCtrTokens_Pack(payload, s_nctMask);
+	result = NativeMemcard_WriteSaveData(name, icon, NCT_ICON_BYTES, payload, NCT_PAYLOAD_BYTES);
+
+	if (result == NATIVE_MEMCARD_OK)
+	{
+		s_nctDirty = 0;
+	}
+
+	Platform_LogInstrument("[CTRTOKENS] write mask=%04x %s\n", (unsigned)s_nctMask, (result == NATIVE_MEMCARD_OK) ? "ok" : "FAILED");
+#endif
+}
+
+void NativeArcade_TrackIconsInit(void)
 {
 #ifdef __3DS__
 	/* A level load resets the instance pool, so a pointer left from the last visit can be stale: forget it, never free it */
 	for (s32 slot = 0; slot < NRT_SLOTS; slot++)
 	{
-		s_nrtRelic[slot] = NULL;
+		s_nrtIcon[slot] = NULL;
+	}
+
+	/* CTR CHALLENGE's marks read the token file: read it here, once per visit, rather than mid-frame (a failed read is retried) */
+	if (g_nativeArcadeMode == NATIVE_ARCADE_CTR)
+	{
+		NativeCtrTokens_Ensure(1);
 	}
 #endif
 }
 
-void NativeRelic_TrackIconsBegin(void)
+void NativeArcade_TrackIconsBegin(void)
 {
 #ifdef __3DS__
 	for (s32 slot = 0; slot < NRT_SLOTS; slot++)
 	{
-		if (s_nrtRelic[slot] != NULL)
+		if (s_nrtIcon[slot] != NULL)
 		{
-			s_nrtRelic[slot]->flags |= HIDE_MODEL;
+			s_nrtIcon[slot]->flags |= HIDE_MODEL;
 		}
 	}
 
@@ -263,44 +512,71 @@ void NativeRelic_TrackIconsBegin(void)
 #endif
 }
 
-void NativeRelic_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row)
+void NativeArcade_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row)
 {
 #ifdef __3DS__
 	struct Instance *inst;
+	const SVec3 *light;
 	SVec3 rot;
-	int tier;
+	s32 modelID;
 
 	/* the mode alone, not NativeArcade_RelicRace(): the RELIC_RACE bit is only added when the race is queued */
-	if ((g_nativeArcadeMode != NATIVE_ARCADE_RELIC) || ((sdata->gGT->gameMode1 & (BATTLE_MODE | TIME_TRIAL)) != 0) || (slot < 0) || (slot >= NRT_SLOTS))
+	if (((g_nativeArcadeMode != NATIVE_ARCADE_RELIC) && (g_nativeArcadeMode != NATIVE_ARCADE_CTR)) ||
+	    ((sdata->gGT->gameMode1 & (BATTLE_MODE | TIME_TRIAL)) != 0) || (slot < 0) || (slot >= NRT_SLOTS))
 	{
 		return;
 	}
 
-	tier = NativeRelic_TierOfTrack(levID);
-
-	if (tier == 0)
+	if (g_nativeArcadeMode == NATIVE_ARCADE_RELIC)
 	{
-		return;
+		int tier = NativeRelic_TierOfTrack(levID);
+
+		if (tier == 0)
+		{
+			return;
+		}
+
+		modelID = STATIC_RELIC;
+		inst = NativeArcade_TrackIconGet(slot, modelID);
+
+		if (inst == NULL)
+		{
+			return;
+		}
+
+		rot.z = NRT_RELIC_TILT;
+		light = &data.MetaDataLoadSave[0].vec3_specular_inverted;
+		inst->colorRGBA = s_nrtTierColor[tier - 1];
 	}
-
-	inst = NativeRelic_TrackIconGet(slot);
-
-	if (inst == NULL)
+	else
 	{
-		return;
+		if (!NativeCtrToken_Earned(levID))
+		{
+			return;
+		}
+
+		modelID = STATIC_TOKEN;
+		inst = NativeArcade_TrackIconGet(slot, modelID);
+
+		if (inst == NULL)
+		{
+			return;
+		}
+
+		rot.z = NRT_TOKEN_TILT;
+		light = &s_nrtTokenLight;
+		inst->colorRGBA = NativeCtrToken_TintOf(levID);
 	}
 
 	rot.x = 0;
 	rot.y = s_nrtSpin;
-	rot.z = NRT_TILT;
 
 	ConvertRotToMatrix(&inst->matrix, &rot);
 	inst->matrix.t[0] = row->x + row->w + NRT_ICON_X - NRT_SCREEN_X;
 	inst->matrix.t[1] = row->y + (row->h >> 1) - NRT_SCREEN_Y;
 	inst->matrix.t[2] = NRT_DEPTH;
-	Vector_SpecLightSpin3D(inst, &rot, &data.MetaDataLoadSave[0].vec3_specular_inverted);
+	Vector_SpecLightSpin3D(inst, &rot, light);
 
-	inst->colorRGBA = s_nrtTierColor[tier - 1];
 	inst->flags &= ~HIDE_MODEL;
 #else
 	(void)slot;
@@ -309,15 +585,15 @@ void NativeRelic_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row)
 #endif
 }
 
-void NativeRelic_TrackIconsEnd(void)
+void NativeArcade_TrackIconsEnd(void)
 {
 #ifdef __3DS__
 	for (s32 slot = 0; slot < NRT_SLOTS; slot++)
 	{
-		if (s_nrtRelic[slot] != NULL)
+		if (s_nrtIcon[slot] != NULL)
 		{
-			INSTANCE_Death(s_nrtRelic[slot]);
-			s_nrtRelic[slot] = NULL;
+			INSTANCE_Death(s_nrtIcon[slot]);
+			s_nrtIcon[slot] = NULL;
 		}
 	}
 #endif

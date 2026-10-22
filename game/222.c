@@ -104,6 +104,11 @@ void AA_EndEvent_DrawMenu(void)
 	{
 		if (didEarnCtrToken)
 		{
+#ifdef CTR_NATIVE
+			// CTR CHALLENGE: first place with all three letters is a win to record (no-op in every other mode)
+			NativeArcade_OnCtrWin();
+#endif
+
 			// lerp C-T-R letters closer to center by 16 pixels
 			// until the new-token or already-unlocked flyout phase starts
 			lerpStartX = hudCTR->x;

@@ -385,7 +385,7 @@ void MM_TrackSelect_Init(void)
 	D230.trackSelect.transition.state = ENTERING_MENU;
 
 #ifdef CTR_NATIVE
-	NativeRelic_TrackIconsInit();
+	NativeArcade_TrackIconsInit();
 #endif
 
 	// set track index to the index selected in track selection menu, starts at 0 for both Arcade and Battle
@@ -472,7 +472,7 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 				sdata->errorMessagePosIndex = 0;
 
 #ifdef CTR_NATIVE
-				NativeRelic_TrackIconsEnd();
+				NativeArcade_TrackIconsEnd();
 #endif
 
 				// if track has not been chosen
@@ -769,7 +769,7 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 	s32 rowPhase = 0;
 
 #ifdef CTR_NATIVE
-	NativeRelic_TrackIconsBegin();
+	NativeArcade_TrackIconsBegin();
 #endif
 
 	// loop through tracks in track list
@@ -849,8 +849,8 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 		}
 
 #ifdef CTR_NATIVE
-		// RELIC RACES: the track's relic spins in the slot Time Trial's stars use
-		NativeRelic_TrackIconsRow(rowIndex, selectMenu[currTrack].levID, &rowRect);
+		// RELIC RACES / CTR CHALLENGE: the track's relic or token spins in the slot Time Trial's stars use
+		NativeArcade_TrackIconsRow(rowIndex, selectMenu[currTrack].levID, &rowRect);
 #endif
 
 		// Draw string

@@ -8,7 +8,9 @@
  *                 Komodo Joe, Pinstripe; Oxide for Oxide Station and the two bonus tracks),
  *                 1 player + 1 boss, 3 laps
  *   CTR CHALLENGE ARCADE_MODE plus gameMode2 TOKEN_RACE: the C-T-R letters are on the track and a
- *                 first place finish with all three is a win; 3 laps. No token is awarded.
+ *                 first place finish with all three is a win; 3 laps. No token is awarded; a win is
+ *                 recorded in the file CTR3DTOKENS (mask of levels 0-15), which with the Adventure
+ *                 profiles on the card decides the tokens track select shows.
  *   RELIC RACES   RELIC_RACE with ARCADE_MODE taken off for the race (the results screen and
  *                 overlay choice test ARCADE_MODE first), 3 laps. The best times are the memory
  *                 card's relic high scores (the table Adventure relic races record into and the
@@ -73,12 +75,26 @@ static inline u32 *NativeArcade_RelicRewards(void)
  * 3 platinum. 0 for a level that is not one of the 18 race tracks, and always 0 on PC. */
 int NativeRelic_TierOfTrack(s32 levID);
 
-/* Track select (game/230/MM_TrackSelect.c) in a RELIC RACES run: a spinning relic beside each track row
- * that has one, tinted with the track's highest tier. Every hook is a no-op outside that run and on PC. */
-void NativeRelic_TrackIconsInit(void);                                  /* menu entry: forgets the icons without freeing them */
-void NativeRelic_TrackIconsBegin(void);                                 /* each frame, before the rows: hides every icon, advances the spin */
-void NativeRelic_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row); /* one visible row: shows its icon if the track has a relic */
-void NativeRelic_TrackIconsEnd(void);                                   /* menu exit: frees the icons */
+/* Whether anyone on this save file has the track's CTR token (levels 0-15): any Adventure profile on the card holds its
+ * token bit, or an Arcade CTR CHALLENGE win with all three letters was recorded. Always 0 on PC. */
+int NativeCtrToken_Earned(s32 levID);
+
+/* The finish of a CTR CHALLENGE race with all three letters and first place (game/222.c, every results frame): records the
+ * win for the level unless a cheat that can change the race is on. Idempotent; reads the file once if it was not read yet and
+ * writes only in NativeCtrTokens_Flush. */
+void NativeArcade_OnCtrWin(void);
+
+/* Writes the recorded wins to CTR3DTOKENS when there are new ones: wherever a finished race is left (the results screen's
+ * exits) and at platform shutdown. Refused, and retried at the next call, while the file could not be read. */
+void NativeCtrTokens_Flush(void);
+
+/* Track select (game/230/MM_TrackSelect.c): a spinning icon beside each track row that has its mark, in RELIC RACES the relic
+ * tinted with the track's highest tier, in CTR CHALLENGE the CTR token tinted as Adventure tints it. Every hook is a no-op in
+ * every other mode and on PC. */
+void NativeArcade_TrackIconsInit(void);                                  /* menu entry: forgets the icons without freeing them */
+void NativeArcade_TrackIconsBegin(void);                                 /* each frame, before the rows: hides every icon, advances the spin */
+void NativeArcade_TrackIconsRow(s32 slot, s32 levID, const RECT16 *row); /* one visible row: shows its icon if the track has its mark */
+void NativeArcade_TrackIconsEnd(void);                                   /* menu exit: frees the icons */
 
 /* A cheat that can change a time (the best ghost's set) records nothing and awards no relic in a RELIC
  * RACES race. Takes back the finish frame's NEW HIGH SCORE / NEW BEST LAP, so retail's name entry and
