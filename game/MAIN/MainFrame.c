@@ -1,5 +1,4 @@
 #include <common.h>
-#include <native_arcade_modes.h>
 #include <platform/native_gte_capture.h>
 
 #if defined(CTR_NATIVE)
@@ -607,15 +606,6 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 				{
 					return;
 				}
-
-#if defined(CTR_NATIVE)
-				// A RELIC RACES run is recorded here without asking for a name or a memory card save
-				if (NativeArcade_RelicRace())
-				{
-					NativeRelic_Commit();
-					return;
-				}
-#endif
 
 				sVar2 = SubmitName_DrawMenu(0x140);
 

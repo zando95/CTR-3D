@@ -5,7 +5,6 @@
 #include "platform/native_audio.h"
 #include "platform/native_fatal.h"
 #include "platform/native_ghost_best.h"
-#include "platform/native_relic_records.h"
 #include "platform/native_glad.h"
 #include "platform/native_gpu.h"
 #include "platform/native_input.h"
@@ -662,9 +661,8 @@ void Platform_Shutdown(void)
 	s_platformInitialized = 0;
 
 	// Every exit funnels through here (HOME close -> SDL_EVENT_QUIT -> exit -> atexit, fatal errors, direct calls
-	// from main), so a best ghost or relic record still pending from a finished race is written before anything tears down.
+	// from main), so a best ghost still pending from a finished race is written before anything tears down.
 	NativeGhostBest_Flush();
-	NativeRelic_Flush();
 
 	// Drain and join the render worker before anything below tears down what
 	// its jobs touch. Posts STOP synchronously; no-op if it never came up.

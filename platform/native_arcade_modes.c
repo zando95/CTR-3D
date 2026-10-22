@@ -17,6 +17,9 @@
 
 int g_nativeArcadeMode = NATIVE_ARCADE_NONE;
 
+/* The relic bits a RELIC RACES race reads and sets in place of advProgress.rewards (NativeRelic_Prepare). */
+u32 g_nativeRelicRewards[NATIVE_RELIC_REWARD_WORDS];
+
 #ifdef __3DS__
 
 #define NAM_LNG_BOSS_RACES LNG_UNUSED_0F4
@@ -78,7 +81,57 @@ static s32 NativeArcade_HubOf(s32 levelID)
 	return hub;
 }
 
+#define NAM_RELIC_TIERS      3                                       /* sapphire, gold, platinum */
+#define NAM_RELIC_BEST_ENTRY (MEMCARD_HIGH_SCORE_ENTRIES_PER_MODE + 1) /* the relic half of a track's high scores: entry 0 the best lap, 1-5 the race times */
+
+CTR_STATIC_ASSERT(NATIVE_RELIC_REWARD_WORDS * 32 > ADV_REWARD_FIRST_PLATINUM_RELIC + MEMCARD_HIGH_SCORE_TRACK_COUNT);
+
+/* The relic bits of every track from the best time in the memory card's relic high scores (the table Adventure relic
+ * races record into): a relic is owned when the best time is at or under its RelicTime. Run when a RELIC RACES race is
+ * queued, so the HUD goal and the award test read the card as it is then. */
+static void NativeRelic_Prepare(void)
+{
+	for (s32 level = 0; level < MEMCARD_HIGH_SCORE_TRACK_COUNT; level++)
+	{
+		u32 bestTime = sdata->gameProgress.highScoreTracks[level].scoreEntry[NAM_RELIC_BEST_ENTRY].time;
+
+		for (s32 tier = 0; tier < NAM_RELIC_TIERS; tier++)
+		{
+			s32 bit = ADV_REWARD_FIRST_SAPPHIRE_RELIC + tier * ADV_REWARD_RELIC_TIER_STRIDE + level;
+
+			if (bestTime <= (u32)data.RelicTime[level * NAM_RELIC_TIERS + tier])
+			{
+				UNLOCK_ADV_BIT(g_nativeRelicRewards, bit);
+			}
+			else
+			{
+				g_nativeRelicRewards[MEMCARD_BIT_WORD(bit)] &= ~MEMCARD_BIT_MASK(bit);
+			}
+		}
+	}
+}
+
 #endif /* __3DS__ */
+
+int NativeRelic_SkipAward(void)
+{
+#ifdef __3DS__
+	struct GameTracker *gGT = sdata->gGT;
+
+	/* Adventure's own relic races are not ours to restrict */
+	if (!NativeArcade_RelicRace() || ((gGT->gameMode2 & NATIVE_GHOST_BEST_BLOCKING_CHEATS) == 0))
+	{
+		return 0;
+	}
+
+	/* the finish frame already flagged a record against the card's table: take the banners back */
+	gGT->newHighScoreIndex = -1;
+	gGT->gameModeEnd &= ~(NEW_HIGH_SCORE | NEW_BEST_LAP);
+	return 1;
+#else
+	return 0;
+#endif
+}
 
 int NativeArcade_BossOffHome(void)
 {
@@ -211,8 +264,8 @@ void NativeArcade_ArmRace(void)
 	}
 	else if (g_nativeArcadeMode == NATIVE_ARCADE_RELIC)
 	{
-		/* The records and the relic bits derived from them have to be in place before the race's HUD is
-		 * built. ARCADE_MODE goes for the race: the end-of-race overlay and results screen are chosen
+		/* The relic bits derived from the card's relic high scores have to be in place before the race's HUD
+		 * is built. ARCADE_MODE goes for the race: the end-of-race overlay and results screen are chosen
 		 * ARCADE_MODE first, which would hide the relic results (retail relic races never carry it). */
 		NativeRelic_Prepare();
 		sdata->Loading.OnBegin.AddBitsConfig0 |= RELIC_RACE;

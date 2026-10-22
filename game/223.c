@@ -66,7 +66,7 @@ void RR_EndEvent_UnlockAward(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	struct Driver *driver = gGT->drivers[0];
-	// Adventure's relics, or the player's own in a RELIC RACES race
+	// Adventure's relics, or in a RELIC RACES race the ones the card's relic high scores earn
 	u32 *rewards = NativeArcade_RelicRewards();
 	s32 levelID = gGT->levelID;
 	s32 raceTime = driver->timeElapsedInRace;
@@ -543,14 +543,6 @@ void RR_EndEvent_DrawHighScore(s16 startX, int startY, s16 scoreMode)
 
 	// 12 entries per track, 6 for Time Trial and 6 for Relic Race
 	struct HighScoreEntry *scoreEntries = &sdata->gameProgress.highScoreTracks[gGT->levelID].scoreEntry[RR_HIGH_SCORE_ENTRIES_PER_MODE * scoreMode];
-
-#if defined(CTR_NATIVE)
-	// the table the race was ranked against (GAMEPROG_GetPtrHighScoreTrack)
-	if (NativeArcade_RelicRace())
-	{
-		scoreEntries = sdata->ptrActiveHighScoreEntry;
-	}
-#endif
 
 	// === Naughty Dog Bug ===
 	// Start and End are the same

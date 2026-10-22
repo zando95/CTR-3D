@@ -1,5 +1,4 @@
 #include <common.h>
-#include <native_arcade_modes.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800265c0-0x8002689c.
 void GAMEPROG_AdvPercent(struct AdvProgress *adv)
@@ -313,17 +312,4 @@ void GAMEPROG_GetPtrHighScoreTrack(void)
 
 	sdata->ptrActiveHighScoreEntry =
 	    &sdata->gameProgress.highScoreTracks[gGT->levelID].scoreEntry[MEMCARD_HIGH_SCORE_ENTRIES_PER_MODE * ((gameMode1 & RELIC_RACE) != 0)];
-
-#ifdef CTR_NATIVE
-	// A RELIC RACES race ranks and records against its own table, not the retail profile's
-	if (NativeArcade_RelicRace())
-	{
-		struct HighScoreEntry *records = NativeRelic_Entries(gGT->levelID);
-
-		if (records != NULL)
-		{
-			sdata->ptrActiveHighScoreEntry = records;
-		}
-	}
-#endif
 }

@@ -414,7 +414,6 @@ void UI_RaceEnd_MenuProc(struct RectMenu *menu)
 	if (option != UI_RACE_END_OPTION_SAVE_GHOST)
 	{
 		NativeGhostBest_Flush();
-		NativeRelic_Flush();
 	}
 #endif
 
