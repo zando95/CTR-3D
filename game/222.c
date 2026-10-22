@@ -499,11 +499,6 @@ void AA_EndEvent_DrawMenu(void)
 			if (gGT->bossID == AA_OXIDE_SECOND_WIN_BOSS_ID)
 			{
 				adv->storyFlags |= ADV_REWARD_OXIDE_SECOND_WIN_FLAGS;
-
-#if defined(CTR_NATIVE)
-				// the Final Challenge also makes Nitros Oxide a playable racer (saved with the other unlocks)
-				UNLOCK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_OXIDE);
-#endif
 			}
 		}
 	}

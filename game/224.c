@@ -35,6 +35,11 @@ global_variable s32 s_rankString224 = 0x20; // " \0"
 extern struct RectMenu menu224;
 extern struct RectMenu menu224NoSave;
 
+#if defined(CTR_NATIVE)
+// platform/native_options.c -- the results-screen line announcing N. Oxide as unlocked, in the selected language.
+extern const char *NativeOptions_OxideUnlockedLine(void);
+#endif
+
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8009fdc8-0x800a04d4.
 void TT_EndEvent_DrawMenu(void)
 {
@@ -156,6 +161,11 @@ void TT_EndEvent_DrawMenu(void)
 
 		s32 nTropyEventFlags = NTROPY_JUST_BEAT | NTROPY_JUST_OPENED;
 
+#if defined(CTR_NATIVE)
+		// N. Oxide's unlock takes the same slot as N. Tropy's lines (one race sets one of them)
+		nTropyEventFlags |= NOXIDE_JUST_OPENED;
+#endif
+
 		if ((elapsedFrames > 0) &&
 
 		    // if just open, or beat, n tropy
@@ -168,6 +178,12 @@ void TT_EndEvent_DrawMenu(void)
 			{
 				nTropyString = lngStrings[LNG_N_TROPY_OPENED];
 			}
+#if defined(CTR_NATIVE)
+			else if ((gameModeEnd & NOXIDE_JUST_OPENED) != 0)
+			{
+				nTropyString = (char *)NativeOptions_OxideUnlockedLine();
+			}
+#endif
 			else
 			{
 				nTropyString = lngStrings[LNG_N_TROPY_BEATEN];

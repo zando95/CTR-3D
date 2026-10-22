@@ -210,6 +210,8 @@ enum GameModeEnd
 	NEW_HIGH_SCORE = 0x8000000,
 	NTROPY_JUST_BEAT = 0x10000000,
 
+	// native-only, never set by a retail path: this race's last Oxide ghost beat unlocked N. Oxide as a racer
+	NOXIDE_JUST_OPENED = 0x40000000,
 };
 
 enum GameMode2

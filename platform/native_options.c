@@ -164,6 +164,19 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
 };
 
+/* The results-screen line announcing N. Oxide as unlocked (game/224.c), per language in the order
+ * of s_optLangFile. The disc has no "unlocked" phrase in any language, only N. Tropy's "opened"
+ * line. Same text rules as s_optText; Spanish opens with '#', the PAL font's inverted "!". The
+ * big font fits 24 characters on one line. */
+static const char *const s_optOxideUnlocked[OPT_LANG_COUNT] = {
+    "N. OXIDE UNLOCKED!",
+    "N. OXIDE DEBLOQUE !",
+    "N. OXID FREIGESCHALTET!",
+    "N. OXIDE SBLOCCATO!",
+    "#N. OXIDE DESBLOQUEADO!",
+    "N. OXIDE ONTGRENDELD!",
+};
+
 /* The label strings the string table points at. RefreshLabels rewrites them in place. */
 #define OPT_LABEL_MAX 48
 static char s_optLabelBuf[OPT_TOGGLE_COUNT + 1][OPT_LABEL_MAX];
@@ -621,6 +634,16 @@ void NativeOptions_BootSettings(void)
 	{
 		NativeOptions_ApplyLanguage(saved);
 	}
+#endif
+}
+
+/* The N. Oxide unlock line for the selected language; PC has no language switch, so it is English. */
+const char *NativeOptions_OxideUnlockedLine(void)
+{
+#ifdef __3DS__
+	return s_optOxideUnlocked[s_optLangIndex];
+#else
+	return "N. OXIDE UNLOCKED!";
 #endif
 }
 

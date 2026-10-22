@@ -110,6 +110,16 @@ CheckOxideAllTracks:
 	if (GAMEPROG_CheckGhostsBeaten(2))
 	{
 		UNLOCK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_SCRAPBOOK);
+
+#ifdef CTR_NATIVE
+		// Every Oxide ghost beaten also makes Nitros Oxide a playable racer. The results screen announces
+		// it (game/224.c) only on the race that sets the bit, not on later beats or after ROSWELL.
+		if (!CHECK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_OXIDE))
+		{
+			UNLOCK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_OXIDE);
+			gGT->gameModeEnd |= NOXIDE_JUST_OPENED;
+		}
+#endif
 	}
 }
 
