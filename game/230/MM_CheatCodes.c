@@ -5,7 +5,7 @@
 /*
  * Native-only flag easter eggs. The style selector lives
  * platform-side (native_gpu.c): 0 retail checkers, 1 pride stripes, 2 purple,
- * 3 blue (set by ARROW, below, while Retro-Fueled mode is on).
+ * 3 blue (ARROW, below, while Retro-Fueled mode is on).
  *
  * MM_Cheat_SpyroFlag REPLACES MainKillGame_LaunchSpyro2 as the SOAR handler,
  * and doing so fixes a hard-lock rather than merely repurposing a dead code:
@@ -175,18 +175,35 @@ void MM_Cheat_IcyTracks(void)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800ace00-0x800ace3c.
 void MM_Cheat_SuperTurboPads(void)
 {
-	sdata->gGT->gameMode2 |= CHEAT_TURBOPAD;
-
 #ifdef CTR_NATIVE
-	// Retro-Fueled: the cheat also turns the menu flag blue (flag style 3). The last flag cheat entered wins.
+	// With Retro-Fueled, ARROW is a toggle: entering it again turns the super pads and the mode off.
+	// While on, the menu flag is blue (flag style 3); the last flag cheat entered wins, so switching
+	// off restores retail checkers only if the flag is still blue.
 	if (g_retroFueled)
 	{
 		extern int g_dbg_flagStyle;
 
-		g_dbg_flagStyle = 3;
+		if ((sdata->gGT->gameMode2 & CHEAT_TURBOPAD) != 0)
+		{
+			sdata->gGT->gameMode2 &= ~CHEAT_TURBOPAD;
+
+			if (g_dbg_flagStyle == 3)
+			{
+				g_dbg_flagStyle = 0;
+			}
+		}
+		else
+		{
+			sdata->gGT->gameMode2 |= CHEAT_TURBOPAD;
+			g_dbg_flagStyle = 3;
+		}
+
+		OtherFX_Play(MM_CHEAT_SUCCESS_SFX, 1);
+		return;
 	}
 #endif
 
+	sdata->gGT->gameMode2 |= CHEAT_TURBOPAD;
 	OtherFX_Play(MM_CHEAT_SUCCESS_SFX, 1);
 }
 
