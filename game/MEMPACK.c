@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include <platform/native_log.h>
+#endif
+
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 PS1 path 0x8003e740-0x8003e80c; CTR_NATIVE uses host RAM.
 void MEMPACK_Init(int ramSize)
@@ -86,6 +90,11 @@ void *MEMPACK_AllocMem(int allocSize)
 
 	if (MEMPACK_GetFreeBytes() < allocSize)
 	{
+#if defined(CTR_NATIVE)
+		// The spin below is a hard freeze with nothing on screen; this line is its only trace.
+		Platform_LogError("[MEMPACK] out of memory: lvl=%d request=%d free=%d pack=%d\n", (sdata->gGT != NULL) ? (int)sdata->gGT->levelID : -1, allocSize,
+		                  MEMPACK_GetFreeBytes(), (int)(ptrMempack - &sdata->mempack[0]));
+#endif
 		CTR_ErrorScreen(0xFF, 0, 0);
 		for (;;)
 		{

@@ -12,11 +12,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-// The NTSC-U 926 mempack window inside a 2 MiB backing store: retail-sized, so
-// code that silently needs more memory than the PS1 had fails here too.
-#define CTR_NATIVE_MEMPACK_BUFFER_SIZE  0x200000u
-#define CTR_NATIVE_MEMPACK_START_OFFSET 0xba9f0u
-#define CTR_NATIVE_MEMPACK_SIZE         0x144e10u
+// The NTSC-U 926 mempack window inside a 2 MiB backing store, ending where
+// retail's does, plus 64 KiB of headroom below its start. Retail fills this
+// window almost exactly on its largest 1P tracks (Polar Pass, Mystery Caves),
+// and N. Oxide's racer files are up to ~27 KiB larger than any retail racer's
+// (hi/med/low models, 1P and 4P arcade packs), so a retail-sized window cannot
+// hold him there. MEMPACK_AllocMem stops the game when a request does not fit.
+#define CTR_NATIVE_MEMPACK_BUFFER_SIZE   0x200000u
+#define CTR_NATIVE_MEMPACK_RETAIL_START  0xba9f0u
+#define CTR_NATIVE_MEMPACK_RETAIL_SIZE   0x144e10u
+#define CTR_NATIVE_MEMPACK_HEADROOM      0x10000u
+#define CTR_NATIVE_MEMPACK_START_OFFSET  (CTR_NATIVE_MEMPACK_RETAIL_START - CTR_NATIVE_MEMPACK_HEADROOM)
+#define CTR_NATIVE_MEMPACK_SIZE          (CTR_NATIVE_MEMPACK_RETAIL_SIZE + CTR_NATIVE_MEMPACK_HEADROOM)
 
 union NativeScratchpadStorage
 {

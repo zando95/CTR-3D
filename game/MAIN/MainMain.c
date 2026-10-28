@@ -149,6 +149,11 @@ u32 main(void)
 			DropRain_Reset(gGT);
 			GAMEPROG_GetPtrHighScoreTrack();
 			MainInit_FinalizeInit(gGT);
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+			// Low-water mark of the main arena: the level and race init have allocated everything they will.
+			Platform_LogInstrument("[MEMPACK] level loaded: lvl=%d lod=%d p1=%d free=%d\n", (int)gGT->levelID, (int)sdata->levelLOD, (int)data.characterIDs[0],
+			                       (int)((u32)sdata->mempack[LOAD_MAIN_PACK_INDEX].lastFreeByte - (u32)sdata->mempack[LOAD_MAIN_PACK_INDEX].firstFreeByte));
+#endif
 			GAMEPAD_GetNumConnected(gGS);
 
 			sdata->boolSoundPaused = 0;
