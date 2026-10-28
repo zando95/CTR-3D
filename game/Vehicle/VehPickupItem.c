@@ -357,7 +357,7 @@ struct MaskHeadWeapon *VehPickupItem_MaskUseWeapon(struct Driver *driver, b32 bo
 	maskObj->rot.x = MASK_INITIAL_ROT_X;
 	maskObj->rot.y = 0;
 	maskObj->rot.z = 0;
-	maskObj->scale = (s16)OxideFit_Grow(data.characterIDs[driver->driverID], MASK_HEAD_SCALE_NORMAL, OXIDE_FIT_MASK_AT_FULL_SIZE);
+	maskObj->scale = (s16)OxideFit_Grow(driver, MASK_HEAD_SCALE_NORMAL, OXIDE_FIT_MASK_AT_FULL_SIZE);
 
 	return maskObj;
 }

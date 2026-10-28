@@ -1457,6 +1457,20 @@ static void RenderBucket_BuildM3x3(struct Instance *inst, struct ModelHeader *mh
 	scaleX = inst->scale.x;
 	scaleY = inst->scale.y;
 	scaleZ = inst->scale.z;
+#ifdef CTR_NATIVE
+	{
+		// An Oxide craft raced below his model's size is shrunk per craft here, so the boss and the disc's own
+		// ghost, which share the model, keep its size.
+		s32 oxideSize = OxideFit_InstanceSize(inst);
+
+		if ((oxideSize != 0) && (oxideSize != FP_ONE))
+		{
+			scaleX = (scaleX * oxideSize) >> FRACTIONAL_BITS;
+			scaleY = (scaleY * oxideSize) >> FRACTIONAL_BITS;
+			scaleZ = (scaleZ * oxideSize) >> FRACTIONAL_BITS;
+		}
+	}
+#endif
 	if ((inst->flags & PIXEL_LOD) != 0)
 	{
 		int pixelScale = RenderBucket_MipsAdd(viewDepth >> 1, 0x1000);

@@ -133,6 +133,27 @@ static void VehTurbo_TransformOffset(struct Instance *driverInst, s16 x, s16 y, 
 	CTR_GteStoreIR(out);
 }
 
+#if defined(CTR_NATIVE)
+// Places a boost flame. An Oxide craft has it leave the pipe opening in the pose it is drawing (pipe 0 is the
+// flame drawn unmirrored); any other racer uses the kart offsets it was given.
+static void VehTurbo_PlaceFire(struct Instance *driverInst, int pipe, s16 x, s16 y, s16 z, s32 *out)
+{
+	s32 oxidePipes[2][3];
+
+	if (OxideFit_PipeOffsets(driverInst, oxidePipes))
+	{
+		// pipe offsets are in emitter units; the flame transform takes world units
+		x = OxideFit_ToS16(oxidePipes[pipe][0] >> 8);
+		y = OxideFit_ToS16(oxidePipes[pipe][1] >> 8);
+		z = OxideFit_ToS16(oxidePipes[pipe][2] >> 8);
+	}
+
+	VehTurbo_TransformOffset(driverInst, x, y, z, out);
+}
+#else
+#define VehTurbo_PlaceFire(driverInst, pipe, x, y, z, out) VehTurbo_TransformOffset((driverInst), (x), (y), (z), (out))
+#endif
+
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800693c8-0x80069bb0.
 void VehTurbo_ThTick(struct Thread *turboThread)
 {
@@ -215,9 +236,9 @@ void VehTurbo_ThTick(struct Thread *turboThread)
 	instance->matrix.m[2][1] = (s16)(instanceDriver->matrix.m[2][1] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 	instance->matrix.m[2][2] = (s16)(instanceDriver->matrix.m[2][2] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 
-	VehTurbo_TransformOffset(instanceDriver, instanceDriver->scale.x * TURBO_FIRE_LEFT_X_NUMERATOR >> TURBO_FIRE_LEFT_X_SHIFT,
-	                         instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
-	                         instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &instance->matrix.t[0]);
+	VehTurbo_PlaceFire(instanceDriver, 0, instanceDriver->scale.x * TURBO_FIRE_LEFT_X_NUMERATOR >> TURBO_FIRE_LEFT_X_SHIFT,
+	                   instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
+	                   instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &instance->matrix.t[0]);
 
 	// matrix of second turbo instance, negate X axis
 	turbo->inst->matrix.m[0][0] = (s16)(-(int)instanceDriver->matrix.m[0][0] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
@@ -230,9 +251,9 @@ void VehTurbo_ThTick(struct Thread *turboThread)
 	turbo->inst->matrix.m[2][1] = (s16)(instanceDriver->matrix.m[2][1] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 	turbo->inst->matrix.m[2][2] = (s16)(instanceDriver->matrix.m[2][2] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 
-	VehTurbo_TransformOffset(instanceDriver, instanceDriver->scale.x * TURBO_FIRE_RIGHT_X_NUMERATOR >> TURBO_FIRE_RIGHT_X_SHIFT,
-	                         instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
-	                         instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &turbo->inst->matrix.t[0]);
+	VehTurbo_PlaceFire(instanceDriver, 1, instanceDriver->scale.x * TURBO_FIRE_RIGHT_X_NUMERATOR >> TURBO_FIRE_RIGHT_X_SHIFT,
+	                   instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
+	                   instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &turbo->inst->matrix.t[0]);
 
 	// decrease turbo visibility cooldown by elapsed milliseconds per frame, ~32
 	s16 elapsedTime = turbo->fireVisibilityCooldown - gGT->elapsedTimeMS;

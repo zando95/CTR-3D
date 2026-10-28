@@ -48,6 +48,20 @@ enum
 
 	VEH_GROUND_SHADOW_ICON_LEFT = 0,
 	VEH_GROUND_SHADOW_ICON_RIGHT = 1,
+
+	// A round shadow is a fan of kite quads around the centre: ring points every 30 degrees, two segments a quad.
+	// The point count is padded to a multiple of three for the three-vertex GTE projection.
+	VEH_GROUND_SHADOW_ROUND_SEGMENTS = 12,
+	VEH_GROUND_SHADOW_ROUND_QUADS = VEH_GROUND_SHADOW_ROUND_SEGMENTS / 2,
+	VEH_GROUND_SHADOW_ROUND_POINTS = VEH_GROUND_SHADOW_ROUND_SEGMENTS + 3,
+	VEH_GROUND_SHADOW_ROUND_TRIG_SHIFT = 12,
+
+	// The kart shadow texture is a silhouette with a flat, fully shaded interior; a round shadow samples a block
+	// of that interior (offsets from the icon's top-left corner) so it takes the same colour and blending.
+	VEH_GROUND_SHADOW_SOLID_U = 24,
+	VEH_GROUND_SHADOW_SOLID_V = 2,
+	VEH_GROUND_SHADOW_SOLID_W = 8,
+	VEH_GROUND_SHADOW_SOLID_H = 6,
 };
 
 /// @brief Copies texture layout data from icon to arbitrary mem address. Particularly used to copy kart shadow textures to scratchpad.
@@ -167,10 +181,9 @@ static void VehGroundShadow_LoadRtptVectors(SVec3 points[VEH_GROUND_SHADOW_NUM_P
 	MTC2((u32)(s32)points[start + 2].z, 5);
 }
 
-static void VehGroundShadow_ProjectPoints(SVec3 points[VEH_GROUND_SHADOW_NUM_POINTS], u32 sxy[VEH_GROUND_SHADOW_NUM_POINTS],
-                                          s32 depth[VEH_GROUND_SHADOW_NUM_POINTS])
+static void VehGroundShadow_ProjectRange(SVec3 *points, u32 *sxy, s32 *depth, int count)
 {
-	for (int i = 0; i < VEH_GROUND_SHADOW_NUM_POINTS; i += 3)
+	for (int i = 0; i < count; i += 3)
 	{
 		VehGroundShadow_LoadRtptVectors(points, i);
 		gte_rtpt_b();
@@ -182,6 +195,12 @@ static void VehGroundShadow_ProjectPoints(SVec3 points[VEH_GROUND_SHADOW_NUM_POI
 		depth[i + 1] = (s32)MFC2(18);
 		depth[i + 2] = (s32)MFC2(19);
 	}
+}
+
+static void VehGroundShadow_ProjectPoints(SVec3 points[VEH_GROUND_SHADOW_NUM_POINTS], u32 sxy[VEH_GROUND_SHADOW_NUM_POINTS],
+                                          s32 depth[VEH_GROUND_SHADOW_NUM_POINTS])
+{
+	VehGroundShadow_ProjectRange(points, sxy, depth, VEH_GROUND_SHADOW_NUM_POINTS);
 }
 
 static void VehGroundShadow_BuildEntry(struct VehGroundShadowEntry *entry, struct Driver *driver, int numPlayers)
@@ -233,12 +252,19 @@ static void VehGroundShadow_TransformLocalAxes(struct VehGroundShadowEntry *entr
 	localZ0 = (height * VEH_GROUND_SHADOW_LOCAL_Z0_FACTOR) >> VEH_GROUND_SHADOW_LOCAL_SCALE_SHIFT;
 	localZ1 = (height * VEH_GROUND_SHADOW_LOCAL_Z1_FACTOR) >> VEH_GROUND_SHADOW_LOCAL_SCALE_SHIFT;
 	{
-		// the shadow is sized for a kart; Oxide's craft is larger
-		s32 characterID = data.characterIDs[driver->driverID];
-
-		localX = OxideFit_Grow(characterID, localX, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
-		localZ0 = OxideFit_Grow(characterID, localZ0, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
-		localZ1 = OxideFit_Grow(characterID, localZ1, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+		// the shadow is sized for a kart; Oxide's craft is larger, at the size this craft is drawn at
+		localX = OxideFit_Grow(driver, localX, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+		localZ0 = OxideFit_Grow(driver, localZ0, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+		localZ1 = OxideFit_Grow(driver, localZ1, OXIDE_FIT_SHADOW_AT_FULL_SIZE);
+#if defined(CTR_NATIVE)
+		if (OxideFit_DriverSize(driver) != 0)
+		{
+			// and round: one radius every way, the mean of the grown kart shadow's
+			localX = (localX + localZ0 + localZ1) / 3;
+			localZ0 = localX;
+			localZ1 = localX;
+		}
+#endif
 	}
 	local.x = (s16)localX;
 	local.y = 0;
@@ -317,15 +343,9 @@ static void VehGroundShadow_WriteUv(POLY_FT4 *poly, const struct TextureLayout *
 	CtrGpu_WritePackedUV(&poly->u3, VehGroundShadow_ReadHalf(tex, offsetof(struct TextureLayout, u3)));
 }
 
-static void VehGroundShadow_EmitQuad(u32 **primCursor, u32 *otBase, const struct TextureLayout *texture, u32 color, u32 sxy[VEH_GROUND_SHADOW_NUM_POINTS],
-                                     s32 depth, s8 depthBias, int quadIndex)
+static void VehGroundShadow_EmitPacket(u32 **primCursor, u32 *otBase, const struct TextureLayout *texture, u32 color, const u32 corners[4], s32 depth,
+                                       s8 depthBias)
 {
-	static const u8 quadPointIndex[VEH_GROUND_SHADOW_NUM_QUADS][4] = {
-	    {8, 0, 1, 2},
-	    {8, 0, 7, 6},
-	    {4, 0, 3, 2},
-	    {4, 0, 5, 6},
-	};
 	POLY_FT4 *poly = (POLY_FT4 *)*primCursor;
 	int depthIndex = (depth >> 8) + depthBias;
 	u32 *ot;
@@ -340,10 +360,10 @@ static void VehGroundShadow_EmitQuad(u32 **primCursor, u32 *otBase, const struct
 	}
 
 	CtrGpu_WriteColorCode(&poly->r0, color);
-	CtrGpu_WritePackedXY(&poly->x0, sxy[quadPointIndex[quadIndex][0]]);
-	CtrGpu_WritePackedXY(&poly->x1, sxy[quadPointIndex[quadIndex][1]]);
-	CtrGpu_WritePackedXY(&poly->x2, sxy[quadPointIndex[quadIndex][2]]);
-	CtrGpu_WritePackedXY(&poly->x3, sxy[quadPointIndex[quadIndex][3]]);
+	CtrGpu_WritePackedXY(&poly->x0, corners[0]);
+	CtrGpu_WritePackedXY(&poly->x1, corners[1]);
+	CtrGpu_WritePackedXY(&poly->x2, corners[2]);
+	CtrGpu_WritePackedXY(&poly->x3, corners[3]);
 	VehGroundShadow_WriteUv(poly, texture);
 
 	ot = &otBase[depthIndex];
@@ -351,6 +371,82 @@ static void VehGroundShadow_EmitQuad(u32 **primCursor, u32 *otBase, const struct
 
 	*primCursor = (u32 *)(poly + 1);
 }
+
+static void VehGroundShadow_EmitQuad(u32 **primCursor, u32 *otBase, const struct TextureLayout *texture, u32 color, u32 sxy[VEH_GROUND_SHADOW_NUM_POINTS],
+                                     s32 depth, s8 depthBias, int quadIndex)
+{
+	static const u8 quadPointIndex[VEH_GROUND_SHADOW_NUM_QUADS][4] = {
+	    {8, 0, 1, 2},
+	    {8, 0, 7, 6},
+	    {4, 0, 3, 2},
+	    {4, 0, 5, 6},
+	};
+	u32 corners[4];
+
+	corners[0] = sxy[quadPointIndex[quadIndex][0]];
+	corners[1] = sxy[quadPointIndex[quadIndex][1]];
+	corners[2] = sxy[quadPointIndex[quadIndex][2]];
+	corners[3] = sxy[quadPointIndex[quadIndex][3]];
+	VehGroundShadow_EmitPacket(primCursor, otBase, texture, color, corners, depth, depthBias);
+}
+
+#if defined(CTR_NATIVE)
+// Oxide's craft is round, so his shadow is a disc on the ground plane instead of the kart silhouette. It is built
+// from the kart shadow's own axes (all one radius for him) and drawn the way the kart shadow is: the same
+// texture colour and subtractive blend, the same depth slot, one fade colour.
+static void VehGroundShadow_EmitRound(u32 **primCursor, u32 *otBase, const struct TextureLayout *texture, u32 color, const struct VehGroundShadowEntry *entry,
+                                      s32 baseX, s32 baseY, s32 baseZ)
+{
+	static const s16 ringCos[VEH_GROUND_SHADOW_ROUND_SEGMENTS] = {4096, 3547, 2048, 0, -2048, -3547, -4096, -3547, -2048, 0, 2048, 3547};
+	static const s16 ringSin[VEH_GROUND_SHADOW_ROUND_SEGMENTS] = {0, 2048, 3547, 4096, 3547, 2048, 0, -2048, -3547, -4096, -3547, -2048};
+	SVec3 points[VEH_GROUND_SHADOW_ROUND_POINTS];
+	u32 sxy[VEH_GROUND_SHADOW_ROUND_POINTS];
+	s32 depth[VEH_GROUND_SHADOW_ROUND_POINTS];
+	struct TextureLayout solid;
+	const SVec3 *axisX = &entry->local[0];
+	const SVec3 *axisZ = &entry->local[1];
+
+	points[0].x = (s16)baseX;
+	points[0].y = (s16)baseY;
+	points[0].z = (s16)baseZ;
+
+	for (int i = 0; i < VEH_GROUND_SHADOW_ROUND_SEGMENTS; i++)
+	{
+		points[1 + i].x = (s16)(baseX + (((ringCos[i] * axisX->x) + (ringSin[i] * axisZ->x)) >> VEH_GROUND_SHADOW_ROUND_TRIG_SHIFT));
+		points[1 + i].y = (s16)(baseY + (((ringCos[i] * axisX->y) + (ringSin[i] * axisZ->y)) >> VEH_GROUND_SHADOW_ROUND_TRIG_SHIFT));
+		points[1 + i].z = (s16)(baseZ + (((ringCos[i] * axisX->z) + (ringSin[i] * axisZ->z)) >> VEH_GROUND_SHADOW_ROUND_TRIG_SHIFT));
+	}
+
+	for (int i = VEH_GROUND_SHADOW_ROUND_SEGMENTS + 1; i < VEH_GROUND_SHADOW_ROUND_POINTS; i++)
+	{
+		points[i] = points[0];
+	}
+
+	VehGroundShadow_ProjectRange(points, sxy, depth, VEH_GROUND_SHADOW_ROUND_POINTS);
+
+	solid = *texture;
+	solid.u0 = (u8)(texture->u0 + VEH_GROUND_SHADOW_SOLID_U);
+	solid.v0 = (u8)(texture->v0 + VEH_GROUND_SHADOW_SOLID_V);
+	solid.u1 = (u8)(solid.u0 + VEH_GROUND_SHADOW_SOLID_W);
+	solid.v1 = solid.v0;
+	solid.u2 = solid.u0;
+	solid.v2 = (u8)(solid.v0 + VEH_GROUND_SHADOW_SOLID_H);
+	solid.u3 = solid.u1;
+	solid.v3 = solid.v2;
+
+	for (int quad = 0; quad < VEH_GROUND_SHADOW_ROUND_QUADS; quad++)
+	{
+		u32 corners[4];
+
+		// same corner order as the kart quads: ring, centre, ring, ring
+		corners[0] = sxy[1 + (quad * 2)];
+		corners[1] = sxy[0];
+		corners[2] = sxy[2 + (quad * 2)];
+		corners[3] = sxy[1 + (((quad * 2) + 2) % VEH_GROUND_SHADOW_ROUND_SEGMENTS)];
+		VehGroundShadow_EmitPacket(primCursor, otBase, &solid, color, corners, depth[0], entry->depthBias);
+	}
+}
+#endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8005b720-0x8005c120.
 void VehGroundShadow_Main(void)
@@ -527,6 +623,14 @@ void VehGroundShadow_Main(void)
 					continue;
 				}
 			}
+
+#if defined(CTR_NATIVE)
+			if (OxideFit_InstanceSize(entry->inst) != 0)
+			{
+				VehGroundShadow_EmitRound(&prim, otBase, shadowTex0, color, entry, scaledX, scaledY, scaledZ);
+				continue;
+			}
+#endif
 
 			VehGroundShadow_BuildProjectionPoints(entry, scaledX, scaledY, scaledZ, points);
 			VehGroundShadow_ProjectPoints(points, sxy, depth);
