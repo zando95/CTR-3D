@@ -7,13 +7,13 @@
  * On PC every hook is a passthrough: replays navigate these menus by row position, so the PC row
  * layout is behavioral surface.
  *
- * BOSS RACES has no retail string. Its label is written into LNG_UNUSED_0F4, a slot of the loaded
- * string table that no retail code and no other native menu reads. Every language load rebuilds
- * the table, so the text is reassigned from NativeArcade_OnLanguage and again each frame the rows
+ * BOSS RACES has no retail string. Its label lives in a native string slot (include/native_lng.h),
+ * reassigned from NativeArcade_OnLanguage for the loaded language and again each frame the rows
  * are served. */
 
 #include <common.h>
 #include <native_arcade_modes.h>
+#include <native_lng.h>
 #include <platform/native_log.h>
 #include <platform/native_memcard.h>
 
@@ -26,7 +26,7 @@ u32 g_nativeRelicRewards[NATIVE_RELIC_REWARD_WORDS];
 
 #ifdef __3DS__
 
-#define NAM_LNG_BOSS_RACES LNG_UNUSED_0F4
+#define NAM_LNG_BOSS_RACES NATIVE_LNG_BOSS_RACES
 #define NAM_LANG_COUNT     6
 #define NAM_RETAIL_ROWS    2 /* SINGLE, CUP */
 
@@ -59,7 +59,7 @@ static struct MenuRow s_namRaceTypeRows[] = {
 
 static void NativeArcade_InstallStrings(void)
 {
-	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= NAM_LNG_BOSS_RACES))
+	if (!NativeLng_Ready())
 	{
 		return;
 	}

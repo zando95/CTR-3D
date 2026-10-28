@@ -7,6 +7,7 @@
 #if defined(CTR_NATIVE)
 #include <platform/native_audio.h>
 #include <native_arcade_modes.h>
+#include <native_lng.h>
 // platform/native_options.c -- nonzero when the platform re-reads a language file at runtime
 // (local-extern idiom).
 extern int NativeOptions_RuntimeLanguageSwitch(void);
@@ -286,7 +287,10 @@ void LOAD_LangFile(int bigfilePtr, int lang)
 	// speech follows the language too: a PAL voice pack from mods/pal-voices, if installed
 	NativeAudio_SetVoiceLanguage(lang);
 
-	// the rebuilt string table lost the Arcade-menu labels written into it
+	// native menu text lives past the retail strings, in a longer copy of the table
+	NativeLng_Extend();
+
+	// the native menu labels follow the language
 	NativeArcade_OnLanguage(lang);
 #endif
 #if BUILD == EurRetail

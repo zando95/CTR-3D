@@ -14,10 +14,9 @@
  * line per s_optToggles row, keyed by its saveKey), the language in <base dir>/language.cfg.
  * Only a menu flip saves; dumpreq writes the same globals and never touches either file.
  *
- * Row labels live in retail's own string table: LNG_UNUSED_0E4..0E9 and LNG_UNUSED_0ED are real
- * slots inside the loaded LANG range that no retail code references, repointed
- * at boot, on every toggle, and again after every language switch (LOAD_LangFile
- * rebuilds the whole table). Their text comes from s_optText, one entry per language. s_optMenu is not checkpoint-tracked (native_checkpoint.c
+ * Row labels live in the native string slots past the retail table (include/native_lng.h),
+ * repointed at boot, on every toggle, and again after every language switch. Their text comes
+ * from s_optText, one entry per language. s_optMenu is not checkpoint-tracked (native_checkpoint.c
  * relocates only its enumerated regions); acceptable because the PC build, the
  * only one with F5/F8 checkpoints, never links this menu into the hierarchy.
  */
@@ -66,17 +65,17 @@ struct NativeOptToggle
  * Every row is persisted to options.cfg under its saveKey (a flag holds 0 or 1); saveKeys must be
  * unique and stay stable, since they name the setting in files already on players' SD cards. */
 static struct NativeOptToggle s_optToggles[] = {
-    {LNG_UNUSED_0E5, &g_pentaPal, NULL, "pentapal"},
-    {LNG_UNUSED_0E6, &g_reservesMeter, NULL, "reserves"},
-    {LNG_UNUSED_0E7, &g_dbg_btmMap, NULL, "btmmap"},
-    {LNG_UNUSED_0ED, &g_ghostBestEnabled, NULL, "bestghost"},
+    {NATIVE_LNG_OPT_PENTA_PAL, &g_pentaPal, NULL, "pentapal"},
+    {NATIVE_LNG_OPT_RESERVES, &g_reservesMeter, NULL, "reserves"},
+    {NATIVE_LNG_OPT_BOTTOM_MAP, &g_dbg_btmMap, NULL, "btmmap"},
+    {NATIVE_LNG_OPT_BEST_GHOST, &g_ghostBestEnabled, NULL, "bestghost"},
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
-    {LNG_UNUSED_0E8, &g_dbg_trackBilinear, N3DS_TrackAtlas_ApplyFilter, "bilinear"},
+    {NATIVE_LNG_OPT_TEXTURE_FILTER, &g_dbg_trackBilinear, N3DS_TrackAtlas_ApplyFilter, "bilinear"},
 #endif
 };
 #define OPT_TOGGLE_COUNT ((s32)(sizeof(s_optToggles) / sizeof(s_optToggles[0])))
 
-/* Language selector: the row right after the toggles (LNG_UNUSED_0E9). Confirm cycles it.
+/* Language selector: the row right after the toggles (NATIVE_LNG_OPT_LANGUAGE). Confirm cycles it.
  *
  * File indices are LOAD_LangFile's: 0 ja, 1 en (NTSC-U), 2 en2 (PAL), 3 fr, 4 de, 5 it, 6 es, 7 nl.
  * Entry 0 is the NTSC-U English file the game boots with, so the default is exactly the old
@@ -297,7 +296,7 @@ static void NativeOptions_ApplyLanguage(s32 langIndex)
 	s_optLangIndex = langIndex;
 	LOAD_LangFile((int)sdata->ptrBigfile1, s_optLangFile[s_optLangIndex]);
 
-	/* LOAD_LangFile rebuilt the string table, dropping every slot repointed at boot */
+	/* the labels are per language: write the new language's text into the native slots */
 	NativeOptions_InstallStrings();
 }
 
@@ -398,18 +397,18 @@ static void NativeOptions_LoadSettings(void)
 /* Nav targets must mirror s_optToggles row for row; the terminator is not a
  * valid nav target, so the last real row's down points at itself. */
 static struct MenuRow s_optMenuRows[] = {
-    {LNG_UNUSED_0E5, 0, 1, 0, 0},
+    {NATIVE_LNG_OPT_PENTA_PAL, 0, 1, 0, 0},
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
-    {LNG_UNUSED_0E6, 0, 2, 1, 1},
-    {LNG_UNUSED_0E7, 1, 3, 2, 2},
-    {LNG_UNUSED_0ED, 2, 4, 3, 3},
-    {LNG_UNUSED_0E8, 3, 5, 4, 4},
-    {LNG_UNUSED_0E9, 4, 5, 5, 5}, /* language selector = row OPT_TOGGLE_COUNT */
+    {NATIVE_LNG_OPT_RESERVES, 0, 2, 1, 1},
+    {NATIVE_LNG_OPT_BOTTOM_MAP, 1, 3, 2, 2},
+    {NATIVE_LNG_OPT_BEST_GHOST, 2, 4, 3, 3},
+    {NATIVE_LNG_OPT_TEXTURE_FILTER, 3, 5, 4, 4},
+    {NATIVE_LNG_OPT_LANGUAGE, 4, 5, 5, 5}, /* language selector = row OPT_TOGGLE_COUNT */
 #else
-    {LNG_UNUSED_0E6, 0, 2, 1, 1},
-    {LNG_UNUSED_0E7, 1, 3, 2, 2},
-    {LNG_UNUSED_0ED, 2, 4, 3, 3},
-    {LNG_UNUSED_0E9, 3, 4, 4, 4}, /* language selector = row OPT_TOGGLE_COUNT */
+    {NATIVE_LNG_OPT_RESERVES, 0, 2, 1, 1},
+    {NATIVE_LNG_OPT_BOTTOM_MAP, 1, 3, 2, 2},
+    {NATIVE_LNG_OPT_BEST_GHOST, 2, 4, 3, 3},
+    {NATIVE_LNG_OPT_LANGUAGE, 3, 4, 4, 4}, /* language selector = row OPT_TOGGLE_COUNT */
 #endif
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
@@ -419,8 +418,7 @@ static void NativeOptions_RefreshLabels(void)
 	const struct NativeOptText *text = &s_optText[s_optLangIndex];
 	s32 stateWidth = NativeOptions_VisibleLen(text->stateOff);
 
-	/* every slot written below must exist in the loaded language's string table */
-	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= LNG_UNUSED_0ED))
+	if (!NativeLng_Ready())
 	{
 		return;
 	}
@@ -437,7 +435,7 @@ static void NativeOptions_RefreshLabels(void)
 	}
 
 	NativeOptions_Compose(s_optLabelBuf[OPT_TOGGLE_COUNT], OPT_LABEL_MAX, text->languageName, text->langNames[s_optLangIndex], text->langNameWidth);
-	sdata->lngStrings[LNG_UNUSED_0E9] = s_optLabelBuf[OPT_TOGGLE_COUNT];
+	sdata->lngStrings[NATIVE_LNG_OPT_LANGUAGE] = s_optLabelBuf[OPT_TOGGLE_COUNT];
 }
 
 static void NativeOptions_MenuProc(struct RectMenu *menu)
@@ -534,7 +532,7 @@ static struct MenuRow s_optMainRowsBasic[] = {
     {LNG_TIME_TRIAL, 0, 2, 1, 1},
     {LNG_ARCADE, 1, 3, 2, 2},
     {LNG_HIGH_SCORE, 2, 4, 3, 3},
-    {LNG_UNUSED_0E4, 3, 5, 4, 4},
+    {NATIVE_LNG_OPTIONS_TITLE, 3, 5, 4, 4},
     {LNG_QUIT, 4, 5, 5, 5},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
@@ -545,7 +543,7 @@ static struct MenuRow s_optMainRowsScrapbook[] = {
     {LNG_ARCADE, 1, 3, 2, 2},
     {LNG_HIGH_SCORE, 2, 4, 3, 3},
     {LNG_SCRAPBOOK, 3, 5, 4, 4},
-    {LNG_UNUSED_0E4, 4, 6, 5, 5},
+    {NATIVE_LNG_OPTIONS_TITLE, 4, 6, 5, 5},
     {LNG_QUIT, 5, 6, 6, 6},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
@@ -574,7 +572,7 @@ struct MenuRow *NativeOptions_MainMenuRows(struct MenuRow *rows)
 s32 NativeOptions_HandleMainMenuChoice(struct RectMenu *mainMenu, s32 choose)
 {
 #ifdef __3DS__
-	if (choose == LNG_UNUSED_0E4)
+	if (choose == NATIVE_LNG_OPTIONS_TITLE)
 	{
 		mainMenu->ptrNextBox_InHierarchy = &s_optMenu;
 		mainMenu->state |= DRAW_NEXT_MENU_IN_HIERARCHY;
@@ -598,12 +596,12 @@ s32 NativeOptions_HandleMainMenuChoice(struct RectMenu *mainMenu, s32 choose)
 void NativeOptions_InstallStrings(void)
 {
 #ifdef __3DS__
-	if ((sdata->lngStrings == NULL) || (sdata->numLngStrings <= LNG_UNUSED_0ED))
+	if (!NativeLng_Ready())
 	{
 		return;
 	}
 
-	sdata->lngStrings[LNG_UNUSED_0E4] = (char *)s_optText[s_optLangIndex].title;
+	sdata->lngStrings[NATIVE_LNG_OPTIONS_TITLE] = (char *)s_optText[s_optLangIndex].title;
 	NativeOptions_RefreshLabels();
 #endif
 }
