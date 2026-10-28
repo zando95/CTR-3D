@@ -776,8 +776,12 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 
 	// A row's icon is a 3D instance at depth 0x100 on the UI pushbuffer, which RenderBucket files in UI OT slot 2
 	// (depth >> 6, plus Birth3D's -2 bias). The OT draws high slots first, so the row boxes and their shadows go one
-	// slot behind it, as the load/save profile boxes (SelectProfile) do for their relic, key and trophy.
-	rowBoxOT = &rowBoxOT[MM_TRACK_SELECT_ROW_BOX_OT_SLOT];
+	// slot behind it, as the load/save profile boxes (SelectProfile) do for their relic, key and trophy. Only the modes
+	// that draw icons move them, so every other track select keeps retail's draw order.
+	if ((g_nativeArcadeMode == NATIVE_ARCADE_RELIC) || (g_nativeArcadeMode == NATIVE_ARCADE_CTR))
+	{
+		rowBoxOT = &rowBoxOT[MM_TRACK_SELECT_ROW_BOX_OT_SLOT];
+	}
 #endif
 
 	// loop through tracks in track list
