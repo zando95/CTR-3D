@@ -317,8 +317,10 @@ static u32 NativeCtrToken_TintOf(s32 level)
  * neither needs a load. */
 #define NRT_SLOTS       9     /* MM_TRACK_SELECT_VISIBLE_ROWS */
 #define NRT_ICON_X      12    /* centre, right of the row box */
-#define NRT_RELIC_SCALE 0x300 /* the load/save boxes' relic is 0x400 */
-#define NRT_TOKEN_SCALE 0x200 /* the HUD draws the token at 2/3 of the relic's size (hud_1P_P1: scale 2048 at depth 512 against 1536 at 256) */
+#define NRT_RELIC_SCALE 0x400 /* the load/save boxes' relic scale: tilted, ~29 units tall and ~19 wide (units are 512x216 display pixels at NRT_DEPTH) */
+/* The token disc is 64 units across at scale 0x1000 against the relic's 127 tall, so the same scale draws it half the relic's size; the
+ * HUD's scale-per-depth ratio between the two is no guide to that. 0x700 makes a 28-unit disc, about the tilted relic's height. */
+#define NRT_TOKEN_SCALE 0x700
 #define NRT_SCREEN_X    0x100 /* screen centre; at depth NRT_DEPTH one translation unit is one pixel */
 #define NRT_SCREEN_Y    0x6c
 #define NRT_DEPTH       0x100
