@@ -61,6 +61,7 @@ enum
 	MM_TRACK_SELECT_LAP_MENU_WIDTH = 0xa4,
 	MM_TRACK_SELECT_GHOST_TAPE_ALLOC_SIZE = 0x3e00,
 	MM_TRACK_SELECT_GHOST_TAPE_CLEAR_SIZE = 0x28,
+	MM_TRACK_SELECT_ROW_BOX_OT_SLOT = 3,
 	MM_TRACK_SELECT_ROW_PHASE_UNIT = 0x10000,
 	MM_TRACK_SELECT_ROW_NAME_X_OFFSET = 8,
 	MM_TRACK_SELECT_ROW_NAME_Y_OFFSET = 0x65,
@@ -768,8 +769,15 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 	s32 rowIndex = 0;
 	s32 rowPhase = 0;
 
+	u32 *rowBoxOT = gGT->backBuffer->otMem.uiOT;
+
 #ifdef CTR_NATIVE
 	NativeArcade_TrackIconsBegin();
+
+	// A row's icon is a 3D instance at depth 0x100 on the UI pushbuffer, which RenderBucket files in UI OT slot 2
+	// (depth >> 6, plus Birth3D's -2 bias). The OT draws high slots first, so the row boxes and their shadows go one
+	// slot behind it, as the load/save profile boxes (SelectProfile) do for their relic, key and trophy.
+	rowBoxOT = &rowBoxOT[MM_TRACK_SELECT_ROW_BOX_OT_SLOT];
 #endif
 
 	// loop through tracks in track list
@@ -899,11 +907,11 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 			highlightRect.w = rowRect.w - MM_TRACK_SELECT_HIGHLIGHT_W_SHRINK;
 			highlightRect.h = rowRect.h - MM_TRACK_SELECT_HIGHLIGHT_H_SHRINK;
 
-			CTR_Box_DrawClearBox(&highlightRect, &sdata->menuRowHighlight_Normal, TRANS_50_DECAL, gGT->backBuffer->otMem.uiOT);
+			CTR_Box_DrawClearBox(&highlightRect, &sdata->menuRowHighlight_Normal, TRANS_50_DECAL, rowBoxOT);
 		}
 
 		// Draw 2D Menu rectangle background
-		RECTMENU_DrawInnerRect(&rowRect, 0, gGT->backBuffer->otMem.uiOT);
+		RECTMENU_DrawInnerRect(&rowRect, 0, rowBoxOT);
 
 		b32 trackOpen;
 

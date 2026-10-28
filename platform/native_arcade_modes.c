@@ -323,6 +323,8 @@ static u32 NativeCtrToken_TintOf(s32 level)
 #define NRT_TOKEN_SCALE 0x700
 #define NRT_SCREEN_X    0x100 /* screen centre; at depth NRT_DEPTH one translation unit is one pixel */
 #define NRT_SCREEN_Y    0x6c
+/* At this depth, with Birth3D's default -2 depth bias, RenderBucket files an icon in UI OT slot 2 (0x100 >> 6, minus 2). The OT draws
+ * high slots first, so the row boxes and shadows must sit in a higher slot than that: MM_TrackSelect draws them in slot 3. */
 #define NRT_DEPTH       0x100
 #define NRT_SPIN_STEP   0x40
 #define NRT_RELIC_TILT  0x155 /* the load/save boxes' relic tilt */
