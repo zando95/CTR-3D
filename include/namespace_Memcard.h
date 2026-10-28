@@ -174,6 +174,10 @@ enum GameProgressUnlockBitIndex
 	GAME_UNLOCK_BIT_BOSS_CHARACTER_FIRST = 7,
 	GAME_UNLOCK_BIT_SCRAPBOOK = 36,
 	GAME_UNLOCK_BIT_OXIDE = 37, // native-only: set by the ROSWELL cheat, see MM_Cheat_UnlockOxide
+	// native-only: SUPER HARD (38-41) and ULTRA HARD (42-45) Arcade cup wins, then their saved
+	// copies (46-53), laid out like the retail cup bits; see native_extra_difficulty.h
+	GAME_UNLOCK_BIT_EXTRA_CUP_WIN_FIRST = 38,
+	GAME_UNLOCK_BIT_EXTRA_CUP_SAVED_FIRST = 46,
 };
 
 enum GameProgressUnlockMask

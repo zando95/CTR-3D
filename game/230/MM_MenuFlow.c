@@ -1,5 +1,6 @@
 #include <common.h>
 #include <native_arcade_modes.h>
+#include <native_extra_difficulty.h>
 
 #ifdef CTR_NATIVE
 // Menu-content hooks (platform/native_options.c) -- same local-extern idiom as
@@ -69,6 +70,10 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 
 	MM_ParseCheatCodes();
 	MM_ToggleRows_Difficulty();
+#ifdef CTR_NATIVE
+	// SUPER HARD and ULTRA HARD rows once earned (platform/native_extra_difficulty.c); retail's rows on PC
+	NativeXDiff_ServeDifficultyBox(&D230.menuDifficulty);
+#endif
 	MM_ToggleRows_PlayerCount();
 
 	// If you are at the highest hierarchy level of main menu
@@ -452,6 +457,14 @@ void MM_MenuProc_Difficulty(struct RectMenu *menu)
 
 	else
 	{
+#ifdef CTR_NATIVE
+		// SUPER HARD and ULTRA HARD below HARD (platform/native_extra_difficulty.c); never present on PC
+		if (NativeXDiff_HandleDifficultyRow(menu, row))
+		{
+			return;
+		}
+#endif
+
 		// if you are on a valid row
 		if ((row >= 0) && (row < MM_DIFFICULTY_COUNT))
 		{

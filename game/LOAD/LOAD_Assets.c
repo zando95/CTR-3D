@@ -7,6 +7,7 @@
 #if defined(CTR_NATIVE)
 #include <platform/native_audio.h>
 #include <native_arcade_modes.h>
+#include <native_extra_difficulty.h>
 #include <native_lng.h>
 // platform/native_options.c -- nonzero when the platform re-reads a language file at runtime
 // (local-extern idiom).
@@ -292,6 +293,7 @@ void LOAD_LangFile(int bigfilePtr, int lang)
 
 	// the native menu labels follow the language
 	NativeArcade_OnLanguage(lang);
+	NativeXDiff_OnLanguage(lang);
 #endif
 #if BUILD == EurRetail
 	// set voicelines to new lang

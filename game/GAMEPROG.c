@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_extra_difficulty.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800265c0-0x8002689c.
 void GAMEPROG_AdvPercent(struct AdvProgress *adv)
@@ -252,6 +253,11 @@ void GAMEPROG_SaveCupProgress(void)
 			UNLOCK_MEMCARD_BIT(prog, bitIndex2);
 		}
 	}
+
+#ifdef CTR_NATIVE
+	// SUPER HARD and ULTRA HARD cup wins (platform/native_extra_difficulty.c)
+	NativeXDiff_SaveCupProgress(prog);
+#endif
 }
 
 

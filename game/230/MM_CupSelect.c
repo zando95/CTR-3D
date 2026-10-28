@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_extra_difficulty.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800b0eb8-0x800b0eec.
 void MM_CupSelect_Init(void)
@@ -126,8 +127,17 @@ void MM_CupSelect_MenuProc(struct RectMenu *menu)
 		startX = startX + MM_CUP_SELECT_CONTENT_X_OFFSET;
 		startY = startY + MM_CUP_SELECT_CONTENT_Y_OFFSET;
 
+		u8 starCount = GAME_PROGRESS_CUP_DIFFICULTY_COUNT;
+#ifdef CTR_NATIVE
+		// once SUPER HARD is unlocked all five stars are drawn natively (platform/native_extra_difficulty.c); never on PC
+		if (NativeXDiff_DrawCupStars(cupIndex, startX + (cupIndex & 1) * MM_CUP_SELECT_STAR_COLUMN_BIAS + MM_CUP_SELECT_STAR_X_OFFSET, startY))
+		{
+			starCount = 0;
+		}
+#endif
+
 		// loop through 3 stars to draw
-		for (u8 starIndex = 0; starIndex < GAME_PROGRESS_CUP_DIFFICULTY_COUNT; starIndex++)
+		for (u8 starIndex = 0; starIndex < starCount; starIndex++)
 		{
 			int cupWinBitIndex = D230.cupSelectStars.winBitBase[starIndex] + cupIndex;
 			if (CHECK_ADV_BIT(sdata->gameProgress.unlocks, cupWinBitIndex))

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_extra_difficulty.h>
 
 enum CutsceneCameraConstants
 {
@@ -255,6 +256,11 @@ void CS_Camera_ThTick_Podium(struct Thread *th)
 		{
 			stringIndex = LNG_SAVE_YOUR_CUP_PROGRESS_NEW_BATTLE_ARENA_OPENED;
 		}
+
+#ifdef CTR_NATIVE
+		// a line for SUPER HARD or ULTRA HARD when this cup unlocked it (platform/native_extra_difficulty.c)
+		stringIndex = NativeXDiff_CupProgressString(stringIndex);
+#endif
 
 		TakeCupProgress_Activate(stringIndex);
 		gGT->gameMode2 &= ~(CUP_NEW_WIN | CUP_NEW_BATTLE);

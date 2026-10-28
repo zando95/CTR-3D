@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_extra_difficulty.h>
 
 enum
 {
@@ -694,10 +695,15 @@ void UI_CupStandings_InputAndDraw(void)
 					// then you still get completion credit
 
 					// If Player 1 or Player 2 won the cup
-					if ((gGT->drivers[0]->driverRank == 0) || ((gGT->drivers[1]->driverRank == 0) &&
+					if (((gGT->drivers[0]->driverRank == 0) || ((gGT->drivers[1]->driverRank == 0) &&
 
-					                                           // If you're in Arcade Mode
-					                                           ((gGT->gameMode1 & ARCADE_MODE) != 0)))
+					                                            // If you're in Arcade Mode
+					                                            ((gGT->gameMode1 & ARCADE_MODE) != 0)))
+#ifdef CTR_NATIVE
+					    // SUPER HARD and ULTRA HARD cups have stars of their own (platform/native_extra_difficulty.c); never on PC
+					    && !NativeXDiff_CreditCupWin(gGT->arcadeDifficulty, gGT->cup.cupID)
+#endif
+					)
 					{
 						int difficulty = (gGT->arcadeDifficulty / UI_CUP_STANDINGS_ARCADE_DIFFICULTY_DIVISOR) - 1;
 						if (difficulty > UI_CUP_STANDINGS_MAX_ARCADE_DIFFICULTY)
@@ -743,6 +749,10 @@ void UI_CupStandings_InputAndDraw(void)
 
 								// battle map is now unlocked (233 overlay)
 								gGT->gameMode2 |= CUP_NEW_BATTLE;
+#ifdef CTR_NATIVE
+								// the fourth HARD cup also unlocks SUPER HARD (platform/native_extra_difficulty.c)
+								NativeXDiff_OnTierComplete(difficulty);
+#endif
 							}
 						}
 					}
