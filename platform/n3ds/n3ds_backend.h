@@ -153,6 +153,10 @@ void N3DS_C3DExit(void);
  */
 void N3DS_C3DSetProjection(float left, float right, float bottom);
 
+/* Mirror mode (include/native_mirror.h): the world is drawn mirrored this frame. Set before
+ * N3DS_C3DBeginFrame, which latches it with the stereo vectors; it reverses the track cull and
+ * turns on the packet shader's world flip. The track and model rows mirror themselves CPU-side. */
+void N3DS_SetMirrorWorld(int on);
 void N3DS_C3DBeginFrame(void);
 void N3DS_C3DEndFrame(void);
 

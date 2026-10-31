@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 enum UIMapConstants
 {
@@ -48,6 +49,23 @@ CTR_STATIC_ASSERT(UI_MAP_ARROW_ROT_FLIP == 0x800);
 CTR_STATIC_ASSERT(UI_MAP_ARROW_ROT_FLAG == 0x1000);
 CTR_STATIC_ASSERT(UI_MAP_ICON_SCALE == 0x1000);
 CTR_STATIC_ASSERT(UI_MAP_ADV_ARROW_SCALE == 0x800);
+
+#ifdef CTR_NATIVE
+// Mirror mode draws the minimap as the mirror image of the track, about the centre of its sheet. Every
+// one-player sheet, race and hub alike, is drawn right-aligned at x 500 from ptrIcons[3]/[4]
+// (UI_RenderFrame.c, AH_Map.c), so the axis follows from the bottom half's width. A marker's position is
+// its left edge and arrows centre themselves 6 px right of it (AH_Map_HubArrow), so positions mirror as
+// 12 px markers; an icon of another width corrects for its own where it is drawn.
+#define UI_MAP_MIRROR_SHEET_RIGHT 500
+#define UI_MAP_MIRROR_MARKER_W    12
+
+static int UI_Map_MirrorAxisSum(void)
+{
+	struct Icon *bottom = sdata->gGT->ptrIcons[4];
+
+	return 2 * UI_MAP_MIRROR_SHEET_RIGHT - (bottom->texLayout.u1 - bottom->texLayout.u0);
+}
+#endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8004d614-0x8004d8b4.
 void UI_Map_DrawMap(struct Icon *mapTop, struct Icon *mapBottom, s16 posX, s16 posY, struct PrimMem *primMem, uint32_t *otMem, u32 colorID)
@@ -127,6 +145,22 @@ void UI_Map_DrawMap(struct Icon *mapTop, struct Icon *mapBottom, s16 posX, s16 p
 	p->y3 = posY;
 
 	UI_Map_DrawMap_ExtraFunc(mapBottom, p, posX, 0, primMem, otMem, transparency);
+
+#ifdef CTR_NATIVE
+	// mirror mode: both halves mirror about the sheet's centre and keep their UVs, so the picture flips in place
+	if (NativeMirror_World())
+	{
+		int axisSum = 2 * posX - (mapBottom->texLayout.u1 - mapBottom->texLayout.u0);
+
+		for (POLY_FT4 *q = (POLY_FT4 *)primMem->cursor; q <= p; q++)
+		{
+			q->x0 = axisSum - q->x0;
+			q->x1 = axisSum - q->x1;
+			q->x2 = axisSum - q->x2;
+			q->x3 = axisSum - q->x3;
+		}
+	}
+#endif
 
 	primMem->cursor = p + 1;
 }
@@ -224,6 +258,13 @@ void UI_Map_GetIconPos(struct UIMap *map, int *posX, int *posY)
 
 	*posX = map->iconStartX + addX;
 	*posY = map->iconStartY + addY - UI_MAP_ICON_Y_OFFSET;
+
+#ifdef CTR_NATIVE
+	if (NativeMirror_World())
+	{
+		*posX = UI_Map_MirrorAxisSum() - UI_MAP_MIRROR_MARKER_W - *posX;
+	}
+#endif
 	return;
 }
 
@@ -241,6 +282,14 @@ void UI_Map_DrawAdvPlayer(struct UIMap *map, const s32 worldPos[3], int unused1,
 	posY = worldPos[2];
 
 	UI_Map_GetIconPos(map, &posX, &posY);
+
+#ifdef CTR_NATIVE
+	// the arrow's shape is symmetric about its own axis, so a mirrored heading is the negated angle
+	if (NativeMirror_World())
+	{
+		rot = (s16)-rot;
+	}
+#endif
 
 	arrowColor = &data.playerIconAdvMap.vertCol1[0];
 	if ((sdata->gGT->timer & 2) != 0)
@@ -272,6 +321,16 @@ void UI_Map_DrawRawIcon(struct UIMap *map, const s32 worldPos[3], int iconID, in
 	ptrColor = data.ptrColor[colorID];
 
 	struct Icon **iconPtrArray = ICONGROUP_GETICONS(sdata->gGT->iconGroup[UI_MAP_ICON_GROUP]);
+
+#ifdef CTR_NATIVE
+	// GetIconPos mirrored this position as a 12 px marker; correct for the icon's drawn width
+	if (NativeMirror_World())
+	{
+		struct Icon *icon = iconPtrArray[iconID];
+
+		posX += UI_MAP_MIRROR_MARKER_W - FP_Mult(icon->texLayout.u1 - icon->texLayout.u0, scale);
+	}
+#endif
 
 	DecalHUD_DrawPolyGT4(iconPtrArray[iconID], posX, posY, &gGT->backBuffer->primMem, gGT->pushBuffer_UI.ptrOT, ptrColor[0], ptrColor[1], ptrColor[2],
 	                     ptrColor[3], 0, (int)scale);

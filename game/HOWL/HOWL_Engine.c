@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 // Initialize car engine audio system for one driver
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80028880-0x800289b0
@@ -314,6 +315,11 @@ void EngineSound_Player(struct Driver *driver)
 		lr = 0xc0;
 	}
 
+#ifdef CTR_NATIVE
+	// the pan follows the wheel, which turns the other way on a mirrored screen
+	lr = (int)NativeMirror_SfxLR((u32)lr);
+#endif
+
 	u32 echo = ((driver->actionsFlagSet & ACTION_ENGINE_ECHO) != 0) ? 1 : 0;
 
 	EngineAudio_Recalculate(((engine * 4) + id) & 0xffff, HowlSfx_Pack(lr, distortion, volume, echo));
@@ -536,7 +542,11 @@ static int EngineSound_NearestAIs_CalculateLR(s32 *dir)
 		lr = 0x100 - lr;
 	}
 
+#ifdef CTR_NATIVE
+	return (int)NativeMirror_SfxLR((u32)(lr + 0x80));
+#else
 	return lr + 0x80;
+#endif
 }
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8002ff28-0x80030208

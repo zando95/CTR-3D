@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
 /* s41 depth-axis bracket -- declared by hand for the same reason
@@ -180,6 +181,20 @@ void FLARE_ThTick(struct Thread *th)
 	CtrGpu_WritePackedXY(&p2->x3, MFC2(13));
 	CtrGpu_WritePackedXY(&p3->x2, MFC2(13));
 	CtrGpu_WritePackedXY(&p3->x3, MFC2(14));
+
+#ifdef CTR_NATIVE
+	// mirror mode: the burst is a flat overlay on a projected world point, which the renderer leaves alone
+	if (NativeMirror_World())
+	{
+		for (POLY_GT4 *q = p0; q <= p3; q++)
+		{
+			q->x0 = (s16)NativeMirror_ProjectedX(q->x0);
+			q->x1 = (s16)NativeMirror_ProjectedX(q->x1);
+			q->x2 = (s16)NativeMirror_ProjectedX(q->x2);
+			q->x3 = (s16)NativeMirror_ProjectedX(q->x3);
+		}
+	}
+#endif
 
 	depth = (depth >> 8) - 2;
 	if (depth < 0)

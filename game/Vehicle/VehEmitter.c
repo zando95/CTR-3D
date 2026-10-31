@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 enum
 {
@@ -839,6 +840,10 @@ static void VehEmitter_SkidmarkAudio(struct Thread *thread, struct Driver *d, st
 		}
 
 		u32 lr = HOWL_SFX_LR_CENTER - (((u32)(u8)d->simpTurnState << 24) >> 26);
+#ifdef CTR_NATIVE
+		// the skid pans with the turn, which goes the other way on a mirrored screen
+		lr = NativeMirror_SfxLR(lr);
+#endif
 		u32 echo = ((d->actionsFlagSet & ACTION_ENGINE_ECHO) != 0);
 		u32 flags = HowlSfx_Pack(lr, (u32)distort, (u32)(vol + (absTurn >> 1)), echo);
 

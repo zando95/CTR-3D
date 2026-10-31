@@ -4121,6 +4121,7 @@ void NativeRenderer_BeginScene(void)
 	}
 
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_RENDERER_BEGIN_SCENE);
+	N3DS_SetMirrorWorld(NativeMirror_LatchFrame(s_projectionDispW));
 	N3DS_C3DBeginFrame();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_RENDERER_BEGIN_SCENE);
 	/* The depth buffer just cleared (C3D_RenderTargetClear in BeginFrame),

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 /*
  * s30 rung 0 instrument, same shape as the MAINFRAME_PERF_* pair in
@@ -1413,7 +1414,7 @@ static void RenderBucket_GteMulLightMatrixColumns(u32 *m0, u32 *m1, u32 *m2, u32
 	Unknown_8006c558(m0, m1, m2, m3, m4);
 }
 
-static void RenderBucket_BuildM3x3(struct Instance *inst, struct ModelHeader *mh, int viewDepth, struct RenderBucketMatrixState *matrixState)
+static void RenderBucket_BuildM3x3(struct Instance *inst, struct ModelHeader *mh, int viewDepth, int mirrorX, struct RenderBucketMatrixState *matrixState)
 {
 	u32 m0;
 	u32 m1;
@@ -1464,6 +1465,16 @@ static void RenderBucket_BuildM3x3(struct Instance *inst, struct ModelHeader *mh
 		scaleY = RenderBucket_MipsMulLoSra12(pixelScale, scaleY);
 		scaleZ = RenderBucket_MipsMulLoSra12(pixelScale, scaleZ);
 	}
+
+#ifdef CTR_NATIVE
+	// mirror mode: a model kept unmirrored is drawn mirrored in its own space, which the screen mirror cancels
+	if (mirrorX != 0)
+	{
+		scaleX = -scaleX;
+	}
+#else
+	(void)mirrorX;
+#endif
 
 	MTC2(RenderBucket_PackXY(scaleX, scaleY), 0);
 	MTC2(scaleZ, 1);
@@ -2005,7 +2016,7 @@ static void RenderBucket_AdvanceInstanceAnimWord(struct Instance *inst, int game
 }
 
 static struct ModelFrame *RenderBucket_GetFrame(struct Instance *inst, struct ModelHeader *mh, struct ModelFrame **nextFrameOut, int *deltaArrayOut,
-                                                int *lastFrameAdvanceOut)
+                                                int *lastFrameAdvanceOut, int mirrorDriveFrame)
 {
 	struct ModelAnim *anim;
 	int frameIndex;
@@ -2061,6 +2072,22 @@ static struct ModelFrame *RenderBucket_GetFrame(struct Instance *inst, struct Mo
 		frameIndex = lastFrame;
 	}
 
+#ifdef CTR_NATIVE
+	// mirror mode: the drive animation runs from one full lean to the other (VehFrame.c), so a racer kept
+	// unmirrored draws the frame across the middle, or it would lean out of its turns
+	if (mirrorDriveFrame != 0)
+	{
+		frameIndex = lastFrame - frameIndex - hasNextFrame;
+		if (frameIndex < 0)
+		{
+			frameIndex = 0;
+			hasNextFrame = 0;
+		}
+	}
+#else
+	(void)mirrorDriveFrame;
+#endif
+
 	firstFrame = RenderBucket_ModelAnimFirstFrameBytes(anim);
 	frameSize = (u16)anim->frameSize;
 	currentFrame = RenderBucket_ModelFrameAtByteOffset(firstFrame, RenderBucket_MipsMultuLo((u32)frameIndex, frameSize));
@@ -2096,6 +2123,7 @@ static struct RenderBucketEntry *RenderBucket_QueueDraw(struct Instance *inst, s
 	int viewDepth;
 	int drawFunc;
 	int uncompressFunc;
+	int mirrorKeep = 0;
 	VECTOR viewPos;
 
 	// NOTE(aalhendi): Retail QueueDraw consumes implicit scratchpad/register
@@ -2176,10 +2204,27 @@ static struct RenderBucketEntry *RenderBucket_QueueDraw(struct Instance *inst, s
 	idpp->lodIndex = lodIndex;
 	normalDepthBias = RenderBucket_SignExtendByte(inst->depthBiasNormal);
 	secondaryDepthBias = RenderBucket_SignExtendByte(inst->depthBiasSecondary);
-	RenderBucket_BuildM3x3(inst, mh, viewDepth, &matrixState);
+#ifdef CTR_NATIVE
+	// Mirror mode keeps characters unmirrored. Negating their model X reverses their projected winding, so
+	// the cull direction flips with it, as retail does for its mirrored Adventure door (AH_Door.c). A
+	// camera-facing basis (custom matrix) reads the same cull bit for another purpose, so those are left.
+	if (!RenderBucket_NeedsCustomMatrix(queuedFlags, mh))
+	{
+		mirrorKeep = NativeMirror_KeepUnmirrored(inst);
+	}
+	if (mirrorKeep != NATIVE_MIRROR_KEEP_NONE)
+	{
+		queuedFlags ^= REVERSE_CULL_DIRECTION;
+	}
+#endif
+	RenderBucket_BuildM3x3(inst, mh, viewDepth, mirrorKeep != 0, &matrixState);
 	RenderBucket_AdjustDepthBiasForNormal(inst, playerIndex, &normalDepthBias, &secondaryDepthBias);
 
-	frame = RenderBucket_GetFrame(inst, mh, &nextFrame, &deltaArray, &lastFrameAdvance);
+#ifdef CTR_NATIVE
+	frame = RenderBucket_GetFrame(inst, mh, &nextFrame, &deltaArray, &lastFrameAdvance, mirrorKeep == NATIVE_MIRROR_KEEP_RACER_DRIVING);
+#else
+	frame = RenderBucket_GetFrame(inst, mh, &nextFrame, &deltaArray, &lastFrameAdvance, 0);
+#endif
 	idpp->ptrDeltaArray = deltaArray;
 #ifdef CTR_NATIVE
 	// NOTE(aalhendi): Retail uses the selected frame pointer directly; native

@@ -45,6 +45,9 @@ static const char *const s_nxdUnlockSuffix[NXD_LANG_COUNT] = {
     " ONTGRENDELD!", /* Dutch */
 };
 
+/* Mirror mode's name in its unlock line. */
+static const char *const s_nxdMirrorName[NXD_LANG_COUNT] = {"MIRROR MODE", "MODE MIROIR", "SPIEGELMODUS", "MODO SPECCHIO", "MODO ESPEJO", "SPIEGELMODUS"};
+
 /* The new tiers' star colours: SUPER HARD red, ULTRA HARD black. */
 static const s16 s_nxdStarColor[NXD_TIER_COUNT - NXD_RETAIL_TIERS] = {CORTEX_RED, BLACK};
 
@@ -53,9 +56,10 @@ static char s_nxdLabel[NXD_TIER_COUNT - NXD_RETAIL_TIERS][NXD_LABEL_MAX];
 static char s_nxdPrompt[NXD_PROMPT_MAX];
 
 /* What the cup just won unlocked, for the podium prompt: a tier (NXD_TIER_SUPER / NXD_TIER_ULTRA) or 0,
- * and whether Penta came with it. */
+ * whether Penta came with it, and whether it was the fourth ULTRA HARD cup (mirror mode). */
 static s32 s_nxdUnlocked = 0;
 static s32 s_nxdUnlockedPenta = 0;
+static s32 s_nxdUnlockedMirror = 0;
 
 static struct MenuRow s_nxdRows4[] = {
     {LNG_EASY, 0, 1, 0, 0},
@@ -216,6 +220,7 @@ int NativeXDiff_CreditCupWin(int arcadeDifficulty, int cupID)
 
 	s_nxdUnlocked = 0;
 	s_nxdUnlockedPenta = 0;
+	s_nxdUnlockedMirror = 0;
 
 	if (arcadeDifficulty == NATIVE_XDIFF_SUPER_HARD)
 	{
@@ -248,6 +253,11 @@ int NativeXDiff_CreditCupWin(int arcadeDifficulty, int cupID)
 				s_nxdUnlockedPenta = 1;
 			}
 		}
+
+		if ((tier == NXD_TIER_ULTRA) && NativeXDiff_TierComplete(NXD_TIER_ULTRA))
+		{
+			s_nxdUnlockedMirror = 1;
+		}
 	}
 
 	return 1;
@@ -275,12 +285,14 @@ s16 NativeXDiff_CupProgressString(s16 stringIndex)
 #ifdef __3DS__
 	s32 tier = s_nxdUnlocked;
 	s32 penta = s_nxdUnlockedPenta;
+	s32 mirror = s_nxdUnlockedMirror;
 	const char *arena = NULL;
 
 	s_nxdUnlocked = 0;
 	s_nxdUnlockedPenta = 0;
+	s_nxdUnlockedMirror = 0;
 
-	if ((tier == 0) || !NativeLng_Ready())
+	if (((tier == 0) && !mirror) || !NativeLng_Ready())
 	{
 		return stringIndex;
 	}
@@ -298,9 +310,11 @@ s16 NativeXDiff_CupProgressString(s16 stringIndex)
 
 	/* retail's question, a blank line, then the news a line each. Two news lines drop the blank line: the
 	 * Spanish question and arena line take two lines each, and the save box starts at line 146. */
+	s32 newsLines = (arena != NULL) + (tier != 0) + penta + mirror;
+
 	s_nxdPrompt[0] = 0;
 	NativeXDiff_Append(s_nxdPrompt, NXD_PROMPT_MAX, sdata->lngStrings[LNG_SAVE_YOUR_CUP_PROGRESS]);
-	NativeXDiff_Append(s_nxdPrompt, NXD_PROMPT_MAX, ((arena != NULL) || penta) ? "\r" : "\r\r");
+	NativeXDiff_Append(s_nxdPrompt, NXD_PROMPT_MAX, (newsLines >= 2) ? "\r" : "\r\r");
 
 	if (arena != NULL)
 	{
@@ -308,12 +322,24 @@ s16 NativeXDiff_CupProgressString(s16 stringIndex)
 		NativeXDiff_Append(s_nxdPrompt, NXD_PROMPT_MAX, "\r");
 	}
 
-	NativeXDiff_AppendUnlockLine(s_nxdLabel[tier - NXD_RETAIL_TIERS]);
+	if (tier != 0)
+	{
+		NativeXDiff_AppendUnlockLine(s_nxdLabel[tier - NXD_RETAIL_TIERS]);
+	}
 
 	if (penta)
 	{
 		NativeXDiff_Append(s_nxdPrompt, NXD_PROMPT_MAX, "\r");
 		NativeXDiff_AppendUnlockLine(sdata->lngStrings[LNG_PENTA_PENGUIN]);
+	}
+
+	if (mirror)
+	{
+		if (tier != 0)
+		{
+			NativeXDiff_Append(s_nxdPrompt, NXD_PROMPT_MAX, "\r");
+		}
+		NativeXDiff_AppendUnlockLine(s_nxdMirrorName[s_nxdLang]);
 	}
 
 	sdata->lngStrings[NATIVE_LNG_CUP_PROMPT] = s_nxdPrompt;
@@ -404,5 +430,14 @@ void NativeXDiff_OnLanguage(int langFileIndex)
 	NativeXDiff_InstallLabels();
 #else
 	(void)langFileIndex;
+#endif
+}
+
+int NativeXDiff_UltraHardComplete(void)
+{
+#ifdef __3DS__
+	return NativeXDiff_TierComplete(NXD_TIER_ULTRA);
+#else
+	return 0;
 #endif
 }

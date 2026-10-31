@@ -45,7 +45,8 @@
 .fvec stereo
 ; s44 UI POP-OUT. x = this eye's parallax for UI-band vertices, in PSX px,
 ; already signed per eye and already scaled by the slider (N3DS_StereoEyeVec).
-; y/z/w unused.
+; y/z = mirror mode's world flip: y = left + right of the ortho window, z = -2
+; while the world is mirrored, both 0 otherwise (see the MIRROR block). w unused.
 ;
 ; Owner's target: UI should sit "just barely popping out of the screen", not at
 ; it -- flat-zero was never the goal, it was what the mask happened to give.
@@ -135,6 +136,25 @@
 	mul r1.x, negOnes, inpos.w          ; -w
 	add r1.x, stereoBias, r1.x          ; d = 32767 - w
 	slt r1.y, uiBandEdge, r1.x          ; mask = (d > 63.5) ? 1 : 0
+
+	; ---- MIRROR MODE (include/native_mirror.h) ---------------------------
+	; World vertices mirror about the window centre: x' = x + (y + z*x) with
+	; stereoUi.y/z = axisSum/-2, which is axisSum - x; with both 0 the term is
+	; 0 and x is untouched. Only vertices that are world on BOTH channels
+	; flip: the paint-on-top overlays (world occlusion, UI parallax) are HUD
+	; text, and the menu flag (UI occlusion, world parallax) is mirrored on
+	; the CPU before projection (RaceFlag.c). This runs before the parallax
+	; add below, so each eye's shift lands on the mirrored position and depth
+	; keeps its sign. r2 is free until the depth block, which rewrites it.
+	mul r2.x, negOnes, r0.z             ; -z
+	add r2.x, stereoBias, r2.x          ; occlusion d = 32767 - z
+	slt r2.y, uiBandEdge, r2.x          ; occlusion is world
+	mul r2.y, r1.y, r2.y                ; world on both channels
+	mul r2.x, stereoUi.zzzz, r0.x       ; z*x
+	add r2.x, stereoUi.yyyy, r2.x       ; y + z*x
+	mul r2.x, r2.y, r2.x                ; world only
+	add r0.x, r0.x, r2.x                ; mirrored screen X
+
 	max r1.x, ones, r1.x                ; d >= 1, rcp stays finite
 	rcp r1.z, r1.x                      ; 1/d
 	mul r1.w, stereo.yyyy, r1.z         ; kC/d

@@ -8,7 +8,8 @@
  * gains an OPTIONS row opening a RectMenu of runtime toggles; each row writes
  * the same global its dumpreq word writes, so the menu and dumpreq stay
  * interchangeable. A last QUIT row opens a YES/NO confirm whose YES takes the
- * same exit as a HOME-menu Close (N3DS_RequestQuit).
+ * same exit as a HOME-menu Close (N3DS_RequestQuit). Once mirror mode is unlocked, a MIRROR row
+ * above OPTIONS switches it in place (include/native_mirror.h); that switch is never saved.
  *
  * Menu flips persist across launches: the toggles in <base dir>/options.cfg (one `key value`
  * line per s_optToggles row, keyed by its saveKey), the language in <base dir>/language.cfg.
@@ -108,6 +109,7 @@ struct NativeOptText
 	const char *stateOff;
 	const char *stateOn;
 	const char *languageName;                  /* label of the language row */
+	const char *mirrorName;                    /* the main menu's MIRROR row, before the state word */
 	const char *langNames[OPT_LANG_COUNT];     /* how each language is written in this menu */
 	s32 langNameWidth;                         /* the language name is right-aligned to this */
 };
@@ -119,6 +121,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      "OFF",
      "ON",
      "LANGUAGE",
+     "MIRROR",
      {"ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH", "DUTCH"},
      9},
     /* French */
@@ -127,6 +130,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      "NON",
      "OUI",
      "LANGUE",
+     "MIROIR",
      {"ENGLISH", "FRANCAIS", "DEUTSCH", "ITALIANO", "ESPA\003NOL", "NEDERLANDS"},
      10},
     /* German */
@@ -135,6 +139,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      "AUS",
      "EIN",
      "SPRACHE",
+     "SPIEGEL",
      {"ENGLISH", "FRANCAIS", "DEUTSCH", "ITALIANO", "ESPA\003NOL", "NEDERLANDS"},
      10},
     /* Italian */
@@ -143,6 +148,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      "NO",
      "SI",
      "LINGUA",
+     "SPECCHIO",
      {"ENGLISH", "FRANCAIS", "DEUTSCH", "ITALIANO", "ESPA\003NOL", "NEDERLANDS"},
      10},
     /* Spanish */
@@ -151,6 +157,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      "NO",
      "SI",
      "IDIOMA",
+     "ESPEJO",
      {"ENGLISH", "FRANCAIS", "DEUTSCH", "ITALIANO", "ESPA\003NOL", "NEDERLANDS"},
      10},
     /* Dutch */
@@ -159,6 +166,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      "UIT",
      "AAN",
      "TAAL",
+     "SPIEGEL",
      {"ENGLISH", "FRANCAIS", "DEUTSCH", "ITALIANO", "ESPA\003NOL", "NEDERLANDS"},
      10},
 };
@@ -179,6 +187,7 @@ static const char *const s_optOxideUnlocked[OPT_LANG_COUNT] = {
 /* The label strings the string table points at. RefreshLabels rewrites them in place. */
 #define OPT_LABEL_MAX 48
 static char s_optLabelBuf[OPT_TOGGLE_COUNT + 1][OPT_LABEL_MAX];
+static char s_optMirrorLabel[OPT_LABEL_MAX];
 
 /* Characters that take room on screen: the PAL tilde prefix (0x03) does not. */
 static s32 NativeOptions_VisibleLen(const char *text)
@@ -436,6 +445,9 @@ static void NativeOptions_RefreshLabels(void)
 
 	NativeOptions_Compose(s_optLabelBuf[OPT_TOGGLE_COUNT], OPT_LABEL_MAX, text->languageName, text->langNames[s_optLangIndex], text->langNameWidth);
 	sdata->lngStrings[NATIVE_LNG_OPT_LANGUAGE] = s_optLabelBuf[OPT_TOGGLE_COUNT];
+
+	NativeOptions_Compose(s_optMirrorLabel, OPT_LABEL_MAX, text->mirrorName, g_mirrorMode ? text->stateOn : text->stateOff, stateWidth);
+	sdata->lngStrings[NATIVE_LNG_MIRROR] = s_optMirrorLabel;
 }
 
 static void NativeOptions_MenuProc(struct RectMenu *menu)
@@ -526,7 +538,8 @@ static struct RectMenu s_optQuitMenu = {
     .funcPtr = NativeOptions_QuitMenuProc,
 };
 
-/* 3DS main-menu row sets: retail minus VS/BATTLE, plus OPTIONS and QUIT last. */
+/* 3DS main-menu row sets: retail minus VS/BATTLE, plus OPTIONS and QUIT last. Once mirror mode is
+ * unlocked, its MIRROR row sits above OPTIONS. */
 static struct MenuRow s_optMainRowsBasic[] = {
     {LNG_ADVENTURE, 0, 1, 0, 0},
     {LNG_TIME_TRIAL, 0, 2, 1, 1},
@@ -548,6 +561,29 @@ static struct MenuRow s_optMainRowsScrapbook[] = {
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
 
+static struct MenuRow s_optMainRowsMirror[] = {
+    {LNG_ADVENTURE, 0, 1, 0, 0},
+    {LNG_TIME_TRIAL, 0, 2, 1, 1},
+    {LNG_ARCADE, 1, 3, 2, 2},
+    {LNG_HIGH_SCORE, 2, 4, 3, 3},
+    {NATIVE_LNG_MIRROR, 3, 5, 4, 4},
+    {NATIVE_LNG_OPTIONS_TITLE, 4, 6, 5, 5},
+    {LNG_QUIT, 5, 6, 6, 6},
+    {RECTMENU_STRING_NONE, 0, 0, 0, 0},
+};
+
+static struct MenuRow s_optMainRowsScrapbookMirror[] = {
+    {LNG_ADVENTURE, 0, 1, 0, 0},
+    {LNG_TIME_TRIAL, 0, 2, 1, 1},
+    {LNG_ARCADE, 1, 3, 2, 2},
+    {LNG_HIGH_SCORE, 2, 4, 3, 3},
+    {LNG_SCRAPBOOK, 3, 5, 4, 4},
+    {NATIVE_LNG_MIRROR, 4, 6, 5, 5},
+    {NATIVE_LNG_OPTIONS_TITLE, 5, 7, 6, 6},
+    {LNG_QUIT, 6, 7, 7, 7},
+    {RECTMENU_STRING_NONE, 0, 0, 0, 0},
+};
+
 #endif /* __3DS__ */
 
 /* Called every frame by MM_MenuProc_Main after retail's own scrapbook swap, so
@@ -556,14 +592,16 @@ static struct MenuRow s_optMainRowsScrapbook[] = {
 struct MenuRow *NativeOptions_MainMenuRows(struct MenuRow *rows)
 {
 #ifdef __3DS__
+	s32 mirror = NativeMirror_Unlocked();
+
 	NativeOptions_RefreshLabels();
 
 	if (rows == &D230.rowsMainMenuWithScrapbook[0])
 	{
-		return &s_optMainRowsScrapbook[0];
+		return mirror ? &s_optMainRowsScrapbookMirror[0] : &s_optMainRowsScrapbook[0];
 	}
 
-	return &s_optMainRowsBasic[0];
+	return mirror ? &s_optMainRowsMirror[0] : &s_optMainRowsBasic[0];
 #else
 	return rows;
 #endif
@@ -576,6 +614,15 @@ s32 NativeOptions_HandleMainMenuChoice(struct RectMenu *mainMenu, s32 choose)
 	{
 		mainMenu->ptrNextBox_InHierarchy = &s_optMenu;
 		mainMenu->state |= DRAW_NEXT_MENU_IN_HIERARCHY;
+		return 1;
+	}
+
+	/* a switch with no box of its own: the main menu stays as it is */
+	if (choose == NATIVE_LNG_MIRROR)
+	{
+		g_mirrorMode ^= 1;
+		NativeOptions_RefreshLabels();
+		mainMenu->state &= ~ONLY_DRAW_TITLE;
 		return 1;
 	}
 

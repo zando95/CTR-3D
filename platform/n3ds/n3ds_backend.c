@@ -820,6 +820,11 @@ static int s_uLocStereoUi = -1;
  */
 int g_dbg_uiPopPct = 35;
 static float s_stereoVecUi[2][4];
+
+/* Mirror mode: the world is drawn mirrored this frame (N3DS_SetMirrorWorld), about the packet
+ * window's centre. s_mirrorAxisSum is left + right of that window, so x' = s_mirrorAxisSum - x. */
+static int s_mirrorWorld = 0;
+static float s_mirrorAxisSum = 512.0f;
 static C3D_RenderTarget *s_renderTarget = NULL;
 
 static C3D_Mtx s_projection;
@@ -1213,8 +1218,12 @@ static void N3DS_StereoLatchFrame(void)
 			 * frame where packet depth is off and the band test is meaningless.
 			 */
 			s_stereoVecUi[eye][0] = (pktLive ? -k : 0.0f) * ((float)g_dbg_uiPopPct * 0.01f);
-			s_stereoVecUi[eye][1] = 0.0f;
-			s_stereoVecUi[eye][2] = 0.0f;
+
+			/* Mirror mode's packet flip (ctr.v.pica): x' = x + (y + z*x) for world vertices, which is
+			 * axisSum - x with these two and x itself with zeros. The world/UI test it relies on is
+			 * the packet depth band, so it needs packet depth as the pop-out does. */
+			s_stereoVecUi[eye][1] = (s_mirrorWorld && N3DS_StereoPacketDepthActive()) ? s_mirrorAxisSum : 0.0f;
+			s_stereoVecUi[eye][2] = (s_mirrorWorld && N3DS_StereoPacketDepthActive()) ? -2.0f : 0.0f;
 			s_stereoVecUi[eye][3] = 0.0f;
 		}
 	}
@@ -1326,6 +1335,9 @@ int g_dbg_trackAlphaRef = 1;
 
 void N3DS_C3DSetProjection(float left, float right, float bottom)
 {
+	/* the widescreen growth below is symmetric, so the mirror axis is the same either way */
+	s_mirrorAxisSum = left + right;
+
 	if (g_dbg_widescreen == 2)
 	{
 		/* REAL widescreen: grow the window by exactly the viewport's
@@ -1921,6 +1933,11 @@ static int N3DS_NextPktBias(int cur)
  * without it. Hardware-measured: Tubes mono 41->34.7ms, stereo 49->36.2ms --
  * the wait rounded frames up to the next vblank multiple.
  */
+
+void N3DS_SetMirrorWorld(int on)
+{
+	s_mirrorWorld = (on != 0);
+}
 
 void N3DS_C3DBeginFrame(void)
 {
@@ -2690,7 +2707,9 @@ void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, flo
 	 * N3DS_TrackDraw_End so the packet/UI/model draws after the track are never
 	 * affected.
 	 */
-	C3D_CullFace(GPU_CULL_BACK_CCW);
+	/* A mirrored world reverses every triangle's screen winding (native_track_frame.c), so the
+	 * faces kept are the clockwise ones. */
+	C3D_CullFace(s_mirrorWorld ? GPU_CULL_FRONT_CCW : GPU_CULL_BACK_CCW);
 
 	/* State 2 (TRACKRO, see g_dbg_depthTest): the track still TESTS against
 	 * depth -- so it can still be hidden by nearer packet content, which is
@@ -4588,6 +4607,23 @@ unsigned int N3DS_ReadButtons(void)
 						g_pentaPal = !g_pentaPal;
 					}
 					N3DS_DebugLog(g_pentaPal ? "[CTR-3DS] Penta: PAL 5/5/5 max class ON" : "[CTR-3DS] Penta: OFF (retail NTSC-U Turn class)");
+				}
+				else if (strncmp(word, "mirror", 6) == 0)
+				{
+					extern int g_dbg_mirrorUnlock;
+
+					/* Mirror mode counts as unlocked (the MIRROR row shows on the main menu) without
+					 * the four ULTRA HARD cups; the card is not touched. Bare token toggles;
+					 * 'mirror N' sets 0/1. */
+					if (word[6] == ' ')
+					{
+						g_dbg_mirrorUnlock = (atoi(&word[7]) != 0) ? 1 : 0;
+					}
+					else
+					{
+						g_dbg_mirrorUnlock = !g_dbg_mirrorUnlock;
+					}
+					N3DS_DebugLog(g_dbg_mirrorUnlock ? "[CTR-3DS] mirror mode: test unlock ON" : "[CTR-3DS] mirror mode: test unlock OFF");
 				}
 				else if (strncmp(word, "reserves", 8) == 0)
 				{

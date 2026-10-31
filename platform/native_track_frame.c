@@ -1050,6 +1050,16 @@ void NativeTrackDraw_IssueForWalk(void)
 		float ofxOverH = ofx / h;
 		float ofyOverH = ofy / h;
 
+		if (NativeMirror_WorldFrame())
+		{
+			/* mirror mode: x' = axisSum - x, i.e. the view-x row negated about the mirrored centre */
+			ofxOverH = (NativeMirror_AxisSum() - ofx) / h;
+			r00 = -r00;
+			r01 = -r01;
+			r02 = -r02;
+			trx = -trx;
+		}
+
 		qx[0] = r00 + (ofxOverH * r20);
 		qx[1] = r01 + (ofxOverH * r21);
 		qx[2] = r02 + (ofxOverH * r22);

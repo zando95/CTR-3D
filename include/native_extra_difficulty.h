@@ -9,7 +9,8 @@
  * unlocked exactly when the four cup-win bits of the tier below are set; there is no flag of its own. The
  * box is the one single races, cups and CTR CHALLENGE all pass through, so all three offer the new rows.
  * The fourth SUPER HARD cup also unlocks Penta Penguin (UNLOCK_PENTA), retail's one cheat-only racer;
- * that is a real unlock bit, set at that win only.
+ * that is a real unlock bit, set at that win only. The four ULTRA HARD cups unlock mirror mode
+ * (include/native_mirror.h), which likewise has no flag of its own: it is those four cup-win bits.
  *
  * gGT->arcadeDifficulty carries retail's 0x50 step on: EASY 0x50, MEDIUM 0xA0, HARD 0xF0,
  * NATIVE_XDIFF_SUPER_HARD 0x140 (also the SUPER HARD cheat's value), NATIVE_XDIFF_ULTRA_HARD 0x190.
@@ -56,5 +57,8 @@ int NativeXDiff_DrawCupStars(int cupIndex, int starX, int startY);
 
 /* LOAD_LangFile: rebuilds the row labels from the loaded language. */
 void NativeXDiff_OnLanguage(int langFileIndex);
+
+/* All four Arcade cups won on ULTRA HARD; always 0 on PC. */
+int NativeXDiff_UltraHardComplete(void);
 
 #endif

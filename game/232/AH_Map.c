@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
 // Register the hub map block's packet span (sheet + player/warppad/item
@@ -465,9 +466,19 @@ void AH_Map_HubItems(struct UIMap *map, s16 *arrowCounter)
 				int routePosY = (int)item->posY - 0x100;
 
 				UI_Map_GetIconPos(map, &routePosX, &routePosY);
+
+				int routeAngle = (int)item->angle;
+#ifdef CTR_NATIVE
+				// mirror mode: the route arrow is symmetric about its own axis, so its mirrored heading is the negated angle
+				if (NativeMirror_World())
+				{
+					routeAngle = (s16)-routeAngle;
+				}
+#endif
+
 				if ((routeLockState == 0) && (D232.mapPriorityArrowDrawn == 0))
 				{
-					AH_Map_HubArrowOuter(map, (int)*arrowCounter, routePosX, routePosY, (0x1000 - (u16)item->angle), AH_MAP_ARROW_HUB_ROUTE);
+					AH_Map_HubArrowOuter(map, (int)*arrowCounter, routePosX, routePosY, (0x1000 - (u16)routeAngle), AH_MAP_ARROW_HUB_ROUTE);
 					*arrowCounter = *arrowCounter + 1;
 				}
 
@@ -483,7 +494,7 @@ void AH_Map_HubItems(struct UIMap *map, s16 *arrowCounter)
 					colorOffset = ((int)routeLockState * 2 + 1) * 3;
 				}
 
-				AH_Map_HubArrow(routePosX, routePosY, &D232.hubArrowPos[0], (char *)&D232.hubArrow_col1[colorOffset], 0x800, (int)item->angle);
+				AH_Map_HubArrow(routePosX, routePosY, &D232.hubArrowPos[0], (char *)&D232.hubArrow_col1[colorOffset], 0x800, routeAngle);
 			}
 
 			if (bossState >= AH_MAP_BOSS_ITEM_LOCKED)

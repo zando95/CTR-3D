@@ -1,5 +1,6 @@
 #include <common.h>
 #include <native_retro_fueled.h>
+#include <native_mirror.h>
 
 // budget: 4624
 // curr: 4380
@@ -1148,6 +1149,9 @@ CheckJumpButtons:
 	{
 		// gamepadBuffer -> stickLX
 		scratchValue = (int)ptrgamepad->stickLX;
+#ifdef CTR_NATIVE
+		scratchValue = NativeMirror_SteerStick(scratchValue);
+#endif
 	}
 
 	// default steer strength from class stats

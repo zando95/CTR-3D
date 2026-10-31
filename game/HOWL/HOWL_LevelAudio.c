@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8002e7bc-0x8002e84c
 int GTE_GetSquaredDistance(s16 *pos1, s16 *pos2)
@@ -333,15 +334,19 @@ static u32 PlaySound3D_CalculateLR(s32 *dir)
 	lr += 0x80;
 	if (lr < 0)
 	{
-		return 0;
+		lr = 0;
 	}
 
 	if (lr > 0xff)
 	{
-		return 0xff;
+		lr = 0xff;
 	}
 
+#ifdef CTR_NATIVE
+	return NativeMirror_SfxLR((u32)lr);
+#else
 	return lr;
+#endif
 }
 
 static u32 PlaySound3D_BuildFlags(struct GameTracker *gGT, int cameraIndex, u32 distance, u32 lr)

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 enum
 {
@@ -356,6 +357,10 @@ UpdateTrackerState:
 	CTR_GteLoadSV0(&pos);
 	gte_rtps();
 	CTR_GteStoreSXY(screenPos.v);
+#ifdef CTR_NATIVE
+	// mirror mode: the bracket follows the kart to its mirrored place on screen
+	screenPos.x = (s16)NativeMirror_ProjectedX(screenPos.x);
+#endif
 
 	// red?
 	bgColor = UI_TRACKER_BG_RED;

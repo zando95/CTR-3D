@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_mirror.h>
 
 enum RaceFlagScratchConstants
 {
@@ -718,8 +719,29 @@ SKIP_LOADING_TEXT:
 	sdata->RaceFlag_CopyLoadStage = sdata->Loading.stage;
 	ot = (uint32_t *)RaceFlag_GetOT();
 
-	gte_SetRotMatrix(&data.matrixTitleFlag);
-	gte_SetTransMatrix(&data.matrixTitleFlag);
+	MATRIX *flagMatrix = &data.matrixTitleFlag;
+#ifdef CTR_NATIVE
+	MATRIX mirroredFlag;
+
+	// Mirror mode: with the view-x row and translation negated, every vertex projects to 0x200 - sx
+	// about the 0x100 offset. Mirrored before projection, not after, because the stereo capture is keyed
+	// on the exact screen XY the packets carry.
+	if (NativeMirror_Active())
+	{
+		for (int row = 0; row < 3; row++)
+		{
+			for (int col = 0; col < 3; col++)
+			{
+				mirroredFlag.m[row][col] = (row == 0) ? -data.matrixTitleFlag.m[row][col] : data.matrixTitleFlag.m[row][col];
+			}
+			mirroredFlag.t[row] = (row == 0) ? -data.matrixTitleFlag.t[row] : data.matrixTitleFlag.t[row];
+		}
+		flagMatrix = &mirroredFlag;
+	}
+#endif
+
+	gte_SetRotMatrix(flagMatrix);
+	gte_SetTransMatrix(flagMatrix);
 	gte_SetGeomOffset(0x100, 0x78);
 #ifdef CTR_NATIVE
 	/* s37 widescreen: the flag mesh only spans the 4:3 window -- the

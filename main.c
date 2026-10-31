@@ -88,6 +88,7 @@
 #include "platform/native_lng.c"
 #include "platform/native_arcade_modes.c"
 #include "platform/native_extra_difficulty.c"
+#include "platform/native_mirror.c"
 #include "platform/native_perf.c"
 #include "platform/native_platform.c"
 #include "platform/native_render_queue.c"
