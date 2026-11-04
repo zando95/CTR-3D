@@ -259,8 +259,8 @@ static void VehGroundShadow_TransformLocalAxes(struct VehGroundShadowEntry *entr
 #if defined(CTR_NATIVE)
 		if (OxideFit_DriverSize(driver) != 0)
 		{
-			// and round: one radius every way, the mean of the grown kart shadow's
-			localX = (localX + localZ0 + localZ1) / 3;
+			// and round: one radius every way, 85% of the mean of the grown kart shadow's
+			localX = ((localX + localZ0 + localZ1) * 17) / 60;
 			localZ0 = localX;
 			localZ1 = localX;
 		}
