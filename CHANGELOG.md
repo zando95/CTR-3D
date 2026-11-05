@@ -8,6 +8,12 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - The Scrapbook no longer crashes. It starts straight away instead of after a long black screen, shows the art in the right place, and plays at its full 15 fps.
 - The boot screens are no longer shifted up with their top lines cut off.
 - Saves are crash-safe. A save interrupted by a crash or power loss can no longer wipe your progress; the game falls back to the previous copy.
+- New LANGUAGE row in OPTIONS: English, French, German, Italian, Spanish or Dutch. The game text changes straight away, the OPTIONS menu is translated too, and the choice is remembered between launches.
+- Voices can follow the language: with French, German, Italian, Spanish or Dutch voice files extracted from your own PAL disc image (the README explains how), the characters speak the selected language. Without them, voices stay English.
+- Nitros Oxide is playable. Beat all of his Time Trial ghosts, or enter the code ROSWELL on the main menu (hold L and R, then Right, A, Down, Left, Right, Left, Left), and he joins the character select screen. He races at two-thirds of his boss size, with exhaust smoke and boost fire from his own pipes and a round shadow.
+- New SUPER HARD and ULTRA HARD difficulties, hidden until earned: win all four Arcade cups on HARD to unlock SUPER HARD, then all four on SUPER HARD to unlock ULTRA HARD. Cup select shows a red star for a SUPER HARD win and a black one for ULTRA HARD. Winning the fourth SUPER HARD cup also unlocks Penta Penguin.
+- New MIRROR mode, unlocked by winning all four Arcade cups on ULTRA HARD: a MIRROR row appears on the main menu above OPTIONS. With it ON, every track and hub is mirrored and steering follows; the racers, menus and HUD are not mirrored. It starts OFF at every launch, and times and records are shared with normal mode.
+- The shield bubble no longer sinks into the road.
 - Saving no longer freezes the game. Memory card saves (Adventure progress, ghosts, high scores, relic times, CTR CHALLENGE wins) and OPTIONS or language changes are written in the background while the game keeps running.
 - A disc image that is damaged, incomplete, not the North American (NTSC-U) disc, or in the wrong format (.iso, .cue, compressed) is now caught at boot with a message saying what is wrong and what to do, instead of booting into broken levels.
 - A disc read that fails mid-game ends on an error screen instead of hanging.
