@@ -121,6 +121,7 @@ if(NINTENDO_3DS)
     list(APPEND CTR_NATIVE_SOURCES platform/n3ds/n3ds_backend.c)
     list(APPEND CTR_NATIVE_SOURCES platform/n3ds/n3ds_audio_thread.c)
     list(APPEND CTR_NATIVE_SOURCES platform/n3ds/n3ds_render_thread.c)
+    list(APPEND CTR_NATIVE_SOURCES platform/n3ds/n3ds_save_thread.c)
     list(APPEND CTR_NATIVE_SOURCES platform/n3ds/n3ds_beat.c)
 endif()
 
@@ -131,7 +132,7 @@ if(NINTENDO_3DS)
     # default short enums. Nothing enum-typed crosses n3ds_backend.h -- it
     # exposes only plain scalars -- so this file can match libctru's ABI while
     # the game TU keeps the 4-byte enums its struct layouts require.
-    set_source_files_properties(platform/n3ds/n3ds_backend.c platform/n3ds/n3ds_audio_thread.c platform/n3ds/n3ds_render_thread.c platform/n3ds/n3ds_beat.c
+    set_source_files_properties(platform/n3ds/n3ds_backend.c platform/n3ds/n3ds_audio_thread.c platform/n3ds/n3ds_render_thread.c platform/n3ds/n3ds_save_thread.c platform/n3ds/n3ds_beat.c
         PROPERTIES COMPILE_OPTIONS "-fshort-enums")
 endif()
 # The developer debug surface. OFF strips it from the binary entirely, so a

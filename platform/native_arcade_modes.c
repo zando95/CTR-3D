@@ -448,13 +448,24 @@ void NativeArcade_OnCtrWin(void)
 #endif
 }
 
+#ifdef __3DS__
+static void NativeCtrTokens_WriteDone(enum NativeMemcardResult result, unsigned int elapsed_ms, void *user)
+{
+	if (result != NATIVE_MEMCARD_OK)
+	{
+		s_nctDirty = 1;
+	}
+
+	Platform_LogInstrument("[CTRTOKENS] write mask=%04x write=%ums %s\n", (unsigned)(uintptr_t)user, elapsed_ms, (result == NATIVE_MEMCARD_OK) ? "ok" : "FAILED");
+}
+#endif
+
 void NativeCtrTokens_Flush(void)
 {
 #ifdef __3DS__
 	char name[NCT_NAME_BYTES];
 	u8 icon[NCT_ICON_BYTES];
 	u8 payload[NCT_PAYLOAD_BYTES];
-	enum NativeMemcardResult result;
 
 	if (s_nctDirty == 0)
 	{
@@ -473,14 +484,8 @@ void NativeCtrTokens_Flush(void)
 	NativeCtrTokens_SaveName(name);
 	memset(icon, 0, sizeof(icon));
 	NativeCtrTokens_Pack(payload, s_nctMask);
-	result = NativeMemcard_WriteSaveData(name, icon, NCT_ICON_BYTES, payload, NCT_PAYLOAD_BYTES);
-
-	if (result == NATIVE_MEMCARD_OK)
-	{
-		s_nctDirty = 0;
-	}
-
-	Platform_LogInstrument("[CTRTOKENS] write mask=%04x %s\n", (unsigned)s_nctMask, (result == NATIVE_MEMCARD_OK) ? "ok" : "FAILED");
+	s_nctDirty = 0;
+	NativeMemcard_QueueWrite(name, icon, NCT_ICON_BYTES, payload, NCT_PAYLOAD_BYTES, NativeCtrTokens_WriteDone, (void *)(uintptr_t)s_nctMask);
 #endif
 }
 

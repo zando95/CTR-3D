@@ -56,6 +56,9 @@ CTR_STATIC_ASSERT(sizeof(struct GhostHeader) == 0x28);
 	(CHEAT_WUMPA | CHEAT_MASK | CHEAT_TURBO | CHEAT_INVISIBLE | CHEAT_ENGINE | CHEAT_ICY | CHEAT_TURBOPAD | CHEAT_BOMBS | CHEAT_ONELAP)
 
 static s32 s_gbStoredMs[NATIVE_GHOST_BEST_LEVEL_COUNT];
+/* Per track, the write in flight: the time it stores and the stored time it replaces. */
+static s32 s_gbQueuedMs[NATIVE_GHOST_BEST_LEVEL_COUNT];
+static s32 s_gbQueuedPrevMs[NATIVE_GHOST_BEST_LEVEL_COUNT];
 static u8 s_gbSnapshot[GHOST_RECORD_BUFFER_SIZE];
 static s32 s_gbPending;
 static s32 s_gbPendingLevel;
@@ -132,6 +135,19 @@ static int NativeGhostBest_ReadFile(s16 levelID, struct GhostHeader *dst)
 	return 0;
 }
 
+static void NativeGhostBest_WriteDone(enum NativeMemcardResult result, unsigned int elapsed_ms, void *user)
+{
+	s16 levelID = (s16)(intptr_t)user;
+
+	if ((result != NATIVE_MEMCARD_OK) && (s_gbStoredMs[levelID] == s_gbQueuedMs[levelID]))
+	{
+		s_gbStoredMs[levelID] = s_gbQueuedPrevMs[levelID];
+	}
+
+	Platform_LogInstrument("[GHOSTBEST] level=%d time=%dms write=%ums %s\n", (int)levelID, (int)s_gbQueuedMs[levelID], elapsed_ms,
+	                       (result == NATIVE_MEMCARD_OK) ? "ok" : "FAILED");
+}
+
 #endif /* __3DS__ */
 
 int NativeGhostBest_SkipsGhostMenu(void)
@@ -182,10 +198,6 @@ void NativeGhostBest_Flush(void)
 #ifdef __3DS__
 	char name[NATIVE_GHOST_BEST_SAVE_NAME_BYTES];
 	unsigned char icon[NATIVE_GHOST_BEST_ICON_BYTES];
-	unsigned long long startTick;
-	unsigned long long ticks;
-	unsigned long long freq;
-	enum NativeMemcardResult result;
 	s16 levelID;
 	s32 storedMs;
 
@@ -213,23 +225,10 @@ void NativeGhostBest_Flush(void)
 	memset(icon, 0, sizeof(icon));
 	NativeGhostBest_SaveName(name, levelID);
 
-	startTick = N3DS_GetTickCount();
-	result = NativeMemcard_WriteSaveData(name, icon, (int)sizeof(icon), s_gbSnapshot, GHOST_RECORD_BUFFER_SIZE);
-	ticks = N3DS_GetTickCount() - startTick;
-
-	freq = N3DS_GetTickFrequency();
-	if (freq == 0ull)
-	{
-		freq = 1ull;
-	}
-
-	if (result == NATIVE_MEMCARD_OK)
-	{
-		s_gbStoredMs[levelID] = s_gbPendingMs;
-	}
-
-	Platform_LogInstrument("[GHOSTBEST] level=%d time=%dms write=%ums %s\n", (int)levelID, (int)s_gbPendingMs, (unsigned)((ticks * 1000ull) / freq),
-	                       (result == NATIVE_MEMCARD_OK) ? "ok" : "FAILED");
+	s_gbQueuedPrevMs[levelID] = storedMs;
+	s_gbQueuedMs[levelID] = s_gbPendingMs;
+	s_gbStoredMs[levelID] = s_gbPendingMs;
+	NativeMemcard_QueueWrite(name, icon, (int)sizeof(icon), s_gbSnapshot, GHOST_RECORD_BUFFER_SIZE, NativeGhostBest_WriteDone, (void *)(intptr_t)levelID);
 #endif
 }
 

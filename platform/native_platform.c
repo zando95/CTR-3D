@@ -9,6 +9,7 @@
 #include "platform/native_gpu.h"
 #include "platform/native_input.h"
 #include "platform/native_log.h"
+#include "platform/native_memcard.h"
 #include "platform/native_perf.h"
 #include "platform/native_render_queue.h"
 #include "platform/native_renderer.h"
@@ -645,6 +646,8 @@ int Platform_Init(const char *title, int width, int height)
 	// worker only ever executes queued frame work). No-op on PC.
 	NativeRenderQueue_Init();
 
+	NativeMemcard_StartWriter();
+
 	atexit(Platform_Shutdown);
 	Platform_UpdateCursorVisibility();
 	Platform_InputInit();
@@ -664,6 +667,9 @@ void Platform_Shutdown(void)
 	// from main), so a best ghost or CTR CHALLENGE win still pending from a finished race is written before anything tears down.
 	NativeGhostBest_Flush();
 	NativeCtrTokens_Flush();
+
+	// Every queued save lands before the process can exit.
+	NativeMemcard_StopWriter();
 
 	// Drain and join the render worker before anything below tears down what
 	// its jobs touch. Posts STOP synchronously; no-op if it never came up.

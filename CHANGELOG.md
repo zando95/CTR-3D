@@ -8,6 +8,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - The Scrapbook no longer crashes. It starts straight away instead of after a long black screen, shows the art in the right place, and plays at its full 15 fps.
 - The boot screens are no longer shifted up with their top lines cut off.
 - Saves are crash-safe. A save interrupted by a crash or power loss can no longer wipe your progress; the game falls back to the previous copy.
+- Saving no longer freezes the game. Memory card saves (Adventure progress, ghosts, high scores, relic times, CTR CHALLENGE wins) and OPTIONS or language changes are written in the background while the game keeps running.
 - A disc image that is damaged, incomplete, not the North American (NTSC-U) disc, or in the wrong format (.iso, .cue, compressed) is now caught at boot with a message saying what is wrong and what to do, instead of booting into broken levels.
 - A disc read that fails mid-game ends on an error screen instead of hanging.
 - If the game can't start, it shows a message instead of a black screen. An original 3DS, 3DS XL or 2DS gets "New Nintendo 3DS required".

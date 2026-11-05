@@ -14,7 +14,13 @@
 #include <unistd.h>
 #endif
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef __3DS__
+#include "n3ds/n3ds_backend.h"
+#include "n3ds/n3ds_save_thread.h"
+#endif
 
 #define NATIVE_MEMCARD_MAX_FOUND_FILES 64
 #define NATIVE_MEMCARD_MAX_NAME        64
@@ -46,6 +52,8 @@ struct NativeMemcardDeviceName
 global_variable struct NativeMemcardFindState s_memcardFind;
 global_variable char s_memcardRoot[NATIVE_MEMCARD_MAX_PATH];
 global_variable char s_memcardResolvedPath[NATIVE_MEMCARD_MAX_PATH];
+
+internal void NativeMemcard_WaitWritesIdle(void);
 
 internal struct NativeMemcardDeviceName NativeMemcard_ParseDeviceName(const char *save_name)
 {
@@ -638,6 +646,8 @@ internal void NativeMemcard_BuildFindList(const char *pattern)
 
 enum NativeMemcardResult NativeMemcard_SetRoot(const char *root_path)
 {
+	NativeMemcard_WaitWritesIdle();
+
 	if ((root_path == NULL) || (root_path[0] == '\0') || (strcmp(root_path, ".") == 0))
 	{
 		NativeMemcard_ClearRoot();
@@ -655,6 +665,7 @@ enum NativeMemcardResult NativeMemcard_SetRoot(const char *root_path)
 
 void NativeMemcard_ClearRoot(void)
 {
+	NativeMemcard_WaitWritesIdle();
 	s_memcardRoot[0] = '\0';
 	s_memcardResolvedPath[0] = '\0';
 	memset(&s_memcardFind, 0, sizeof(s_memcardFind));
@@ -662,6 +673,8 @@ void NativeMemcard_ClearRoot(void)
 
 enum NativeMemcardResult NativeMemcard_RemoveRoot(const char *root_path)
 {
+	NativeMemcard_WaitWritesIdle();
+
 	if ((root_path == NULL) || (root_path[0] == '\0') || (strcmp(root_path, ".") == 0))
 	{
 		return NATIVE_MEMCARD_IO_ERROR;
@@ -773,6 +786,8 @@ enum NativeMemcardResult NativeMemcard_CloneRoot(const char *src_root, const cha
 	enum NativeMemcardResult result;
 	int slot;
 
+	NativeMemcard_WaitWritesIdle();
+
 	if ((dst_root == NULL) || (dst_root[0] == '\0') || (strcmp(dst_root, ".") == 0))
 	{
 		return NATIVE_MEMCARD_IO_ERROR;
@@ -838,6 +853,7 @@ enum NativeMemcardResult NativeMemcard_CloneCurrentRoot(const char *dst_root)
 
 int NativeMemcard_FindFirstFile(const char *pattern, char *dst_name, int dst_size)
 {
+	NativeMemcard_WaitWritesIdle();
 	NativeMemcard_BuildFindList(pattern);
 	s_memcardFind.index = 0;
 	return NativeMemcard_FindNextFile(dst_name, dst_size);
@@ -876,6 +892,8 @@ int NativeMemcard_FileExists(const char *save_name)
 	char path[NATIVE_MEMCARD_MAX_PATH];
 	char backup_path[NATIVE_MEMCARD_MAX_PATH];
 
+	NativeMemcard_WaitWritesIdle();
+
 	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0))
 	{
 		return 0;
@@ -895,6 +913,8 @@ enum NativeMemcardResult NativeMemcard_RemoveFile(const char *save_name)
 	char path[NATIVE_MEMCARD_MAX_PATH];
 	char side_path[NATIVE_MEMCARD_MAX_PATH];
 	int removed;
+
+	NativeMemcard_WaitWritesIdle();
 
 	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0))
 	{
@@ -941,6 +961,8 @@ enum NativeMemcardResult NativeMemcard_ReadSaveData(const char *save_name, unsig
 {
 	char path[NATIVE_MEMCARD_MAX_PATH];
 
+	NativeMemcard_WaitWritesIdle();
+
 	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0))
 	{
 		return NATIVE_MEMCARD_NOT_FOUND;
@@ -953,6 +975,8 @@ enum NativeMemcardResult NativeMemcard_ReadBackupSaveData(const char *save_name,
 {
 	char path[NATIVE_MEMCARD_MAX_PATH];
 	char backup_path[NATIVE_MEMCARD_MAX_PATH];
+
+	NativeMemcard_WaitWritesIdle();
 
 	if (!NativeMemcard_BuildPathFromDeviceName(path, sizeof(path), save_name, 0) ||
 	    !NativeMemcard_SuffixPath(backup_path, sizeof(backup_path), path, NATIVE_MEMCARD_BACKUP_SUFFIX))
@@ -985,7 +1009,8 @@ internal int NativeMemcard_FlushToDevice(FILE *file)
 // existing file and Windows' does not, hence the two-step swap. At every instant one complete copy is on the card: before the swap
 // the old primary, between the two renames the .bak, after it the new
 // primary. A crash or power cut costs at most the save being written.
-enum NativeMemcardResult NativeMemcard_WriteSaveData(const char *save_name, const void *icon, int icon_byte_count, const unsigned char *src, int byte_count)
+internal enum NativeMemcardResult NativeMemcard_WriteSaveDataNow(const char *save_name, const void *icon, int icon_byte_count, const unsigned char *src,
+                                                                  int byte_count)
 {
 	char path[NATIVE_MEMCARD_MAX_PATH];
 	char temp_path[NATIVE_MEMCARD_MAX_PATH];
@@ -1045,4 +1070,255 @@ enum NativeMemcardResult NativeMemcard_WriteSaveData(const char *save_name, cons
 	}
 
 	return NATIVE_MEMCARD_OK;
+}
+
+// The write queue. On the 3DS every SD-card operation costs the calling thread
+// 100 ms or more and a save is about eight of them, so saves are written by the
+// save writer thread while the game keeps running. Jobs are a ring indexed by
+// three running counts: queued (game thread), finished (writer, under the
+// queue lock) and reported (game thread, after the done callback). A job's
+// slot is free again once it has been reported.
+#define NATIVE_MEMCARD_WRITE_SLOTS 8
+
+struct NativeMemcardWriteJob
+{
+	// A memory-card save name, or a host path when plain is set.
+	char save_name[NATIVE_MEMCARD_MAX_PATH];
+	int plain;
+	unsigned char *bytes;
+	int icon_byte_count;
+	int byte_count;
+	NativeMemcardWriteDone done;
+	void *user;
+	enum NativeMemcardResult result;
+	unsigned int elapsed_ms;
+};
+
+global_variable struct NativeMemcardWriteJob s_mcqJobs[NATIVE_MEMCARD_WRITE_SLOTS];
+global_variable unsigned int s_mcqQueued;
+global_variable unsigned int s_mcqReported;
+global_variable int s_mcqWriterUp;
+#ifdef __3DS__
+global_variable unsigned int s_mcqFinished;
+global_variable int s_mcqStop;
+#endif
+
+internal enum NativeMemcardResult NativeMemcard_WritePlainFileNow(const char *path, const unsigned char *src, int byte_count)
+{
+	FILE *file = (path != NULL) ? fopen(path, "wb") : NULL;
+	int written;
+
+	if (file == NULL)
+	{
+		return NATIVE_MEMCARD_OPEN_FAILED;
+	}
+
+	written = (fwrite(src, 1, byte_count, file) == (size_t)byte_count);
+	written = (fclose(file) == 0) && written;
+	return written ? NATIVE_MEMCARD_OK : NATIVE_MEMCARD_IO_ERROR;
+}
+
+internal enum NativeMemcardResult NativeMemcard_RunWrite(int plain, const char *target, const unsigned char *icon, int icon_byte_count, const unsigned char *src,
+                                                         int byte_count)
+{
+	if (plain)
+	{
+		return NativeMemcard_WritePlainFileNow(target, src, byte_count);
+	}
+
+	return NativeMemcard_WriteSaveDataNow(target, icon, icon_byte_count, src, byte_count);
+}
+
+internal unsigned int NativeMemcard_WritesFinished(void)
+{
+#ifdef __3DS__
+	unsigned int finished;
+
+	if (!s_mcqWriterUp)
+	{
+		return s_mcqQueued;
+	}
+
+	N3DS_SaveQueueLock();
+	finished = s_mcqFinished;
+	N3DS_SaveQueueUnlock();
+	return finished;
+#else
+	return s_mcqQueued;
+#endif
+}
+
+internal void NativeMemcard_WaitWritesIdle(void)
+{
+#ifdef __3DS__
+	while (s_mcqWriterUp && (NativeMemcard_WritesFinished() != s_mcqQueued))
+	{
+		N3DS_SaveDoneWait();
+	}
+#endif
+}
+
+#ifdef __3DS__
+internal void NativeMemcard_WriterMain(void)
+{
+	for (;;)
+	{
+		struct NativeMemcardWriteJob *job = NULL;
+		unsigned long long startTick;
+		unsigned long long freq;
+		int stop;
+
+		N3DS_SaveQueueLock();
+		if (s_mcqFinished != s_mcqQueued)
+		{
+			job = &s_mcqJobs[s_mcqFinished % NATIVE_MEMCARD_WRITE_SLOTS];
+		}
+		stop = s_mcqStop;
+		N3DS_SaveQueueUnlock();
+
+		if (job == NULL)
+		{
+			if (stop)
+			{
+				return;
+			}
+
+			N3DS_SaveWorkWait();
+			continue;
+		}
+
+		startTick = N3DS_GetTickCount();
+		job->result = NativeMemcard_RunWrite(job->plain, job->save_name, job->bytes, job->icon_byte_count, job->bytes + job->icon_byte_count, job->byte_count);
+		freq = N3DS_GetTickFrequency();
+		job->elapsed_ms = (unsigned int)(((N3DS_GetTickCount() - startTick) * 1000ull) / ((freq != 0ull) ? freq : 1ull));
+
+		N3DS_SaveQueueLock();
+		s_mcqFinished++;
+		N3DS_SaveQueueUnlock();
+		N3DS_SaveDoneSignal();
+	}
+}
+#endif
+
+void NativeMemcard_PumpWrites(void)
+{
+	while (s_mcqReported != NativeMemcard_WritesFinished())
+	{
+		struct NativeMemcardWriteJob *job = &s_mcqJobs[s_mcqReported % NATIVE_MEMCARD_WRITE_SLOTS];
+		NativeMemcardWriteDone done = job->done;
+		void *user = job->user;
+		enum NativeMemcardResult result = job->result;
+		unsigned int elapsed_ms = job->elapsed_ms;
+
+		free(job->bytes);
+		job->bytes = NULL;
+		s_mcqReported++;
+
+		// Last, because a callback may queue another write.
+		if (done != NULL)
+		{
+			done(result, elapsed_ms, user);
+		}
+	}
+}
+
+void NativeMemcard_FinishWrites(void)
+{
+	NativeMemcard_WaitWritesIdle();
+	NativeMemcard_PumpWrites();
+}
+
+internal void NativeMemcard_Enqueue(int plain, const char *save_name, const void *icon, int icon_byte_count, const unsigned char *src, int byte_count,
+                                    NativeMemcardWriteDone done, void *user)
+{
+	struct NativeMemcardWriteJob *job;
+	unsigned char *bytes = NULL;
+	enum NativeMemcardResult result;
+
+	NativeMemcard_PumpWrites();
+
+	if (s_mcqWriterUp && (icon_byte_count >= 0) && (byte_count >= 0))
+	{
+		bytes = (unsigned char *)malloc((size_t)icon_byte_count + (size_t)byte_count + 1u);
+	}
+
+	job = &s_mcqJobs[s_mcqQueued % NATIVE_MEMCARD_WRITE_SLOTS];
+	if ((bytes == NULL) || (save_name == NULL) || (s_mcqQueued - s_mcqReported >= NATIVE_MEMCARD_WRITE_SLOTS) ||
+	    !NativeMemcard_CopyString(job->save_name, sizeof(job->save_name), save_name))
+	{
+		// Inline, behind everything already queued, so writes still land in order.
+		free(bytes);
+		NativeMemcard_FinishWrites();
+		result = NativeMemcard_RunWrite(plain, save_name, (const unsigned char *)icon, icon_byte_count, src, byte_count);
+		if (done != NULL)
+		{
+			done(result, 0, user);
+		}
+		return;
+	}
+
+	if (icon_byte_count > 0)
+	{
+		memcpy(bytes, icon, (size_t)icon_byte_count);
+	}
+	if (byte_count > 0)
+	{
+		memcpy(bytes + icon_byte_count, src, (size_t)byte_count);
+	}
+	job->plain = plain;
+	job->bytes = bytes;
+	job->icon_byte_count = icon_byte_count;
+	job->byte_count = byte_count;
+	job->done = done;
+	job->user = user;
+	job->result = NATIVE_MEMCARD_IO_ERROR;
+	job->elapsed_ms = 0;
+
+#ifdef __3DS__
+	N3DS_SaveQueueLock();
+	s_mcqQueued++;
+	N3DS_SaveQueueUnlock();
+	N3DS_SaveWorkSignal();
+#endif
+}
+
+void NativeMemcard_QueueWrite(const char *save_name, const void *icon, int icon_byte_count, const unsigned char *src, int byte_count,
+                              NativeMemcardWriteDone done, void *user)
+{
+	NativeMemcard_Enqueue(0, save_name, icon, icon_byte_count, src, byte_count, done, user);
+}
+
+void NativeMemcard_QueueFileWrite(const char *path, const unsigned char *src, int byte_count)
+{
+	NativeMemcard_Enqueue(1, path, NULL, 0, src, byte_count, NULL, NULL);
+}
+
+void NativeMemcard_StartWriter(void)
+{
+#ifdef __3DS__
+	if (!s_mcqWriterUp)
+	{
+		s_mcqStop = 0;
+		s_mcqWriterUp = N3DS_SaveWorkerStart(NativeMemcard_WriterMain);
+	}
+#endif
+}
+
+void NativeMemcard_StopWriter(void)
+{
+#ifdef __3DS__
+	if (!s_mcqWriterUp)
+	{
+		return;
+	}
+
+	NativeMemcard_FinishWrites();
+
+	N3DS_SaveQueueLock();
+	s_mcqStop = 1;
+	N3DS_SaveQueueUnlock();
+	N3DS_SaveWorkSignal();
+	N3DS_SaveWorkerStopAndJoin();
+	s_mcqWriterUp = 0;
+#endif
 }

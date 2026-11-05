@@ -245,24 +245,24 @@ static s32 NativeOptions_LangSavePath(char *path, size_t pathSize)
 	return NativePath_Join(path, pathSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NATIVE_STR8_LIT(OPT_LANG_SAVE_FILE));
 }
 
+/* Written by the save writer, so the menu never waits on the SD card. A failed write (read-only or
+ * missing SD) leaves the language applied for this session only. */
 static void NativeOptions_SaveLanguage(void)
 {
 	char path[1024];
-	FILE *file;
+	char text[16];
+	int len;
 
 	if (!NativeOptions_LangSavePath(path, sizeof(path)))
 	{
 		return;
 	}
 
-	file = fopen(path, "wb");
-	if (file == NULL)
+	len = snprintf(text, sizeof(text), "%d\n", (int)s_optLangFile[s_optLangIndex]);
+	if ((len > 0) && (len < (int)sizeof(text)))
 	{
-		return; /* read-only or missing SD: the language still applies for this session */
+		NativeMemcard_QueueFileWrite(path, (const unsigned char *)text, len);
 	}
-
-	fprintf(file, "%d\n", (int)s_optLangFile[s_optLangIndex]);
-	fclose(file);
 }
 
 /* Returns the index into s_optLangFile that language.cfg names, or -1. */
@@ -326,28 +326,31 @@ static s32 NativeOptions_SettingsPath(char *path, size_t pathSize)
 	return NativePath_Join(path, pathSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NATIVE_STR8_LIT(OPT_SETTINGS_SAVE_FILE));
 }
 
+/* Written by the save writer, like language.cfg. A failed write leaves the flip applied for this
+ * session only. */
 static void NativeOptions_SaveSettings(void)
 {
 	char path[1024];
-	FILE *file;
+	char text[512];
+	int len = 0;
 
 	if (!NativeOptions_SettingsPath(path, sizeof(path)))
 	{
 		return;
 	}
 
-	file = fopen(path, "wb");
-	if (file == NULL)
-	{
-		return; /* read-only or missing SD: the flip still applies for this session */
-	}
-
 	for (s32 i = 0; i < OPT_TOGGLE_COUNT; i++)
 	{
-		fprintf(file, "%s %d\n", s_optToggles[i].saveKey, (*s_optToggles[i].flag != 0) ? 1 : 0);
+		int n = snprintf(text + len, sizeof(text) - (size_t)len, "%s %d\n", s_optToggles[i].saveKey, (*s_optToggles[i].flag != 0) ? 1 : 0);
+
+		if ((n < 0) || (n >= (int)sizeof(text) - len))
+		{
+			return;
+		}
+		len += n;
 	}
 
-	fclose(file);
+	NativeMemcard_QueueFileWrite(path, (const unsigned char *)text, len);
 }
 
 /* Applies one options.cfg line ("key 0" or "key 1", LF/CRLF optional) to the toggle whose saveKey

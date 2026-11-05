@@ -3,6 +3,18 @@
 
 static u8 s_memcardNativeInfoSeen[2];
 
+// The retail save on the save writer, if any. RefreshCard polls it through
+// MEMCARD_HandleEvent each frame until it lands, as it polled the PS1 card.
+enum MemcardNativeSaveState
+{
+	MEMCARD_NATIVE_SAVE_IDLE = 0,
+	MEMCARD_NATIVE_SAVE_QUEUED,
+	MEMCARD_NATIVE_SAVE_LANDED,
+};
+
+static enum MemcardNativeSaveState s_memcardNativeSaveState;
+static enum NativeMemcardResult s_memcardNativeSaveResult;
+
 static u8 *MEMCARD_NativePrepareIcon(char *iconHeader, int memcardFileSize, u32 saveFlags)
 {
 	u8 *icon = (u8 *)&data.memcardIcon_PsyqHand[0];
@@ -119,12 +131,47 @@ u8 MEMCARD_EraseFile(int slotIdx, char *srcString)
 	return NativeMemcard_RemoveFile(nativeName) == NATIVE_MEMCARD_OK ? MC_RETURN_IOE : MC_RETURN_NODATA;
 }
 
+static u8 MEMCARD_NativeSaveReturn(enum NativeMemcardResult nativeResult)
+{
+	if (nativeResult == NATIVE_MEMCARD_OPEN_FAILED)
+	{
+		return MC_RETURN_FULL;
+	}
+
+	if (nativeResult != NATIVE_MEMCARD_OK)
+	{
+		return MC_RETURN_TIMEOUT;
+	}
+
+	return MC_RETURN_IOE;
+}
+
+static void MEMCARD_NativeSaveLanded(enum NativeMemcardResult result, unsigned int elapsed_ms, void *user)
+{
+	(void)elapsed_ms;
+	(void)user;
+
+	s_memcardNativeSaveResult = result;
+	s_memcardNativeSaveState = MEMCARD_NATIVE_SAVE_LANDED;
+}
+
 int MEMCARD_HandleEvent(void)
 {
-	// Native MEMCARD operations complete synchronously in this adapter. If the
-	// retail polling path reaches here, report a timeout instead of touching PSX
-	// card event APIs.
-	return MC_RETURN_TIMEOUT;
+	// A queued save is the only native operation that completes later; with
+	// none in flight, report a timeout instead of touching PSX card event APIs.
+	if (s_memcardNativeSaveState == MEMCARD_NATIVE_SAVE_IDLE)
+	{
+		return MC_RETURN_TIMEOUT;
+	}
+
+	NativeMemcard_PumpWrites();
+	if (s_memcardNativeSaveState == MEMCARD_NATIVE_SAVE_QUEUED)
+	{
+		return MC_RETURN_PENDING;
+	}
+
+	s_memcardNativeSaveState = MEMCARD_NATIVE_SAVE_IDLE;
+	return MEMCARD_NativeSaveReturn(s_memcardNativeSaveResult);
 }
 
 static int MEMCARD_NativeChecksumMatches(u8 *saveBytes, int memcardFileSize)
@@ -198,7 +245,6 @@ u8 MEMCARD_Load(int slotIdx, char *name, u8 *ptrMemcard, int memcardFileSize, u3
 u8 MEMCARD_Save(int slotIdx, char *name, char *icon, u8 *ptrMemcard, int memcardFileSize, u32 saveFlags)
 {
 	char nativeName[64];
-	enum NativeMemcardResult nativeResult;
 	u8 *cardIcon;
 
 	sdata->crc16_checkpoint_byteIndex = 0;
@@ -207,16 +253,15 @@ u8 MEMCARD_Save(int slotIdx, char *name, char *icon, u8 *ptrMemcard, int memcard
 
 	cardIcon = MEMCARD_NativePrepareIcon(icon, memcardFileSize, saveFlags);
 	MEMCARD_StringSet(nativeName, slotIdx, name);
-	nativeResult = NativeMemcard_WriteSaveData(nativeName, cardIcon, sdata->memcardIconSize, ptrMemcard, memcardFileSize);
-	if (nativeResult == NATIVE_MEMCARD_OPEN_FAILED)
+
+	s_memcardNativeSaveState = MEMCARD_NATIVE_SAVE_QUEUED;
+	NativeMemcard_QueueWrite(nativeName, cardIcon, sdata->memcardIconSize, ptrMemcard, memcardFileSize, MEMCARD_NativeSaveLanded, NULL);
+	if (s_memcardNativeSaveState == MEMCARD_NATIVE_SAVE_QUEUED)
 	{
-		return MC_RETURN_FULL;
+		return MC_RETURN_PENDING;
 	}
 
-	if (nativeResult != NATIVE_MEMCARD_OK)
-	{
-		return MC_RETURN_TIMEOUT;
-	}
-
-	return MC_RETURN_IOE;
+	// Written inline: the result is already known.
+	s_memcardNativeSaveState = MEMCARD_NATIVE_SAVE_IDLE;
+	return MEMCARD_NativeSaveReturn(s_memcardNativeSaveResult);
 }
