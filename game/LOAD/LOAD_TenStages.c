@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_random_cpu.h>
 
 void (*mainMenuInit[])() = {MM_JumpTo_Title_FirstTime, MM_JumpTo_Characters, MM_JumpTo_TrackSelect, MM_JumpTo_BattleSetup, CS_Garage_Init, MM_JumpTo_Scrapbook};
 
@@ -382,6 +383,10 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		{
 			data.driverModelExtras[i].fileBase = NULL;
 		}
+
+#ifdef CTR_NATIVE
+		NativeRandomCpu_ClearModels();
+#endif
 
 		// NOTE(aalhendi): Retail gates stage advancement until the driver MPK callback sets ptrMPK.
 		sdata->load_inProgress = 1;

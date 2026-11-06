@@ -1,5 +1,6 @@
 #include <common.h>
 #include <native_penta.h>
+#include <native_random_cpu.h>
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 #include <platform/native_amnesia.h>
@@ -548,6 +549,16 @@ struct Model *VehBirth_GetModelByName(char *searchName)
 			return m;
 		}
 	}
+
+#ifdef CTR_NATIVE
+	// a random CPU field's racers are not in the pack; checked first, since the pack can hold a racer of the same name
+	struct Model *cpuModel = NativeRandomCpu_FindModel(searchName);
+
+	if (cpuModel != NULL)
+	{
+		return cpuModel;
+	}
+#endif
 
 	struct Model **models = (struct Model **)sdata->PLYROBJECTLIST;
 

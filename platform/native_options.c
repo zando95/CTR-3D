@@ -38,6 +38,8 @@ extern int g_reservesMeter; /* platform/native_gpu.c, dumpreq `reserves` */
 extern int g_dbg_btmMap;    /* platform/n3ds/native_renderer_3ds.c, dumpreq `btmmap` */
 /* platform/native_ghost_best.c; has no dumpreq word */
 extern int g_ghostBestEnabled;
+/* platform/native_random_cpu.c; has no dumpreq word */
+extern int g_randomCpus;
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
 /* Both live in the n3ds_backend TU; the flag is plain int and the call is
  * void(void), so they cross the scalar boundary without header help. */
@@ -70,6 +72,7 @@ static struct NativeOptToggle s_optToggles[] = {
     {NATIVE_LNG_OPT_RESERVES, &g_reservesMeter, NULL, "reserves"},
     {NATIVE_LNG_OPT_BOTTOM_MAP, &g_dbg_btmMap, NULL, "btmmap"},
     {NATIVE_LNG_OPT_BEST_GHOST, &g_ghostBestEnabled, NULL, "bestghost"},
+    {NATIVE_LNG_OPT_RANDOM_CPUS, &g_randomCpus, NULL, "randomcpus"},
 #if defined(CTR_NATIVE_TRACK_RENDERER) && CTR_NATIVE_TRACK_RENDERER
     {NATIVE_LNG_OPT_TEXTURE_FILTER, &g_dbg_trackBilinear, N3DS_TrackAtlas_ApplyFilter, "bilinear"},
 #endif
@@ -100,7 +103,7 @@ static const s16 s_optLangFile[OPT_LANG_COUNT] = {1, 3, 4, 5, 6, 7};
  * them here. Language names are written in their own language everywhere else (so you can still
  * find your language in a menu you cannot read), which is why these rows also fit in 18.
  */
-#define OPT_TEXT_TOGGLES 5
+#define OPT_TEXT_TOGGLES 6
 
 struct NativeOptText
 {
@@ -117,7 +120,7 @@ struct NativeOptText
 static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
     /* English (NTSC-U file 1): unchanged */
     {"OPTIONS",
-     {"PAL PENTA", "RESERVES METER", "BOTTOM MAP", "AUTOSAVE GHOST", "TEXTURE FILTER"},
+     {"PAL PENTA", "RESERVES METER", "BOTTOM MAP", "AUTOSAVE GHOST", "RANDOM CPUS", "TEXTURE FILTER"},
      "OFF",
      "ON",
      "LANGUAGE",
@@ -126,7 +129,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      9},
     /* French */
     {"OPTIONS",
-     {"PENTA PAL", "JAUGE RESERVE", "CARTE EN BAS", "SAUV. FANTOME", "FILTRE TEXTURE"},
+     {"PENTA PAL", "JAUGE RESERVE", "CARTE EN BAS", "SAUV. FANTOME", "CPU ALEATOIRES", "FILTRE TEXTURE"},
      "NON",
      "OUI",
      "LANGUE",
@@ -135,7 +138,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* German */
     {"OPTIONEN",
-     {"PAL PENTA", "RESERVEANZEIGE", "KARTE UNTEN", "AUTOSAVE GEIST", "TEXTURFILTER"},
+     {"PAL PENTA", "RESERVEANZEIGE", "KARTE UNTEN", "AUTOSAVE GEIST", "ZUFALLSGEGNER", "TEXTURFILTER"},
      "AUS",
      "EIN",
      "SPRACHE",
@@ -144,7 +147,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Italian */
     {"OPZIONI",
-     {"PENTA PAL", "BARRA RISERVA", "MAPPA IN BASSO", "SALVA FANTASMA", "FILTRO TEXTURE"},
+     {"PENTA PAL", "BARRA RISERVA", "MAPPA IN BASSO", "SALVA FANTASMA", "CPU CASUALI", "FILTRO TEXTURE"},
      "NO",
      "SI",
      "LINGUA",
@@ -153,7 +156,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Spanish */
     {"OPCIONES",
-     {"PENTA PAL", "MEDIDOR RESERVA", "MAPA INFERIOR", "FANTASMA AUTO", "FILTRO TEXTURAS"},
+     {"PENTA PAL", "MEDIDOR RESERVA", "MAPA INFERIOR", "FANTASMA AUTO", "CPU ALEATORIOS", "FILTRO TEXTURAS"},
      "NO",
      "SI",
      "IDIOMA",
@@ -162,7 +165,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Dutch */
     {"OPTIES",
-     {"PAL PENTA", "RESERVEMETER", "KAART ONDER", "SPOOK OPSLAAN", "TEXTUURFILTER"},
+     {"PAL PENTA", "RESERVEMETER", "KAART ONDER", "SPOOK OPSLAAN", "WILLEKEUR CPU", "TEXTUURFILTER"},
      "UIT",
      "AAN",
      "TAAL",
@@ -414,13 +417,15 @@ static struct MenuRow s_optMenuRows[] = {
     {NATIVE_LNG_OPT_RESERVES, 0, 2, 1, 1},
     {NATIVE_LNG_OPT_BOTTOM_MAP, 1, 3, 2, 2},
     {NATIVE_LNG_OPT_BEST_GHOST, 2, 4, 3, 3},
-    {NATIVE_LNG_OPT_TEXTURE_FILTER, 3, 5, 4, 4},
-    {NATIVE_LNG_OPT_LANGUAGE, 4, 5, 5, 5}, /* language selector = row OPT_TOGGLE_COUNT */
+    {NATIVE_LNG_OPT_RANDOM_CPUS, 3, 5, 4, 4},
+    {NATIVE_LNG_OPT_TEXTURE_FILTER, 4, 6, 5, 5},
+    {NATIVE_LNG_OPT_LANGUAGE, 5, 6, 6, 6}, /* language selector = row OPT_TOGGLE_COUNT */
 #else
     {NATIVE_LNG_OPT_RESERVES, 0, 2, 1, 1},
     {NATIVE_LNG_OPT_BOTTOM_MAP, 1, 3, 2, 2},
     {NATIVE_LNG_OPT_BEST_GHOST, 2, 4, 3, 3},
-    {NATIVE_LNG_OPT_LANGUAGE, 3, 4, 4, 4}, /* language selector = row OPT_TOGGLE_COUNT */
+    {NATIVE_LNG_OPT_RANDOM_CPUS, 3, 5, 4, 4},
+    {NATIVE_LNG_OPT_LANGUAGE, 4, 5, 5, 5}, /* language selector = row OPT_TOGGLE_COUNT */
 #endif
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };

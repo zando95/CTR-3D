@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_random_cpu.h>
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80032d30-0x80032d8c.
 void LOAD_AppendQueue(struct BigHeader *bigfile, int type, int fileIndex, void *destinationPtr, void (*callback)(struct LoadQueueSlot *))
@@ -35,6 +36,10 @@ void LOAD_CDRequestCallback(struct LoadQueueSlot *lqs)
 void LOAD_NextQueuedFile()
 {
 	struct LoadQueueSlot *curr = &data.currSlot;
+
+#ifdef CTR_NATIVE
+	NativeRandomCpu_PumpQueue();
+#endif
 
 	if ((sdata->queueReady != 0) && (sdata->XA_State == 0) && (sdata->queueLength != 0))
 	{

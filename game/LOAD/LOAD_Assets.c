@@ -1,4 +1,5 @@
 #include <common.h>
+#include <native_random_cpu.h>
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 #include <platform/native_checkpoint.h>
@@ -164,6 +165,13 @@ int LOAD_DriverMPK(struct BigHeader *bigfile, int levelLOD, void (*callback)(str
 		if ((gameMode1 & (TIME_TRIAL | MAIN_MENU)) != MAIN_MENU)
 		{
 			LOAD_Robots1P(data.characterIDs[0]);
+
+#ifdef CTR_NATIVE
+			if (NativeRandomCpu_QueueRace(bigfile, callback))
+			{
+				return sdata->ptrMPK;
+			}
+#endif
 		}
 
 		// arcade mpk

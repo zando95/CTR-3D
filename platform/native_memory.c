@@ -13,15 +13,18 @@
 #include <string.h>
 
 // The NTSC-U 926 mempack window inside a 2 MiB backing store, ending where
-// retail's does, plus 64 KiB of headroom below its start. Retail fills this
-// window almost exactly on its largest 1P tracks (Polar Pass, Mystery Caves),
-// and N. Oxide's racer files are up to ~27 KiB larger than any retail racer's
-// (hi/med/low models, 1P and 4P arcade packs), so a retail-sized window cannot
-// hold him there. MEMPACK_AllocMem stops the game when a request does not fit.
+// retail's does, plus 320 KiB of headroom below its start. Retail fills this
+// window almost exactly on its largest 1P tracks (Polar Pass, Mystery Caves).
+// Two native loads need more there: N. Oxide's racer files are up to ~27 KiB
+// larger than any retail racer's (hi/med/low models, 1P and 4P arcade packs),
+// and a random CPU field (include/native_random_cpu.h) loads each racer's own
+// hi and med files instead of one arcade pack, up to ~241 KiB more than the
+// largest retail pack. MEMPACK_AllocMem stops the game when a request does not
+// fit.
 #define CTR_NATIVE_MEMPACK_BUFFER_SIZE   0x200000u
 #define CTR_NATIVE_MEMPACK_RETAIL_START  0xba9f0u
 #define CTR_NATIVE_MEMPACK_RETAIL_SIZE   0x144e10u
-#define CTR_NATIVE_MEMPACK_HEADROOM      0x10000u
+#define CTR_NATIVE_MEMPACK_HEADROOM      0x50000u
 #define CTR_NATIVE_MEMPACK_START_OFFSET  (CTR_NATIVE_MEMPACK_RETAIL_START - CTR_NATIVE_MEMPACK_HEADROOM)
 #define CTR_NATIVE_MEMPACK_SIZE          (CTR_NATIVE_MEMPACK_RETAIL_SIZE + CTR_NATIVE_MEMPACK_HEADROOM)
 
