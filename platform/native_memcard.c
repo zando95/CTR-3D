@@ -1148,6 +1148,11 @@ internal unsigned int NativeMemcard_WritesFinished(void)
 #endif
 }
 
+int NativeMemcard_WritesInFlight(void)
+{
+	return NativeMemcard_WritesFinished() != s_mcqQueued;
+}
+
 internal void NativeMemcard_WaitWritesIdle(void)
 {
 #ifdef __3DS__

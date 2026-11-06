@@ -40,6 +40,9 @@ void NativeMemcard_QueueWrite(const char *save_name, const void *icon, int icon_
 // src, in the same queue and order as the saves. No backup copy is kept: for
 // small settings files that fall back to their defaults when missing.
 void NativeMemcard_QueueFileWrite(const char *path, const unsigned char *src, int byte_count);
+// 1 while a queued write has not landed. Any SD access made meanwhile waits for the
+// card, so a probe that can wait should. Game thread only.
+int NativeMemcard_WritesInFlight(void);
 // Runs the done callbacks of writes that have landed. Never blocks.
 void NativeMemcard_PumpWrites(void);
 // Blocks until every queued write has landed, then runs their callbacks.

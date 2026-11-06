@@ -3860,8 +3860,16 @@ unsigned int N3DS_ReadButtons(void)
 		 * boot so a request staged on the card before launch applies ahead of
 		 * the boot-time loads (speedoff), not a second into the intro. */
 		static unsigned int s_dumpPollCountdown = 1;
+		extern int NativeMemcard_WritesInFlight(void);
 
-		if (--s_dumpPollCountdown == 0)
+		/* A save write holds the SD card for seconds, and this probe would wait behind it on the
+		 * game thread: a due probe stays due until the save writer is idle. */
+		if ((s_dumpPollCountdown > 1) || !NativeMemcard_WritesInFlight())
+		{
+			s_dumpPollCountdown--;
+		}
+
+		if (s_dumpPollCountdown == 0)
 		{
 			FILE *req = fopen("sdmc:/dumpreq.txt", "rb");
 
