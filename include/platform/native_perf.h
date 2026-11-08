@@ -211,6 +211,13 @@ void NativePerf_CountTorch(int listed, int emitted);
  */
 void NativePerf_DumpSpikesNow(void);
 
+/*
+ * Wall-clock milliseconds on the perf counter, for instruments in game/ that
+ * time spans outside the frame scopes (the load stages run before
+ * NativePerf_BeginFrame).
+ */
+double NativePerf_WallMs(void);
+
 #ifdef CTR_INTERNAL
 /*
  * The DrawOTag job (the ~35ms "walk" the main thread waits behind) split into

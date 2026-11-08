@@ -61,8 +61,10 @@
 #include "platform/native_assets.c"
 #include "platform/native_audio.c"
 #include "platform/native_memory.c"
+#if !defined(__3DS__)
 #include "platform/native_checkpoint.c"
 #include "platform/native_checkpoint_file.c"
+#endif
 #include "platform/native_cd.c"
 #include "platform/native_gpu_links.c"
 #include "platform/native_gte_capture.c"

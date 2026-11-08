@@ -103,7 +103,15 @@ struct NativeCheckpointHeader
 	struct NativeCheckpointRegion regions[14];
 };
 
-global_variable void *s_nativeCheckpointPointerSlots[NATIVE_CHECKPOINT_POINTER_SLOT_CAP];
+/* Registered pointer slots as an open-addressed set (NULL = empty). Level
+ * loads register every pointer in their pointer maps (tens of thousands per
+ * level), so membership must cost a few probes, not a scan of every slot so
+ * far. Twice the count cap keeps the load factor at or under one half. Slots
+ * are walked in table order; nothing depends on registration order. */
+#define NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_BITS 17u
+#define NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_SIZE (1u << NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_BITS)
+CTR_STATIC_ASSERT(NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_SIZE >= (NATIVE_CHECKPOINT_POINTER_SLOT_CAP * 2u));
+global_variable void *s_nativeCheckpointPointerSlots[NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_SIZE];
 global_variable u32 s_nativeCheckpointPointerSlotCount;
 
 internal int NativeCheckpoint_InitHeader(struct NativeCheckpointHeader *header);
@@ -145,30 +153,51 @@ internal void NativeCheckpoint_WriteU32Slot(void *slot, u32 value)
 	}
 }
 
+internal void NativeCheckpoint_ClearPointerSlots(void)
+{
+	memset(s_nativeCheckpointPointerSlots, 0, sizeof(s_nativeCheckpointPointerSlots));
+	s_nativeCheckpointPointerSlotCount = 0;
+}
+
+internal u32 NativeCheckpoint_PointerSlotHome(const void *slot)
+{
+	u32 key = (u32)((uintptr_t)slot >> 2);
+
+	key ^= key >> 16;
+	return (key * 2654435761u) >> (32u - NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_BITS);
+}
+
 void NativeCheckpoint_OnMempackArenaReset(void)
 {
-	s_nativeCheckpointPointerSlotCount = 0;
+	NativeCheckpoint_ClearPointerSlots();
 }
 
 void NativeCheckpoint_RegisterPointerSlot(void *slot)
 {
+	u32 index;
+
 	if (slot == NULL)
 	{
 		return;
 	}
+
+	index = NativeCheckpoint_PointerSlotHome(slot);
+	while (s_nativeCheckpointPointerSlots[index] != NULL)
+	{
+		if (s_nativeCheckpointPointerSlots[index] == slot)
+		{
+			return;
+		}
+		index = (index + 1u) & (NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_SIZE - 1u);
+	}
+
 	if (s_nativeCheckpointPointerSlotCount >= NATIVE_CHECKPOINT_POINTER_SLOT_CAP)
 	{
 		return;
 	}
-	for (u32 i = 0; i < s_nativeCheckpointPointerSlotCount; i++)
-	{
-		if (s_nativeCheckpointPointerSlots[i] == slot)
-		{
-			return;
-		}
-	}
 
-	s_nativeCheckpointPointerSlots[s_nativeCheckpointPointerSlotCount++] = slot;
+	s_nativeCheckpointPointerSlots[index] = slot;
+	s_nativeCheckpointPointerSlotCount++;
 }
 
 internal int NativeCheckpoint_GetActiveMempackIndex(void)
@@ -1874,12 +1903,16 @@ internal int NativeCheckpoint_CapturePointerSlotState(void *dst, int dstSize)
 
 	memset(state, 0, sizeof(*state));
 
-	for (u32 i = 0; i < s_nativeCheckpointPointerSlotCount; i++)
+	for (u32 i = 0; i < NATIVE_CHECKPOINT_POINTER_SLOT_TABLE_SIZE; i++)
 	{
 		u32 slotAddress;
 		u32 slotOffset;
 		const struct NativeCheckpointAddressRange *slotRange;
 
+		if (s_nativeCheckpointPointerSlots[i] == NULL)
+		{
+			continue;
+		}
 		if (count >= NATIVE_CHECKPOINT_POINTER_SLOT_CAP)
 		{
 			return 0;
@@ -1918,7 +1951,7 @@ internal int NativeCheckpoint_ApplyPointerSlotState(const struct NativeCheckpoin
 		return 0;
 	}
 
-	s_nativeCheckpointPointerSlotCount = 0;
+	NativeCheckpoint_ClearPointerSlots();
 
 	for (u32 i = 0; i < state->count; i++)
 	{

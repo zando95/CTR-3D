@@ -43,6 +43,10 @@ static struct NativePerfFrameInfo MainPerf_FrameInfo(struct GameTracker *gGT)
 	return info;
 }
 
+/* [PREFRAME]: start of the gameplay state's pre-frame span (load branch,
+ * replay and save-state hooks), which runs outside the perf frame. */
+static double s_mainMainCase3T0;
+
 static struct NativeReplaySchedulerFrameInfo MainReplayScheduler_FrameInfo(struct GameTracker *gGT)
 {
 	struct NativeReplaySchedulerFrameInfo info;
@@ -107,9 +111,31 @@ u32 main(void)
 		}
 #endif
 
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+		/* [LOOPTOP]: the queued file load and the XA pause check run outside the
+		 * perf frame; a call long enough to show as a freeze is logged. */
+		const double loopTopT0 = NativePerf_WallMs();
+		const int loopTopQueueLen = sdata->queueLength;
+		const int loopTopQueueFile = (sdata->queueLength != 0) ? (int)sdata->queueSlots[0].subfileIndex : -1;
+		const int loopTopQueueType = (sdata->queueLength != 0) ? (int)sdata->queueSlots[0].type_UNUSED : -1;
+#endif
 		LOAD_NextQueuedFile();
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+		const double loopTopT1 = NativePerf_WallMs();
+#endif
 		// NOTE(aalhendi): ASM-verified NTSC-U 926 0x8003c5d0-0x8003c5dc for per-frame XA pause handling.
 		CDSYS_XAPauseAtEnd();
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+		{
+			const double loopTopT2 = NativePerf_WallMs();
+
+			if (((loopTopT1 - loopTopT0) > 30.0) || ((loopTopT2 - loopTopT1) > 30.0))
+			{
+				Platform_LogInstrument("[LOOPTOP] queue=%.1fms (len=%d file=%d type=%d) xaPause=%.1fms lvl=%d stage=%d\n", loopTopT1 - loopTopT0, loopTopQueueLen,
+				                       loopTopQueueFile, loopTopQueueType, loopTopT2 - loopTopT1, (int)gGT->levelID, (int)sdata->Loading.stage);
+			}
+		}
+#endif
 
 		switch (sdata->mainGameState)
 		{
@@ -215,6 +241,9 @@ u32 main(void)
 		// Main Gameplay Update
 		// Makes up all normal interaction with the game
 		case 3:
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+			s_mainMainCase3T0 = NativePerf_WallMs();
+#endif
 
 			// if loading, or gameplay interrupted
 			if (sdata->Loading.stage != LOAD_IDLE)
@@ -306,7 +335,21 @@ u32 main(void)
 				// if something is being loaded
 				else
 				{
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+					const double loadStageT0 = NativePerf_WallMs();
+#endif
 					sdata->Loading.stage = LOAD_TenStages(gGT, iVar8, sdata->ptrBigfile1);
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+					/* [LOADSTG]: one load-stage call long enough to show as a freeze. */
+					{
+						const double loadStageMs = NativePerf_WallMs() - loadStageT0;
+
+						if (loadStageMs > 30.0)
+						{
+							Platform_LogInstrument("[LOADSTG] stage %d->%d lvl=%d %.1fms\n", iVar8, sdata->Loading.stage, gGT->levelID, loadStageMs);
+						}
+					}
+#endif
 
 					// If just finished loading stage 9
 					if (sdata->Loading.stage == LOAD_FINISHED)
@@ -373,7 +416,12 @@ u32 main(void)
 			}
 			{
 				struct NativePerfFrameInfo perfFrameInfo = MainPerf_FrameInfo(gGT);
+				const double preFrameMs = NativePerf_WallMs() - s_mainMainCase3T0;
 
+				if (preFrameMs > 30.0)
+				{
+					Platform_LogInstrument("[PREFRAME] %.1fms lvl=%d stage=%d\n", preFrameMs, (int)gGT->levelID, (int)sdata->Loading.stage);
+				}
 				NativePerf_BeginFrame(&perfFrameInfo);
 			}
 #endif

@@ -179,6 +179,9 @@ global_variable f64 s_maxWorkMs;
 global_variable f64 s_bucketTotals[NATIVE_PERF_BUCKET_COUNT];
 global_variable f64 s_frameBucketMs[NATIVE_PERF_BUCKET_COUNT];
 global_variable u64 s_frameStartCounter;
+/* End of the last closed frame, for [OUTFRAME]: time the main thread spends
+ * between frames (load stages, queued file loads) is otherwise unmeasured. */
+global_variable u64 s_perfLastFrameEndCounter;
 global_variable u64 s_scopeStartCounter[NATIVE_PERF_BUCKET_COUNT];
 global_variable s32 s_scopeDepth[NATIVE_PERF_BUCKET_COUNT];
 global_variable struct NativePerfFrameInfo s_frameBeginInfo;
@@ -945,6 +948,17 @@ void NativePerf_BeginFrame(const struct NativePerfFrameInfo *info)
 	NativeAudio_GetOutputStats(&s_beginUnderrunFrames, &s_beginOverflowFrames, &s_beginQueuedFrames);
 	s_frameStartCounter = SDL_GetPerformanceCounter();
 	s_frameOpen = 1;
+
+	if (s_perfLastFrameEndCounter != 0)
+	{
+		const f64 gapMs = NativePerf_CounterToMs(s_frameStartCounter - s_perfLastFrameEndCounter);
+
+		if (gapMs > 100.0)
+		{
+			Platform_LogInstrument("[OUTFRAME] gap=%.1fms lvl=%ld stage=%ld f=%ld\n", (double)gapMs, (long)info->levelID, (long)info->loadingStage,
+			                       (long)info->frameCounter);
+		}
+	}
 }
 
 #if defined(__3DS__)
@@ -1076,6 +1090,11 @@ void NativePerf_DumpSpikesNow(void)
 #if defined(__3DS__)
 	NativePerf_SpikeFlush();
 #endif
+}
+
+double NativePerf_WallMs(void)
+{
+	return NativePerf_CounterToMs(SDL_GetPerformanceCounter());
 }
 
 void NativePerf_EndFrame(const struct NativePerfFrameInfo *info)
@@ -1256,6 +1275,7 @@ void NativePerf_EndFrame(const struct NativePerfFrameInfo *info)
 
 	s_frameIndex++;
 	s_frameOpen = 0;
+	s_perfLastFrameEndCounter = SDL_GetPerformanceCounter();
 }
 
 void NativePerf_BeginScope(enum NativePerfBucket bucket)

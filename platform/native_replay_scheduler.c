@@ -2,7 +2,7 @@
 
 #include <macros.h>
 
-#if defined(CTR_INTERNAL)
+#if defined(CTR_INTERNAL) && !defined(__3DS__)
 #include "platform/native_audio.h"
 #include "platform/native_checkpoint.h"
 #include "platform/native_checkpoint_file.h"
