@@ -9,9 +9,11 @@
 
 #include <string.h>
 
-// Direct-mapped, verify-by-stored-key side table.
-// A collision or a stale (last frame's) entry is always a miss, never a wrong
-// value -- callers fall back to today's exact snapped behavior on a miss.
+// Open-addressed, verify-by-stored-key side table: a key lives in the first of
+// GTE_CAPTURE_PROBES consecutive slots from its hash that was empty or already
+// held it. A stale (last frame's) entry or a key pushed out past the probe
+// window is always a miss, never a wrong value -- callers fall back to today's
+// exact snapped behavior on a miss.
 //
 // DOUBLE-BUFFERED: the game thread writes frame N+1's captures while the
 // walk worker may still be reading frame N's table. Two buffers;
@@ -134,6 +136,34 @@ internal u32 GTECapture_Hash(u32 key)
 	// linearity and the fixed collision vectors.
 	key ^= key >> 16;
 	return (key * 0x9E3779B1u) >> (32u - GTE_CAPTURE_TABLE_BITS);
+}
+
+/* Probe window. A single slot per key loses a few percent of a busy frame's
+ * entries to collisions, and the packet path drops the depth of any primitive
+ * missing two corners, so every lost entry can blink a triangle out for a frame.
+ * Entries are never removed within a frame (the generation bump clears them all
+ * at once), so a lookup may stop at the first slot not written this frame. */
+#define GTE_CAPTURE_PROBES 4
+
+internal GTECaptureEntry *GTECapture_FindLive(const GTECaptureBuffer *buf, u32 key)
+{
+	const u32 home = GTECapture_Hash(key);
+	int i;
+
+	for (i = 0; i < GTE_CAPTURE_PROBES; i++)
+	{
+		const GTECaptureEntry *entry = &buf->entries[(home + (u32)i) & (GTE_CAPTURE_TABLE_SIZE - 1u)];
+
+		if (entry->generation != buf->generation)
+		{
+			return NULL;
+		}
+		if (entry->key == key)
+		{
+			return (GTECaptureEntry *)entry;
+		}
+	}
+	return NULL;
 }
 
 // Matrix-change detector state: game-thread only, continuity across the
@@ -462,6 +492,29 @@ int GTECapture_WatchIsHiddenInstance(void)
 {
 	return (g_dbg_watchHide != 0) && (s_watchActive != 0);
 }
+
+/* Prefix match on instance OR model name, so `watch BOX` taps every BOX_*
+ * piece of a multi-instance prop; a trailing '$' (`watch BOX_02$`) demands the
+ * whole name. */
+internal int GTECapture_WatchMatches(const struct Instance *inst)
+{
+	const char *modelName;
+	size_t wlen;
+
+	if ((g_dbg_watchName[0] == '\0') || (inst == NULL))
+	{
+		return 0;
+	}
+	modelName = (inst->model != NULL) ? inst->model->name : "";
+	wlen = strlen(g_dbg_watchName);
+	if (g_dbg_watchName[wlen - 1] == '$')
+	{
+		wlen--;
+		return ((strncmp(inst->name, g_dbg_watchName, wlen) == 0) && (inst->name[wlen] == '\0')) ||
+		       ((strncmp(modelName, g_dbg_watchName, wlen) == 0) && (modelName[wlen] == '\0'));
+	}
+	return (strncmp(inst->name, g_dbg_watchName, wlen) == 0) || (strncmp(modelName, g_dbg_watchName, wlen) == 0);
+}
 global_variable char s_watchInstName[16];
 global_variable s64 s_watchTrueZ;
 global_variable s32 s_watchMvpZ;
@@ -477,6 +530,15 @@ global_variable u16 s_watchCorrMax;
  * naming the corrupter. */
 global_variable s32 s_watchInstT[3];
 global_variable s32 s_watchCamPos[3];
+/* LOD header of the watched draw: a model's hi/lo swap and a draw-func switch
+ * both happen at fixed distances, and only this field tells them apart. */
+global_variable const char *s_watchPendingLod;
+global_variable char s_watchLodName[16];
+
+void GTECapture_WatchNoteLod(const char *lodName)
+{
+	s_watchPendingLod = lodName;
+}
 /* Ground-decal nearer bias, in view.z units, applied to every store inside a
  * FIXED-shift bracket (shadows/skids/tires and the ordinary particle list) --
  * the 3DS analogue of retail's painter's order for content that sits ON the
@@ -594,26 +656,8 @@ void GTECapture_BeginInstanceDepth(const struct Instance *inst, const struct Pus
 	/* Watch tap -- see g_dbg_watchName. Matched per bracket so multiple
 	 * same-named instances (the prize ring is three "prize1"s) each report. */
 	s_watchActive = 0;
-	if (g_dbg_watchName[0] != '\0')
 	{
-		const char *modelName = (inst->model != NULL) ? inst->model->name : "";
-		size_t wlen = strlen(g_dbg_watchName);
-		int exact = (wlen > 0) && (g_dbg_watchName[wlen - 1] == '$');
-		int hit;
-
-		/* Prefix match, so `watch BOX` taps every BOX_* piece of a multi-instance
-		 * prop; a trailing '$' (`watch BOX_02$`) demands the whole name. */
-		if (exact)
-		{
-			wlen--;
-			hit = ((strncmp(inst->name, g_dbg_watchName, wlen) == 0) && (inst->name[wlen] == '\0')) ||
-			      ((strncmp(modelName, g_dbg_watchName, wlen) == 0) && (modelName[wlen] == '\0'));
-		}
-		else
-		{
-			hit = (strncmp(inst->name, g_dbg_watchName, wlen) == 0) || (strncmp(modelName, g_dbg_watchName, wlen) == 0);
-		}
-		if (hit)
+		if (GTECapture_WatchMatches(inst))
 		{
 			int wi;
 
@@ -632,6 +676,15 @@ void GTECapture_BeginInstanceDepth(const struct Instance *inst, const struct Pus
 			s_watchCamPos[0] = (s32)pb->pos.x;
 			s_watchCamPos[1] = (s32)pb->pos.y;
 			s_watchCamPos[2] = (s32)pb->pos.z;
+			for (wi = 0; wi < 15; wi++)
+			{
+				s_watchLodName[wi] = (s_watchPendingLod != NULL) ? s_watchPendingLod[wi] : '\0';
+				if (s_watchLodName[wi] == '\0')
+				{
+					break;
+				}
+			}
+			s_watchLodName[(wi < 15) ? wi : 15] = '\0';
 			s_watchStores = 0;
 			s_watchRawMin = 0xFFFFu;
 			s_watchRawMax = 0;
@@ -707,8 +760,8 @@ void GTECapture_EndInstanceDepth(void)
 	{
 		if ((s_watchFrameCtr & 7u) == 0u)
 		{
-			Platform_LogInstrument("[WATCH] f=%lu name=%s func=%d trueZ=%ld mvpZ=%ld shift=%d stores=%lu raw=%u..%u corr=%u..%u t=(%ld,%ld,%ld) cam=(%ld,%ld,%ld)\n",
-			                       (unsigned long)s_watchFrameCtr, s_watchInstName, s_watchFunc,
+			Platform_LogInstrument("[WATCH] f=%lu name=%s lod=%s func=%d trueZ=%ld mvpZ=%ld shift=%d stores=%lu raw=%u..%u corr=%u..%u t=(%ld,%ld,%ld) cam=(%ld,%ld,%ld)\n",
+			                       (unsigned long)s_watchFrameCtr, s_watchInstName, s_watchLodName, s_watchFunc,
 			                       (long)s_watchTrueZ, (long)s_watchMvpZ, (s_instAxisShift == GTE_INSTAXIS_UNRESOLVED) ? 99 : s_instAxisShift,
 			                       (unsigned long)s_watchStores, (unsigned)s_watchRawMin, (unsigned)s_watchRawMax, (unsigned)s_watchCorrMin,
 			                       (unsigned)s_watchCorrMax, (long)s_watchInstT[0], (long)s_watchInstT[1], (long)s_watchInstT[2], (long)s_watchCamPos[0],
@@ -805,7 +858,26 @@ void GTECapture_Store(s16 sx, s16 sy, s64 sxFull, s64 syFull, u16 sz3, s32 hOver
 {
 	GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureWriteIdx];
 	u32 key = GTECapture_PackKey(sx, sy);
-	GTECaptureEntry *entry = &buf->entries[GTECapture_Hash(key)];
+	const u32 home = GTECapture_Hash(key);
+	GTECaptureEntry *entry = &buf->entries[home];
+
+	/* First slot in the probe window that is free this frame or already holds
+	 * this key (GTECapture_FindLive's contract). A full window overwrites the
+	 * home slot, which is the old direct-mapped eviction. */
+	{
+		int i;
+
+		for (i = 0; i < GTE_CAPTURE_PROBES; i++)
+		{
+			GTECaptureEntry *probe = &buf->entries[(home + (u32)i) & (GTE_CAPTURE_TABLE_SIZE - 1u)];
+
+			if ((probe->generation != buf->generation) || (probe->key == key))
+			{
+				entry = probe;
+				break;
+			}
+		}
+	}
 
 	/* Suppressed producers must not even EVICT -- see the comment above; the
 	 * eviction is the half of the bug that does not look like a skybox
@@ -1003,9 +1075,9 @@ int GTECapture_Lookup(s16 sx, s16 sy, u8 *fracX8, u8 *fracY8)
 {
 	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
 	u32 key = GTECapture_PackKey(sx, sy);
-	const GTECaptureEntry *entry = &buf->entries[GTECapture_Hash(key)];
+	const GTECaptureEntry *entry = GTECapture_FindLive(buf, key);
 
-	if ((entry->generation != buf->generation) || (entry->key != key))
+	if (entry == NULL)
 	{
 		return 0;
 	}
@@ -1019,9 +1091,9 @@ int GTECapture_LookupModel(s16 sx, s16 sy, s16 outV[3])
 {
 	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
 	u32 key = GTECapture_PackKey(sx, sy);
-	const GTECaptureEntry *entry = &buf->entries[GTECapture_Hash(key)];
+	const GTECaptureEntry *entry = GTECapture_FindLive(buf, key);
 
-	if ((entry->generation != buf->generation) || (entry->key != key))
+	if (entry == NULL)
 	{
 		return 0;
 	}
@@ -1047,9 +1119,9 @@ int GTECapture_LookupDepth(s16 sx, s16 sy, u16 *outSz3)
 {
 	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
 	u32 key = GTECapture_PackKey(sx, sy);
-	const GTECaptureEntry *entry = &buf->entries[GTECapture_Hash(key)];
+	const GTECaptureEntry *entry = GTECapture_FindLive(buf, key);
 
-	if ((entry->generation != buf->generation) || (entry->key != key))
+	if (entry == NULL)
 	{
 		return 0;
 	}
@@ -1066,9 +1138,9 @@ int GTECapture_LookupDepthEx(s16 sx, s16 sy, u16 *outSz3, u8 *outMtxId)
 {
 	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
 	u32 key = GTECapture_PackKey(sx, sy);
-	const GTECaptureEntry *entry = &buf->entries[GTECapture_Hash(key)];
+	const GTECaptureEntry *entry = GTECapture_FindLive(buf, key);
 
-	if ((entry->generation != buf->generation) || (entry->key != key))
+	if (entry == NULL)
 	{
 		return 0;
 	}
@@ -1126,9 +1198,9 @@ int GTECapture_LookupModelEx(s16 sx, s16 sy, s16 outV[3], u8 *outMtxId)
 {
 	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
 	u32 key = GTECapture_PackKey(sx, sy);
-	const GTECaptureEntry *entry = &buf->entries[GTECapture_Hash(key)];
+	const GTECaptureEntry *entry = GTECapture_FindLive(buf, key);
 
-	if ((entry->generation != buf->generation) || (entry->key != key))
+	if (entry == NULL)
 	{
 		return 0;
 	}

@@ -312,6 +312,7 @@ global_variable u32 s_modelEmitWinInsts;
 global_variable u32 s_modelEmitWinTextured;
 global_variable u32 s_modelEmitWinPeakTris;
 global_variable u32 s_modelEmitWinSemiTris; /* declined to the packet path -- see NativeModelEmit_Triangle */
+global_variable u32 s_modelEmitWinSnapRescued; /* snap-culled triangles NativeModelEmit_FrontFacing passed */
 
 /*
  * Is this triangle's texture semi-transparent on PS1?
@@ -603,6 +604,53 @@ internal void NativeModelEmit_UnpackVertex(u32 packedXY, u32 packedZ, s16 *outX,
  * triangles are claimed like any other: the draw side does real two-pass PS1
  * blending (NativeModelDraw_IssueForWalk).
  */
+/*
+ * Retail's NCLIP facing test, redone unsnapped against the open instance's
+ * captured transform: the sign of the screen-space cross product of the three
+ * projected vertices, before the GTE truncates them to whole pixels. H and the
+ * screen offset scale and shift all three points alike, so they drop out.
+ * frontNegative is the sign retail requires of a front face. A vertex at or
+ * behind the eye has no screen position, so the triangle stays culled.
+ */
+int NativeModelEmit_FrontFacing(const u32 *packedXY3, const u32 *packedZ3, int frontNegative)
+{
+	const struct NativeModelEmitInstance *mi;
+	float sx[3], sy[3];
+	float cross;
+	int i;
+
+	if (s_modelEmitCurInst < 0)
+	{
+		return 0;
+	}
+	mi = &s_modelEmitBuf[s_modelEmitWriteIdx].insts[s_modelEmitCurInst];
+
+	for (i = 0; i < 3; i++)
+	{
+		s16 vx, vy, vz;
+		float x, y, z;
+
+		NativeModelEmit_UnpackVertex(packedXY3[i], packedZ3[i], &vx, &vy, &vz);
+		x = (float)mi->trans[0] + ((float)mi->rot[0][0] * vx + (float)mi->rot[0][1] * vy + (float)mi->rot[0][2] * vz) * (1.0f / 4096.0f);
+		y = (float)mi->trans[1] + ((float)mi->rot[1][0] * vx + (float)mi->rot[1][1] * vy + (float)mi->rot[1][2] * vz) * (1.0f / 4096.0f);
+		z = (float)mi->trans[2] + ((float)mi->rot[2][0] * vx + (float)mi->rot[2][1] * vy + (float)mi->rot[2][2] * vz) * (1.0f / 4096.0f);
+		if (z <= 0.0f)
+		{
+			return 0;
+		}
+		sx[i] = x / z;
+		sy[i] = y / z;
+	}
+
+	cross = sx[0] * (sy[1] - sy[2]) + sx[1] * (sy[2] - sy[0]) + sx[2] * (sy[0] - sy[1]);
+	if ((cross == 0.0f) || ((cross < 0.0f) != (frontNegative != 0)))
+	{
+		return 0;
+	}
+	s_modelEmitWinSnapRescued++;
+	return 1;
+}
+
 int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, int blendOverride)
 {
 	struct NativeModelEmitSnapshot *dst = &s_modelEmitBuf[s_modelEmitWriteIdx];
@@ -974,8 +1022,10 @@ void NativeModelEmit_EndFrame(void)
 		 * take over. Quoted per frame like its neighbours so it can be read
 		 * against tris/f directly.
 		 */
-		Platform_LogInstrument("[MDLEMIT] semiTris/f=%lu\n", (unsigned long)(s_modelEmitWinSemiTris / (f ? f : 1)));
+		Platform_LogInstrument("[MDLEMIT] semiTris/f=%lu snapRescued=%lu\n", (unsigned long)(s_modelEmitWinSemiTris / (f ? f : 1)),
+		                       (unsigned long)s_modelEmitWinSnapRescued);
 		s_modelEmitWinSemiTris = 0;
+		s_modelEmitWinSnapRescued = 0;
 
 		Platform_LogInstrument("[MDLEMIT] lvl=%d f=%lu tris/f=%lu texTris/f=%lu inst/f=%lu peakTris=%lu/%d droppedTris=%lu droppedInst=%lu\n",
 		                       NativePerf_CurrentLevelID(), (unsigned long)f, (unsigned long)(s_modelEmitWinTris / f),

@@ -164,6 +164,9 @@ u32 GTECapture_ReadEvictCensus(u32 *outSameMtx, u32 *outMaxDz);
 struct Instance;
 struct PushBuffer;
 void GTECapture_BeginInstanceDepth(const struct Instance *inst, const struct PushBuffer *pb, s32 mvpZIfNormal, int funcKind);
+/* Names the LOD header the next GTECapture_BeginInstanceDepth draws, for the
+ * [WATCH] line's lod= field. Call immediately before it. */
+void GTECapture_WatchNoteLod(const char *lodName);
 /* Fixed-shift variant for producers whose regime is known from source
  * rather than measured -- the ground-decal trio (shadows, skids, tires), which
  * pre-multiply camera-relative position by 4 and run outside RenderBucket.

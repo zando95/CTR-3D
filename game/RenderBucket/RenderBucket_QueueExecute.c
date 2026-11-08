@@ -33,6 +33,7 @@ struct TextureLayout;
 extern int NativeModelEmit_BeginInstance(const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int forceSemiTrans, int specularLit,
                                          const struct Instance *inst, int ghostComposite, u32 fadeColorWord);
 extern int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, int blendOverride);
+extern int NativeModelEmit_FrontFacing(const u32 *packedXY3, const u32 *packedZ3, int frontNegative);
 extern void NativeModelEmit_EndInstance(void);
 extern int NativeModelEmit_SkipRetailDraw(void);
 extern int NativeModelEmit_SpecularEnabled(void);
@@ -62,6 +63,7 @@ extern int NativeWide_MarginClassOn(int bit);
  * while the calls were capture-gated, and no build had ever combined them. */
 struct PushBuffer;
 extern void GTECapture_BeginInstanceDepth(const struct Instance *inst, const struct PushBuffer *pb, s32 mvpZIfNormal, int funcKind);
+extern void GTECapture_WatchNoteLod(const char *lodName);
 extern void GTECapture_EndInstanceDepth(void);
 extern int GTECapture_WatchIsHiddenInstance(void);
 #endif
@@ -2904,9 +2906,49 @@ static int RenderBucket_RestoreProjectedRegsAndReturn(const struct RenderBucketP
 	return ret;
 }
 
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+/* Set by RenderBucket_CheckProjectedPrim when it rejects a triangle at NCLIP
+ * whose whole-pixel area is within rounding error of zero: its facing is
+ * decided by the snap, not the geometry. The native model path rechecks those
+ * at full precision (RenderBucket_CaptureSnapCulledTriangle), because it draws
+ * their neighbours unsnapped and a dropped sliver opens a visible gap. */
+static int s_rbqSnapCulled;
+/* Sign retail requires of a front face's NCLIP for that triangle: the cull
+ * word's sign (instance REVERSE_CULL bit ^ command bit 29). */
+static int s_rbqSnapFrontNegative;
+
+/* An NCLIP result this close to zero can change sign under the GTE's
+ * whole-pixel truncation: each coordinate moves by under 1, so NCLIP moves by
+ * at most the L1 perimeter of the screen triangle (first order) plus 6 (the
+ * second-order cross terms). */
+static int RenderBucket_NclipWithinSnapError(int opZ)
+{
+	u32 sxy0 = (u32)MFC2(12);
+	u32 sxy1 = (u32)MFC2(13);
+	u32 sxy2 = (u32)MFC2(14);
+	int x0 = (s16)(sxy0 & 0xffff), y0 = (s16)(sxy0 >> 16);
+	int x1 = (s16)(sxy1 & 0xffff), y1 = (s16)(sxy1 >> 16);
+	int x2 = (s16)(sxy2 & 0xffff), y2 = (s16)(sxy2 >> 16);
+	int perimeter = 0;
+	int edge[6] = {x1 - x0, y1 - y0, x2 - x1, y2 - y1, x0 - x2, y0 - y2};
+	int i;
+
+	for (i = 0; i < 6; i++)
+	{
+		perimeter += (edge[i] < 0) ? -edge[i] : edge[i];
+	}
+
+	return ((opZ < 0) ? -opZ : opZ) <= perimeter + 6;
+}
+#endif
+
 static int RenderBucket_CheckProjectedPrim(struct RenderBucketDrawContext *ctx, u32 command, u32 gteFlag, u16 cullXorMask, int *depthMac0Out)
 {
 	int depthMac0;
+
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	s_rbqSnapCulled = 0;
+#endif
 
 	// NOTE(aalhendi): Source-backs the shared retail projection gate:
 	// flag reject, optional NCLIP, AVSZ3, screen-window reject, then MAC0.
@@ -2923,14 +2965,23 @@ static int RenderBucket_CheckProjectedPrim(struct RenderBucketDrawContext *ctx, 
 
 		gte_nclip();
 		gte_stopz(&opZ);
+		cullXor = (s32)cullFlags ^ (s32)(command << 2);
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+		s_rbqSnapFrontNegative = (cullXor < 0);
+#endif
 		if (opZ == 0)
 		{
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+			s_rbqSnapCulled = 1;
+#endif
 			return 0;
 		}
 
-		cullXor = (s32)cullFlags ^ (s32)(command << 2);
 		if ((s32)((u32)opZ ^ (u32)cullXor) <= 0)
 		{
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+			s_rbqSnapCulled = RenderBucket_NclipWithinSnapError(opZ);
+#endif
 			return 0;
 		}
 	}
@@ -3033,6 +3084,35 @@ static struct TextureLayout *RenderBucket_GetCommandTexture(struct RenderBucketD
 	// `a2 == 0` and emits G3. Do not reject that case here.
 	return ctx->idpp->ptrTexLayout[texIndex - 1];
 }
+
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+/* A triangle RenderBucket_CheckProjectedPrim culled on a snapped NCLIP sign
+ * (s_rbqSnapCulled): when the unsnapped geometry faces front, the native model
+ * path draws it. Native-only -- retail drew nothing, so no packet is written.
+ * Specular writers are left out: their colour replay runs off the NCLIP that
+ * rejected the triangle. */
+static void RenderBucket_CaptureSnapCulledTriangle(struct RenderBucketDrawContext *ctx, u32 drawCommand, int depthFade)
+{
+	const u32 xy[3] = {ctx->tempPacked[1].xy, ctx->tempPacked[2].xy, ctx->tempPacked[3].xy};
+	const u32 z[3] = {ctx->tempPacked[1].z, ctx->tempPacked[2].z, ctx->tempPacked[3].z};
+	const int color[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
+	struct TextureLayout *tex;
+	int isValidTexture;
+
+	if ((s_rbqSnapCulled == 0) || (NativeModelEmit_FrontFacing(xy, z, s_rbqSnapFrontNegative) == 0))
+	{
+		return;
+	}
+
+	tex = RenderBucket_GetCommandTexture(ctx, drawCommand, &isValidTexture);
+	if ((isValidTexture == 0) || (depthFade && (tex == 0)))
+	{
+		return;
+	}
+
+	NativeModelEmit_Triangle(xy, z, color, tex, -1);
+}
+#endif
 
 static int RenderBucket_OTEntryPassesDpctGate(const uint32_t *otEntry)
 {
@@ -4718,6 +4798,12 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 			shouldDraw = RenderBucket_ProjectPrim_Normal(ctx, drawCommand, useRtps, reuseFirstVertex, &depthMac0);
 			if (shouldDraw == 0)
 			{
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+				if (mdlCapture && !mdlSpecular)
+				{
+					RenderBucket_CaptureSnapCulledTriangle(ctx, drawCommand, mdlDepthFade);
+				}
+#endif
 				ctx->stripLength++;
 				continue;
 			}
@@ -4949,12 +5035,131 @@ static void RenderBucket_SwapActiveRanges(struct RenderBucketDrawContext *ctx)
 	ctx->idpp->otRangeSecondary = range;
 }
 
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+/* Native model capture state for one REFLECTION instance, set and cleared by
+ * RenderBucket_DrawFunc_Reflection. */
+static int s_rbqReflCapture;
+static int s_rbqReflReplaces;
+static int s_rbqReflDepthFade;
+
+enum
+{
+	RB_REFL_NATIVE_SKIP,   /* the pass draws nothing for this triangle */
+	RB_REFL_NATIVE_PLAIN,  /* drawn whole with the rolling colours */
+	RB_REFL_NATIVE_MASK,   /* drawn whole with RenderBucket_WaterSplitShiftMaskColor */
+	RB_REFL_NATIVE_PACKET, /* left to the packet path */
+};
+
+/* What RenderBucket_DrawWaterSplitClipped does with the current triangle in the
+ * current pass (ctx->waterSplitSide, active ranges as the pass set them). Only
+ * a triangle wholly on one side of the split plane is decided: it is a single
+ * candidate guarded by tempSplit[1]'s splitDist, so the side selector's verdict
+ * covers the whole triangle. A straddling triangle is cut into pieces with
+ * interpolated UVs, and the dim selector shifts screen X, so both stay on the
+ * packet path. A candidate whose OT range is 0 draws nothing in retail. */
+static int RenderBucket_ReflectionNativeOutcome(struct RenderBucketDrawContext *ctx, u32 command)
+{
+	int d1 = ctx->tempSplit[1].splitDist;
+	int d2 = ctx->tempSplit[2].splitDist;
+	int d3 = ctx->tempSplit[3].splitDist;
+	int helperRange;
+
+	if (((d1 < 0) != (d2 < 0)) || ((d1 < 0) != (d3 < 0)))
+	{
+		return RB_REFL_NATIVE_PACKET;
+	}
+
+	helperRange = (d1 < 0) ? ctx->idpp->otRangeNormal : ctx->idpp->otRangeSecondary;
+	if (RenderBucket_SelectWaterSplitHelperRange(ctx, command, helperRange) == 0)
+	{
+		return RB_REFL_NATIVE_SKIP;
+	}
+
+	switch ((u32)(uintptr_t)ctx->inst->funcPtr[2])
+	{
+	case RB_RETAIL_INST_FUNC2_SPLIT_BOTH_MASK:
+	{
+		return (d1 >= 0) ? RB_REFL_NATIVE_MASK : RB_REFL_NATIVE_PLAIN;
+	}
+
+	case RB_RETAIL_INST_FUNC2_SPLIT_NEGATIVE:
+	{
+		if (d1 >= 0)
+		{
+			return RB_REFL_NATIVE_SKIP;
+		}
+		return (ctx->waterSplitSide >= 0) ? RB_REFL_NATIVE_MASK : RB_REFL_NATIVE_PLAIN;
+	}
+
+	case RB_RETAIL_INST_FUNC2_SPLIT_XOR:
+	{
+		return ((d1 ^ ctx->inst->specLightX) >= 0) ? RB_REFL_NATIVE_PLAIN : RB_REFL_NATIVE_SKIP;
+	}
+
+	case RB_RETAIL_INST_FUNC2_SPLIT_DIM_XOR:
+	{
+		return ((d1 ^ ctx->inst->specLightX) >= 0) ? RB_REFL_NATIVE_PACKET : RB_REFL_NATIVE_PLAIN;
+	}
+	}
+
+	return (d1 < 0) ? RB_REFL_NATIVE_PLAIN : RB_REFL_NATIVE_SKIP;
+}
+
+/* Native capture of one REFLECTION pass; mirror selects the mirrored copy,
+ * which is the same model-space triangle reflected across the split line
+ * (RenderBucket_MirrorSpecialPackedXY) and so projects through the same
+ * instance transform. passed is RenderBucket_CheckProjectedPrim's verdict for
+ * the pass. A snap-culled reject is rechecked unsnapped and drawn natively
+ * when it faces front, like RenderBucket_CaptureSnapCulledTriangle. Returns 1
+ * when the native path drew the pass and its packet write is to be skipped. */
+static int RenderBucket_CaptureReflectionPass(struct RenderBucketDrawContext *ctx, u32 command, struct TextureLayout *tex, int passed, int mirror)
+{
+	u32 xy[3];
+	u32 z[3];
+	int color[3];
+	int outcome;
+	int i;
+
+	if ((s_rbqReflCapture == 0) || ((passed == 0) && (s_rbqSnapCulled == 0)) || (s_rbqReflDepthFade && (tex == 0)))
+	{
+		return 0;
+	}
+
+	outcome = RenderBucket_ReflectionNativeOutcome(ctx, command);
+	if ((outcome == RB_REFL_NATIVE_SKIP) || (outcome == RB_REFL_NATIVE_PACKET))
+	{
+		return 0;
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		u32 rolling = (u32)ctx->tempColor[i + 1];
+
+		xy[i] = mirror ? RenderBucket_MirrorSpecialPackedXY(ctx, ctx->tempPacked[i + 1].xy) : ctx->tempPacked[i + 1].xy;
+		z[i] = ctx->tempPacked[i + 1].z;
+		color[i] = (int)((outcome == RB_REFL_NATIVE_MASK) ? RenderBucket_WaterSplitShiftMaskColor(ctx, rolling) : rolling);
+	}
+
+	if (passed == 0)
+	{
+		if (NativeModelEmit_FrontFacing(xy, z, s_rbqSnapFrontNegative) != 0)
+		{
+			NativeModelEmit_Triangle(xy, z, color, tex, -1);
+		}
+		return 0;
+	}
+
+	return NativeModelEmit_Triangle(xy, z, color, tex, -1) && s_rbqReflReplaces;
+}
+#endif
+
 static int RenderBucket_DrawReflectionPrimitive(struct RenderBucketDrawContext *ctx, u32 command, int useRtps, int reuseFirstVertex, struct TextureLayout *tex)
 {
 	struct RenderBucketProjectedRegs originalRegs;
 	u32 mirrorFlag;
 	u32 originalFlag;
 	int depthMac0;
+	int passed;
 	int savedWaterSplitSide = ctx->waterSplitSide;
 
 	if (useRtps != 0)
@@ -4981,7 +5186,14 @@ static int RenderBucket_DrawReflectionPrimitive(struct RenderBucketDrawContext *
 	RenderBucket_StoreSplitProjectedRegs(ctx);
 	RenderBucket_SwapActiveRanges(ctx);
 	ctx->waterSplitSide = 0;
-	if (RenderBucket_CheckProjectedPrim(ctx, command, mirrorFlag, 0x8000, &depthMac0) != 0)
+	passed = RenderBucket_CheckProjectedPrim(ctx, command, mirrorFlag, 0x8000, &depthMac0);
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	if (RenderBucket_CaptureReflectionPass(ctx, command, tex, passed, 1) != 0)
+	{
+		passed = 0;
+	}
+#endif
+	if (passed != 0)
 	{
 		if (RenderBucket_DrawWaterSplitClipped(ctx, command, tex, depthMac0) < 0)
 		{
@@ -4996,7 +5208,14 @@ static int RenderBucket_DrawReflectionPrimitive(struct RenderBucketDrawContext *
 	RenderBucket_StoreSplitProjectedRegs(ctx);
 	ctx->waterSplitSide = -1;
 	originalFlag = CFC2(31);
-	if (RenderBucket_CheckProjectedPrim(ctx, command, originalFlag, 0, &depthMac0) != 0)
+	passed = RenderBucket_CheckProjectedPrim(ctx, command, originalFlag, 0, &depthMac0);
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	if (RenderBucket_CaptureReflectionPass(ctx, command, tex, passed, 0) != 0)
+	{
+		passed = 0;
+	}
+#endif
+	if (passed != 0)
 	{
 		if (RenderBucket_DrawWaterSplitClipped(ctx, command, tex, depthMac0) < 0)
 		{
@@ -5110,6 +5329,26 @@ static void RenderBucket_DrawFunc_Reflection(struct RenderBucketDrawContext *ctx
 {
 	u32 *pCmd = (u32 *)ctx->idpp->ptrCommandList;
 
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	/* Native model capture for reflective instances (the intro Polar shot,
+	 * racers over reflective floors). Both passes project through idpp->mvp,
+	 * the mirrored one with model Y reflected, so each is captured against the
+	 * instance transform (RenderBucket_CaptureReflectionPass). Writer
+	 * classification matches RenderBucket_DrawFunc_NormalAlt; a writer the
+	 * split helpers do not draw is left to them. */
+	{
+		const u32 mdlPrimWriter = (u32)(uintptr_t)ctx->inst->funcPtr[1];
+		const int mdlGhost = (mdlPrimWriter == RB_RETAIL_INST_PRIM_GHOST) && (ctx->idpp->alphaScale != 0);
+		const int mdlSpecularWriter = (mdlPrimWriter == RB_RETAIL_INST_PRIM_KEY_TOKEN) || (mdlPrimWriter == RB_RETAIL_INST_PRIM_LIT_TEXTURE);
+
+		s_rbqReflDepthFade = (mdlPrimWriter == RB_RETAIL_INST_PRIM_DEPTH_FADE);
+		s_rbqReflCapture = !mdlSpecularWriter && RenderBucket_SplitPrimitiveWriterSupported(ctx) &&
+		                   NativeModelEmit_BeginInstance(ctx->idpp, ctx->pb, mdlGhost || s_rbqReflDepthFade, 0, ctx->inst, mdlGhost,
+		                                                 RenderBucket_Scratch()->split.fadeColor.word);
+		s_rbqReflReplaces = s_rbqReflCapture && NativeModelEmit_SkipRetailDraw();
+	}
+#endif
+
 	// NOTE(aalhendi): ASM-verified NTSC-U 926 0x8006c9c4-0x8006cdec;
 	// native uses the accepted explicit RenderBucketDrawContext split/FIFO ABI.
 	pCmd++;
@@ -5200,12 +5439,21 @@ static void RenderBucket_DrawFunc_Reflection(struct RenderBucketDrawContext *ctx
 
 			if (RenderBucket_DrawReflectionPrimitive(ctx, drawCommand, useRtps, reuseFirstVertex, tex) < 0)
 			{
-				return;
+				break;
 			}
 		}
 
 		ctx->stripLength++;
 	}
+
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	if (s_rbqReflCapture)
+	{
+		NativeModelEmit_EndInstance();
+	}
+	s_rbqReflCapture = 0;
+	s_rbqReflReplaces = 0;
+#endif
 }
 
 static void RenderBucket_DrawFunc_Split(struct RenderBucketDrawContext *ctx)
@@ -5323,6 +5571,27 @@ static void RenderBucket_DrawFunc_NormalAlt(struct RenderBucketDrawContext *ctx)
 {
 	u32 *pCmd = (u32 *)ctx->idpp->ptrCommandList;
 
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	/* Native model capture for the SPLIT_SPECIAL near path (Adventure hub doors,
+	 * boss garages). The split uncompress has already rotated every vertex by
+	 * the composed matrix BuildSplitState parked in idpp->m3x3, and idpp->mvp
+	 * holds identity rotation plus the instance translation -- so capturing the
+	 * rotated vertices against idpp->mvp is the exact transform retail projects.
+	 * Without this the doors fall to the packet path inside the near threshold,
+	 * where every capture-table miss drops a triangle.
+	 *
+	 * Writer classification matches RenderBucket_DrawFunc_Normal. Specular
+	 * writers stay on the packet path: in split mode the GTE light matrix holds
+	 * idpp->m3x3, not lighting, so their lit colour cannot be replayed here. */
+	const u32 mdlPrimWriter = (u32)(uintptr_t)ctx->inst->funcPtr[1];
+	const int mdlGhost = (mdlPrimWriter == RB_RETAIL_INST_PRIM_GHOST) && (ctx->idpp->alphaScale != 0);
+	const int mdlDepthFade = (mdlPrimWriter == RB_RETAIL_INST_PRIM_DEPTH_FADE);
+	const int mdlSpecularWriter = (mdlPrimWriter == RB_RETAIL_INST_PRIM_KEY_TOKEN) || (mdlPrimWriter == RB_RETAIL_INST_PRIM_LIT_TEXTURE);
+	const int mdlCapture = !mdlSpecularWriter && NativeModelEmit_BeginInstance(ctx->idpp, ctx->pb, mdlGhost || mdlDepthFade, 0, ctx->inst, mdlGhost,
+	                                                                           RenderBucket_Scratch()->split.fadeColor.word);
+	const int mdlReplaces = mdlCapture && NativeModelEmit_SkipRetailDraw();
+#endif
+
 	// NOTE(aalhendi): ASM-verified NTSC-U 926 alternate entry
 	// 0x8006a6b8-0x8006a8e0 inside RenderBucket_DrawFunc_Normal; native uses
 	// the accepted explicit RenderBucketSplitVertex ABI.
@@ -5410,6 +5679,12 @@ static void RenderBucket_DrawFunc_NormalAlt(struct RenderBucketDrawContext *ctx)
 			shouldDraw = RenderBucket_ProjectPrim_Split(ctx, drawCommand, useRtps, reuseFirstVertex, &depthMac0);
 			if (shouldDraw == 0)
 			{
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+				if (mdlCapture && ((ctx->tempSplit[1].splitDist < 0) || (ctx->tempSplit[2].splitDist < 0) || (ctx->tempSplit[3].splitDist < 0)))
+				{
+					RenderBucket_CaptureSnapCulledTriangle(ctx, drawCommand, mdlDepthFade);
+				}
+#endif
 				ctx->stripLength++;
 				continue;
 			}
@@ -5421,14 +5696,54 @@ static void RenderBucket_DrawFunc_NormalAlt(struct RenderBucketDrawContext *ctx)
 				continue;
 			}
 
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+			{
+				int mdlClaimed = 0;
+
+				/* A triangle wholly nearer than the split plane is one
+				 * RenderBucket_DrawSplitClipped draws nothing for, so the capture
+				 * declines it too. A triangle straddling the plane is claimed
+				 * whole: retail clips its near part, the native draw keeps it,
+				 * and only geometry inside retail's near plane can differ. */
+				if (mdlCapture && ((ctx->tempSplit[1].splitDist < 0) || (ctx->tempSplit[2].splitDist < 0) || (ctx->tempSplit[3].splitDist < 0)) &&
+				    !(mdlDepthFade && (tex == 0)))
+				{
+					const u32 mdlXY[3] = {ctx->tempPacked[1].xy, ctx->tempPacked[2].xy, ctx->tempPacked[3].xy};
+					const u32 mdlZ[3] = {ctx->tempPacked[1].z, ctx->tempPacked[2].z, ctx->tempPacked[3].z};
+					const int mdlColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
+
+					mdlClaimed = NativeModelEmit_Triangle(mdlXY, mdlZ, mdlColor, tex, -1);
+				}
+
+				if (mdlReplaces && mdlClaimed)
+				{
+					ctx->stripLength++;
+					continue;
+				}
+			}
+#endif
+
 			if (RenderBucket_DrawSplitClipped(ctx, drawCommand, tex, depthMac0) < 0)
 			{
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+				if (mdlCapture)
+				{
+					NativeModelEmit_EndInstance();
+				}
+#endif
 				return;
 			}
 		}
 
 		ctx->stripLength++;
 	}
+
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	if (mdlCapture)
+	{
+		NativeModelEmit_EndInstance();
+	}
+#endif
 }
 
 static void RenderBucket_SetFarColorFromInstance(struct Instance *inst)
@@ -5548,6 +5863,7 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 			break;
 		}
 		}
+		GTECapture_WatchNoteLod((ctx->idpp->mh != NULL) ? ctx->idpp->mh->name : NULL);
 		GTECapture_BeginInstanceDepth(ctx->inst, ctx->pb, ctx->idpp->mvp.t[2], axisFunc);
 		if (GTECapture_WatchIsHiddenInstance())
 		{
