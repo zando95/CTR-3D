@@ -263,9 +263,12 @@ int GTECapture_NodeExempt(void);
 // thrown shield projectile reuses the models and stays a world object) and pins
 // just in front of its own kart rather than at the world maximum, so scenery
 // well in front of a distant racer's bubble still hides it.
+// The podium prize is the third: matched by INSTANCE name ("prize"), pinned at
+// the world maximum like the talking heads, since a tall winner's raised arms
+// reach its resting point and retail paints it whole over them.
 extern int g_dbg_paintOnTop;
 int GTECapture_ModelPaintsOnTop(const char *modelName);
-// Instance-level membership: 0 = no, 1 = model-name member, 2 = held shield bubble layer.
+// Instance-level membership: 0 = no, 1 = talking head or podium prize, 2 = held shield bubble layer.
 int GTECapture_InstPaintsOnTop(const struct Instance *inst);
 // PAINT-UNDER members: the mirror class -- geometry retail hides purely by
 // painter's order (coincident with, or a hair OUTSIDE, the surface that covers

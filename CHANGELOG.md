@@ -30,6 +30,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - The boot screens are no longer shifted up with their top lines cut off.
 - Saves are crash-safe. A save interrupted by a crash or power loss can no longer wipe your progress; the game falls back to the previous copy.
 - The shield bubble no longer sinks into the road.
+- The prize on the Adventure podium (trophy, relic, key or gem) is drawn in front of the winner instead of cutting through a tall racer like Tiny.
 - The Adventure boss garage doors and hub doors no longer flicker or lose pieces as you drive toward or away from them, and thin details on models (like the portrait on Ripper Roo's door) no longer leave small gaps that come and go with the camera.
 - Polar, his kart and his book no longer flicker in the intro cutscene, and other objects that blinked a triangle out now and then hold steady.
 - The white flash when you're hit or cross the finish line now covers the whole screen, edge to edge, with nothing in the world poking through it.

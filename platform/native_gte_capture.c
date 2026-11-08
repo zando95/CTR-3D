@@ -191,10 +191,15 @@ global_variable u32 s_instAxisFrames;
  * real depth test. Membership by INSTANCE name covers the held shield bubble,
  * whose three layers share model names with the thrown shield projectile (a
  * world object that must stay occluded); only the held layers carry these
- * instance names. */
+ * instance names. The podium prize is also matched by INSTANCE name and pins
+ * at the world maximum like the talking heads: it rests where a tall winner's
+ * raised arms reach, and retail paints it whole over the winner. Its models
+ * (trophy, relic, key, gem) are also the hub warp-pad prizes, named
+ * "prize1"/"prize2", which stay world objects; the match is exact. */
 int g_dbg_paintOnTop = 1;
 global_variable const char *const s_paintOnTopModels[] = {"ukabig", "akubig"};
 global_variable const char *const s_paintOnTopInstances[] = {"shield", "shielddark", "highlight"};
+global_variable const char *const s_paintOnTopWorldMaxInstances[] = {"prize"};
 /* Bracket latch: set when BeginInstanceDepth matches the allowlist, consumed
  * by EndInstanceDepth into the write buffer's range array. Game-thread only,
  * same ownership as the bracket itself. */
@@ -220,8 +225,8 @@ int GTECapture_ModelPaintsOnTop(const char *modelName)
 	return 0;
 }
 
-/* 0 = not a member, 1 = model-name member (pins to the nearest world stamp),
- * 2 = held-shield member (pins just in front of its own kart). */
+/* 0 = not a member, 1 = talking head or podium prize (pins to the nearest
+ * world stamp), 2 = held-shield member (pins just in front of its own kart). */
 int GTECapture_InstPaintsOnTop(const struct Instance *inst)
 {
 	u32 i;
@@ -233,6 +238,13 @@ int GTECapture_InstPaintsOnTop(const struct Instance *inst)
 	if ((inst->model != NULL) && GTECapture_ModelPaintsOnTop(inst->model->name))
 	{
 		return 1;
+	}
+	for (i = 0; i < (sizeof(s_paintOnTopWorldMaxInstances) / sizeof(s_paintOnTopWorldMaxInstances[0])); i++)
+	{
+		if (strncmp(inst->name, s_paintOnTopWorldMaxInstances[i], 15) == 0)
+		{
+			return 1;
+		}
 	}
 	for (i = 0; i < (sizeof(s_paintOnTopInstances) / sizeof(s_paintOnTopInstances[0])); i++)
 	{
