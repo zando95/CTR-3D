@@ -4,43 +4,43 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 
 ## Unreleased
 
-### New
+It's been some time since Beta 1.0 released, and this update aims to polish off any rough edges the previous release still had. It also marks the arrival of content and modes that were not present in the original Crash Team Racing. This content aims to be seamlessly integrated into the game and be unobtrusive.
 
-- New LANGUAGE row in OPTIONS: English, French, German, Italian, Spanish or Dutch. The game text changes straight away, the OPTIONS menu is translated too, and the choice is remembered between launches.
-- Voices can follow the language: with French, German, Italian, Spanish or Dutch voice files extracted from your own PAL disc image (the README explains how), the characters speak the selected language. Without them, voices stay English.
-- Nitros Oxide is playable. Beat all of his Time Trial ghosts, or enter the code ROSWELL on the main menu (hold L and R, then Right, A, Down, Left, Right, Left, Left), and he joins the character select screen. He races at two-thirds of his boss size, with exhaust smoke and boost fire from his own pipes and a round shadow.
-- New SUPER HARD and ULTRA HARD difficulties, hidden until earned: win all four Arcade cups on HARD to unlock SUPER HARD, then all four on SUPER HARD to unlock ULTRA HARD. Cup select shows a red star for a SUPER HARD win and a black one for ULTRA HARD. Winning the fourth SUPER HARD cup also unlocks Penta Penguin.
-- New RANDOM CPUS option (on by default): the seven CPU racers are drawn at random instead of always being the other starting racers. In Arcade (single races, cups and CTR CHALLENGE) they come from every racer you have unlocked, N. Oxide included. In Adventure they come from the other starting racers plus each boss whose key you hold (Ripper Roo, Papu Papu, Komodo Joe, Pinstripe). The same racers stay through a restart and for the rest of a cup. Boss races, relic races, crystal challenges and the purple gem cup keep their usual racers. As an ordinary CPU racer, N. Oxide races at racer size by the same rules as everyone else; his early start, boost and hit resistance stay in his boss races.
-- New MIRROR mode, unlocked by winning all four Arcade cups on ULTRA HARD: a MIRROR row appears on the main menu above OPTIONS. With it ON, every track and hub is mirrored and steering follows; the racers, menus and HUD are not mirrored. It starts OFF at every launch, and times and records are shared with normal mode.
-- OPTIONS settings are remembered between launches.
-- New AUTOSAVE GHOST option (on by default): your fastest Time Trial run on each track is saved automatically, and picking that track races you against it.
-- The Super Turbo Pads cheat code (ARROW) now also turns on Retro-Fueled mode. Any boost that isn't a pad (power slides, hang time, turbo items, the start boost) no longer knocks you out of USF. Square+Down, or Square in the air, keeps your reserves, and without Cross held you really brake or reverse. Every pad is a blue pad, and each gives a 1-second reserve. The exhaust fire burns blue at USF speed and the menu flag turns blue. Races in this mode save no times or best laps and don't count as beating N. Tropy or N. Oxide. Enter ARROW again to turn it off.
-- The main menu has a new last row, QUIT. Picking it asks YES or NO (NO is preselected), and YES exits the game the same way HOME > Close does, back to the Homebrew Launcher or the HOME Menu.
-- New BOSS RACES row in the ARCADE race-type menu: race the boss of the track's hub (Ripper Roo, Papu Papu, Komodo Joe, Pinstripe, or Oxide on Oxide Station, Slide Coliseum and Turbo Track) on any track you have unlocked, three laps, with the boss's Adventure difficulty. It never changes your Adventure save.
-- New CTR CHALLENGE row in the ARCADE race-type menu: the Adventure token race as an Arcade race. Pick a difficulty and a track (the 16 Adventure tracks), collect the letters C, T and R scattered on the track and finish first with all three. It never changes your Adventure save.
-- New RELIC RACE row in the ARCADE race-type menu: the Adventure relic race on any track you have unlocked (all 18, with the time crates and the sapphire, gold and platinum times), three laps. Your five best times per track go into the memory card's relic high scores, the same table Adventure relic races use and the main menu's HIGH SCORE screen shows, through the usual NEW HIGH SCORE name entry and memory card save. The relics shown in this mode follow those times (Adventure relic times count too), and a relic won here never changes an Adventure profile. A cheat that can change a time records nothing.
-- In RELIC RACE, the track-select list shows a spinning relic beside every track you have a relic on, tinted sapphire, gold or platinum for the best one earned (Adventure relic times count). Tracks with no relic show nothing.
-- RELIC RACE counts a relic as earned if any Adventure profile on the memory card has it, not only the card-wide best times: the goal on the HUD, the relic awarded and the relics on track select all follow. The relics are rebuilt at every race start, so a relic that was never saved (for example a new record whose name entry was left unfinished) does not carry over into RETRY.
-- CTR CHALLENGE winning is remembered: finishing first with all three letters on a track (any difficulty, no cheat that can change the race) is saved in a small file on the memory card, CTR3DTOKENS. The track-select list then shows a spinning CTR token, in the colour Adventure gives that track's token, beside every track whose token anyone on the save has earned: an Arcade win here, or any Adventure profile on the memory card. It is only a mark; no Adventure token or save is changed.
+### New Content
+
+- Playable Nitros Oxide. Unlocked with a cheat code (ROSWELL), or by beating all his ghosts.
+- Added extra difficulties to Arcade mode.
+- Beat all cups on Super Hard for a "legit" Penta Penguin unlock, and to unlock Ultra Hard.
+- Beat all cups on Ultra Hard to unlock Mirror Mode (toggled from the main menu.)
+- Random CPUs: In Arcade mode, CPU characters will be chosen randomly from unlocked characters; in Adventure mode, boss characters can join normal races after you've defeated them.
+- Added PAL languages (English, French, German, Italian, Spanish, and Dutch.) Existing and new content should be fully translated.
+- Support for PAL voices (Requires your own PAL disc image; see README.)
+- Easter egg: Retro-Fueled mode. Toggle with the existing Super Turbo Pads cheat code. Look up the Retro-Fueled mod for more information on how this mode works.
+- CTR Challenge and Relic Race can be chosen from Arcade menu.
+
+### QOL
+
+- Options are actually saved between launches
+- Your best time on every track is automatically saved as a ghost. This ghost is loaded automatically on future attempts.
+- Quit option on main menu
+- Saves are crash-safe
+- Saving no longer freezes the game.
+- PAL Penta renamed to Super Penta in Options menu
 
 ### Bug fixes
 
-- The track-select preview video plays at a steady 30 fps.
-- The Scrapbook no longer crashes. It starts straight away instead of after a long black screen, shows the art in the right place, and plays at its full 15 fps.
-- The boot screens are no longer shifted up with their top lines cut off.
-- Saves are crash-safe. A save interrupted by a crash or power loss can no longer wipe your progress; the game falls back to the previous copy.
-- The shield bubble no longer sinks into the road.
-- The prize on the Adventure podium (trophy, relic, key or gem) is drawn in front of the winner instead of cutting through a tall racer like Tiny.
-- The Adventure boss garage doors and hub doors no longer flicker or lose pieces as you drive toward or away from them, and thin details on models (like the portrait on Ripper Roo's door) no longer leave small gaps that come and go with the camera.
-- Polar, his kart and his book no longer flicker in the intro cutscene, and other objects that blinked a triangle out now and then hold steady.
-- The white flash when you're hit or cross the finish line now covers the whole screen, edge to edge, with nothing in the world poking through it.
-- Saving no longer freezes the game. Memory card saves (Adventure progress, ghosts, high scores, relic times, CTR CHALLENGE wins) and OPTIONS or language changes are written in the background while the game keeps running.
-- A disc image that is damaged, incomplete, not the North American (NTSC-U) disc, or in the wrong format (.iso, .cue, compressed) is now caught at boot with a message saying what is wrong and what to do, instead of booting into broken levels.
-- A disc read that fails mid-game ends on an error screen instead of hanging.
-- If the game can't start, it shows a message instead of a black screen. An original 3DS, 3DS XL or 2DS gets "New Nintendo 3DS required".
+- The track-select preview video no longer slows down the game.
+- The scrapbook no longer crashes the game.
+- Shield power-up no longer sinks into the road.
+- Fixed Adventure podium prizes (trophy, relic, key or gem) intersecting into tall racers like Tiny
+- Fixed flicker on Adventure mode boss garage doors
+- Fixed flicker on Polar in intro cutscene
+- White screen flash effect now covers the entire screen, and no longer clips geometry.
+- Added boot error messages for missing disc image, Old 3DS, etc.
 - Fixed a timing bug that could make animated water and track textures glitch.
-- The boot screens' small legal text is smoothed instead of breaking up.
-- Saving a ghost over an existing one now stores the new run under its own file name. Before, the memory card kept the old run's name, so after a restart the ghost list showed the old run's character, track and time for the new tape.
+- Smoothed out text on boot screens
+- The black squares in some Adventure hub tunnels are gone.
+- The world no longer blinks out for a frame when you drive into the next Adventure hub.
 
 ## beta 1.0 (2026-09-16)
 
