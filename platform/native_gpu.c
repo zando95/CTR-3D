@@ -1462,6 +1462,10 @@ global_variable int s_uipicNodeActive;
  * quads, which retail links into the player's OT. Read by the resolver and by
  * the direct-emit fast path's UI stand-aside, beside the suppress latch. */
 global_variable int s_hudshineNodeActive;
+/* Full-window fade span (PKTDEPTH_UI_STAMP_SCREENFADE): PushBuffer_FadeOneWindow's
+ * quads, the per-player ones linked into the player's OT. Read by the resolver
+ * and by the direct-emit fast path's UI stand-aside, beside the shine's. */
+global_variable int s_screenfadeNodeActive;
 /* Menu-backdrop span (character-select diorama strips). Read by
  * PacketDepth_ResolveXY, which sees screen coordinates, not packet addresses. */
 global_variable int s_menubdNodeActive;
@@ -1474,6 +1478,15 @@ global_variable int s_menubdNodeActive;
  * the fruit and icon it backs move with the wide window.
  */
 int g_dbg_hudShine = 1;
+
+/*
+ * Runtime A/B for the full-window fade's UI-band classification (dumpreq
+ * 'screenfade'). ON = the per-player fade quads (hit flash, finish-line flash)
+ * draw in the ordered UI pass across the whole wide window. OFF restores the
+ * world-bucket fallback: track and models depth-test through the flash and the
+ * widescreen margins stay unflashed.
+ */
+int g_dbg_screenFade = 1;
 
 /* ------------------------------------------------------------------------- */
 
@@ -1864,6 +1877,14 @@ global_variable uintptr_t s_uipicRangeEnd[2];
 global_variable uintptr_t s_hudshineRangeStart[2][HUDSHINE_SPANS_MAX];
 global_variable uintptr_t s_hudshineRangeEnd[2][HUDSHINE_SPANS_MAX];
 global_variable int s_hudshineRangeCount[2];
+/* Full-window fade spans (PKTDEPTH_UI_STAMP_SCREENFADE): one per pushbuffer
+ * per frame -- up to four players plus the UI window -- kept as separate
+ * entries for the shine's reason: a union of distant marks would swallow the
+ * world content between them. */
+#define SCREENFADE_SPANS_MAX 5
+global_variable uintptr_t s_screenfadeRangeStart[2][SCREENFADE_SPANS_MAX];
+global_variable uintptr_t s_screenfadeRangeEnd[2][SCREENFADE_SPANS_MAX];
+global_variable int s_screenfadeRangeCount[2];
 
 void NativeGpu_MarkSkyRange(uintptr_t start, uintptr_t end)
 {
@@ -2009,6 +2030,19 @@ void NativeGpu_MarkHudShineRange(uintptr_t start, uintptr_t end)
 	s_hudshineRangeCount[s_skyRangeWriteIdx] = n + 1;
 }
 
+void NativeGpu_MarkScreenFadeRange(uintptr_t start, uintptr_t end)
+{
+	int n = s_screenfadeRangeCount[s_skyRangeWriteIdx];
+
+	if ((end <= start) || (n >= SCREENFADE_SPANS_MAX))
+	{
+		return;
+	}
+	s_screenfadeRangeStart[s_skyRangeWriteIdx][n] = start;
+	s_screenfadeRangeEnd[s_skyRangeWriteIdx][n] = end;
+	s_screenfadeRangeCount[s_skyRangeWriteIdx] = n + 1;
+}
+
 void NativeGpu_PublishSkyRange(void)
 {
 	s_skyRangeReadIdx = s_skyRangeWriteIdx;
@@ -2033,6 +2067,7 @@ void NativeGpu_ClearSkyRange(void)
 	s_uipicRangeStart[s_skyRangeWriteIdx] = 0;
 	s_uipicRangeEnd[s_skyRangeWriteIdx] = 0;
 	s_hudshineRangeCount[s_skyRangeWriteIdx] = 0;
+	s_screenfadeRangeCount[s_skyRangeWriteIdx] = 0;
 }
 
 internal int NativeGpu_IsSkyPacket(uintptr_t addr)
@@ -2077,6 +2112,20 @@ internal int NativeGpu_IsHudShinePacket(uintptr_t addr)
 	for (i = 0; i < s_hudshineRangeCount[s_skyRangeReadIdx]; i++)
 	{
 		if ((addr >= s_hudshineRangeStart[s_skyRangeReadIdx][i]) && (addr < s_hudshineRangeEnd[s_skyRangeReadIdx][i]))
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+internal int NativeGpu_IsScreenFadePacket(uintptr_t addr)
+{
+	int i;
+
+	for (i = 0; i < s_screenfadeRangeCount[s_skyRangeReadIdx]; i++)
+	{
+		if ((addr >= s_screenfadeRangeStart[s_skyRangeReadIdx][i]) && (addr < s_screenfadeRangeEnd[s_skyRangeReadIdx][i]))
 		{
 			return 1;
 		}
@@ -2385,8 +2434,10 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 	 * already carry. Without this it lands on the world-bucket fallback below:
 	 * correct occlusion, but outside the band, so no widescreen X ramp and no
 	 * stereo flatten -- the burst stays at retail X while the fruit moves with
-	 * the wide window. */
-	if (GTECapture_LookupSuppressed() || (g_dbg_hudShine && s_hudshineNodeActive))
+	 * the wide window. The per-player full-window fade takes the same leg for
+	 * the same reason: on the world-bucket fallback the track and models
+	 * depth-test through the flash. */
+	if (GTECapture_LookupSuppressed() || (g_dbg_hudShine && s_hudshineNodeActive) || (g_dbg_screenFade && s_screenfadeNodeActive))
 	{
 		/* 2D in the UI band: no depth exists, and it must stay on top of every
 		 * world stamp. Ordinal ordering is preserved WITHIN the band so UI
@@ -2467,6 +2518,12 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 					else if (s_hudshineNodeActive)
 					{
 						*out = PKTDEPTH_UI_STAMP_HUDSHINE;
+					}
+					/* Full-window fade: re-pinned likewise; the stamp keys
+					 * the screen-edge overscan. */
+					else if (g_dbg_screenFade && s_screenfadeNodeActive)
+					{
+						*out = PKTDEPTH_UI_STAMP_SCREENFADE;
 					}
 				}
 			}
@@ -4923,6 +4980,7 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			s_uifpsNodeActive = NativeGpu_IsUiFpsPacket((uintptr_t)basePacket);
 			s_uipicNodeActive = NativeGpu_IsUiPicPacket((uintptr_t)basePacket);
 			s_hudshineNodeActive = NativeGpu_IsHudShinePacket((uintptr_t)basePacket);
+			s_screenfadeNodeActive = NativeGpu_IsScreenFadePacket((uintptr_t)basePacket);
 #endif
 			if (tagLength > 0)
 			{

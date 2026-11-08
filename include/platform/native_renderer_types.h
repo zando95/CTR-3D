@@ -108,6 +108,18 @@ typedef struct
  * first column) draws that seam column twice under this inset, so the game
  * drops it while NativeUiShine_ExactTiling reports the inset live. */
 #define PKTDEPTH_UI_STAMP_HUDSHINE 0xFFFBu
+/* Fifth class: retail's full-window fade quad (PushBuffer_FadeOneWindow -- the
+ * white flash of a hit or the finish line, and the fades to and from black).
+ * The per-player quads are linked into the PLAYER's OT, so without their span
+ * mark they miss onto a world-bucket stamp: depth-tested against the track and
+ * models, which then cut through the flash, and never widened into the
+ * widescreen margins. Stamped into the band they draw in the ordered UI pass
+ * over the whole world and under the HUD, exactly retail's painter order.
+ * Re-pinned to 0xFFFF at the ordered-UI append like UIPIC; the stamp itself
+ * keys the screen-edge overscan in N3DS_ConvertTriangleVerts, which pushes
+ * window-edge vertices past the wide window by the stereo pad so neither eye's
+ * UI pop-out can pull an edge on-screen. */
+#define PKTDEPTH_UI_STAMP_SCREENFADE 0xFFFAu
 
 typedef enum
 {

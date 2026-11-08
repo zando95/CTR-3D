@@ -93,6 +93,12 @@ void NativeGpu_MarkUiPicRange(uintptr_t start, uintptr_t end);
  * union. Same lifecycle as the sky pair; inert on PC. Runtime A/B: dumpreq
  * 'hudshine' (default ON). */
 void NativeGpu_MarkHudShineRange(uintptr_t start, uintptr_t end);
+/* Full-window fade span (PKTDEPTH_UI_STAMP_SCREENFADE): PushBuffer_FadeOneWindow's
+ * quad, which retail links into each player's OT rather than the UI OT. Marked
+ * once per pushbuffer per frame and kept as separate entries, never a union.
+ * Same lifecycle as the sky pair; inert on PC. Runtime A/B: dumpreq
+ * 'screenfade' (default ON). */
+void NativeGpu_MarkScreenFadeRange(uintptr_t start, uintptr_t end);
 /* The character-select diorama backdrop (MM_Characters' RwdBlueRect strips):
  * screen-space quads with no captured depth, which the resolver would
  * otherwise leave on the raw emit ordinal where the menu flag buries them.

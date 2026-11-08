@@ -17,6 +17,7 @@ What changed for players in each CTR 3D release, newest first. Add a line here i
 - The shield bubble no longer sinks into the road.
 - The Adventure boss garage doors and hub doors no longer flicker or lose pieces as you drive toward or away from them, and thin details on models (like the portrait on Ripper Roo's door) no longer leave small gaps that come and go with the camera.
 - Polar, his kart and his book no longer flicker in the intro cutscene, and other objects that blinked a triangle out now and then hold steady.
+- The white flash when you're hit or cross the finish line now covers the whole screen, edge to edge, with nothing in the world poking through it.
 - Saving no longer freezes the game. Memory card saves (Adventure progress, ghosts, high scores, relic times, CTR CHALLENGE wins) and OPTIONS or language changes are written in the background while the game keeps running.
 - A disc image that is damaged, incomplete, not the North American (NTSC-U) disc, or in the wrong format (.iso, .cue, compressed) is now caught at boot with a message saying what is wrong and what to do, instead of booting into broken levels.
 - A disc read that fails mid-game ends on an error screen instead of hanging.

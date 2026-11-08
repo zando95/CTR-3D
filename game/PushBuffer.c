@@ -952,6 +952,17 @@ void PushBuffer_FadeOneWindow(struct PushBuffer *pb)
 
 		// move pointer after writing polygons
 		backBuffer->primMem.cursor = p + 1;
+
+#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+		{
+			// The quad is a screen overlay, but retail links the per-player
+			// ones into the player's OT; the span mark keeps the 3DS renderer
+			// from depth-testing it against the world.
+			extern void NativeGpu_MarkScreenFadeRange(uintptr_t start, uintptr_t end);
+
+			NativeGpu_MarkScreenFadeRange((uintptr_t)p, (uintptr_t)(p + 1));
+		}
+#endif
 	}
 
 	// alter the fade value by the fade velocity

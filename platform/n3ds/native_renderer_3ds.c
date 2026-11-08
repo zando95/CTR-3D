@@ -3502,6 +3502,26 @@ internal void N3DS_ConvertTriangleVerts(N3DS_Vertex *dst3, const GrVertex *triVe
 			if (g_dbg_packetDepth && (src->emitOrdinal >= 0xFFC0u))
 			{
 				sx = (s16)NativeWide_UiShiftX((int)sx);
+
+				/* Full-window fade: the ramp lands its window-edge vertices
+				 * exactly on the wide window's edges, where the UI pop-out
+				 * shifts one eye's copy inward and bares a strip. Push
+				 * vertices ON the 512-wide window's outer edges a further
+				 * stereo pad outward; the viewport clips the overshoot.
+				 * Inner edges (split-screen windows) stay put. */
+				if (src->emitOrdinal == PKTDEPTH_UI_STAMP_SCREENFADE)
+				{
+					const int pad = N3DS_StereoSkyPadX();
+
+					if (src->x <= 0)
+					{
+						sx = (s16)(sx - pad);
+					}
+					else if (src->x >= 512)
+					{
+						sx = (s16)(sx + pad);
+					}
+				}
 			}
 			dst->x = sx;
 		}
@@ -6192,6 +6212,7 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 					 * routed leg keeps 0xFFFD -- the bottom pass needs the
 					 * map a step behind the FPS text's 0xFFFE. */
 					if ((triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_UIPIC) || (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_HUDSHINE) ||
+					    (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_SCREENFADE) ||
 					    (!g_dbg_btmMap && (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_BTMMAP)))
 					{
 						const s16 pinned = (s16)(0xFFFFu - 32768);

@@ -1300,7 +1300,7 @@ void N3DS_StereoRecordVram(int slot, int baseVertex)
  * dumpreq `wide`/`wide 1` reaches all three states including the anamorphic
  * stretch. The known-open margin
  * classes (game-side 4:3 PVS/frustum culling holes, kart pop-in at the
- * margin edges, full-screen fades not covering the margins) are unchanged by
+ * margin edges) are unchanged by
  * this -- promoting the default does not close them, it just stops hiding
  * them behind a chord nobody presses. */
 int g_dbg_widescreen = 2;
@@ -3826,6 +3826,11 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  UI band (widescreen ramp, stereo flatten, seam inset)
 	 *                  although retail links it into the player's OT. Bare
 	 *                  toggles, N sets 0/1. Default ON.
+	 *   screenfade [N] -- g_dbg_screenFade: retail's per-player full-window
+	 *                  fade (hit flash, finish-line flash) draws in the
+	 *                  ordered UI pass across the whole wide window instead
+	 *                  of depth-testing against the world. Bare toggles, N
+	 *                  sets 0/1. Default ON.
 	 *   bilinear    -- toggle g_dbg_trackBilinear (default OFF): track-atlas
 	 *                  sampler bilinear <-> nearest. Live, no rebuild.
 	 *                  Button: SELECT+D-RIGHT.
@@ -4667,6 +4672,25 @@ unsigned int N3DS_ReadButtons(void)
 					}
 					N3DS_DebugLog(g_dbg_hudShine ? "[CTR-3DS] hudshine: ON (wumpa shine in the UI band)"
 					                             : "[CTR-3DS] hudshine: off (shine on the world-bucket fallback)");
+				}
+				else if (strncmp(word, "screenfade", 10) == 0)
+				{
+					extern int g_dbg_screenFade;
+
+					/* Per-player full-window fade (hit / finish-line flash) in
+					 * the UI band (DEFAULT ON, native_gpu.c
+					 * PacketDepth_ResolveXY). OFF leaves it on the world-bucket
+					 * fallback: depth-tested against the world, 4:3-wide. */
+					if (word[10] == ' ')
+					{
+						g_dbg_screenFade = (atoi(&word[11]) != 0) ? 1 : 0;
+					}
+					else
+					{
+						g_dbg_screenFade = !g_dbg_screenFade;
+					}
+					N3DS_DebugLog(g_dbg_screenFade ? "[CTR-3DS] screenfade: ON (fade quad in the UI band)"
+					                               : "[CTR-3DS] screenfade: off (fade quad on the world-bucket fallback)");
 				}
 				else if (strncmp(word, "tirefix", 7) == 0)
 				{
