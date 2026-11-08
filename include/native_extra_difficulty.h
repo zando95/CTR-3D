@@ -1,12 +1,16 @@
 #ifndef NATIVE_EXTRA_DIFFICULTY_H
 #define NATIVE_EXTRA_DIFFICULTY_H
 
-/* SUPER HARD and ULTRA HARD, two Arcade difficulties above HARD (3DS only).
+/* The Arcade cup ladder, and SUPER HARD and ULTRA HARD, two Arcade difficulties above HARD (3DS only).
  *
- * They are rows below HARD in the DIFFICULTY box, hidden until earned: SUPER HARD once all four Arcade
- * cups are won on HARD, ULTRA HARD once all four are won on SUPER HARD. That is retail's own cup ladder
- * (MEDIUM and HARD cups stay locked until the four cups below are won) carried two tiers on, so a tier is
- * unlocked exactly when the four cup-win bits of the tier below are set; there is no flag of its own. The
+ * EASY, MEDIUM and HARD cups are all open from the start (retail locks MEDIUM and HARD until the four cups
+ * of the tier below are won), and a cup won on any tier also earns that cup's star on every tier below it.
+ * Each retail tier's fourth cup opens a battle arena, as in retail, so one win can open up to three; the
+ * podium prompt then says arenas, plural.
+ *
+ * SUPER HARD and ULTRA HARD are rows below HARD in the DIFFICULTY box, hidden until earned: SUPER HARD once
+ * all four Arcade cups are won on HARD, ULTRA HARD once all four are won on SUPER HARD. A tier is unlocked
+ * exactly when the four cup-win bits of the tier below are set; there is no flag of its own. The
  * box is the one single races, cups and CTR CHALLENGE all pass through, so all three offer the new rows.
  * The fourth SUPER HARD cup also unlocks Penta Penguin (UNLOCK_PENTA), retail's one cheat-only racer;
  * that is a real unlock bit, set at that win only. The four ULTRA HARD cups unlock mirror mode
@@ -38,14 +42,16 @@ void NativeXDiff_ServeDifficultyBox(struct RectMenu *menu);
 /* MM_MenuProc_Difficulty: takes a SUPER HARD or ULTRA HARD row; 0 for every retail row. */
 int NativeXDiff_HandleDifficultyRow(struct RectMenu *menu, s16 row);
 
-/* UI_CupStandings, for an Arcade cup the player won: credits a SUPER HARD or ULTRA HARD win and returns 1;
- * 0 leaves the win to retail. */
+/* MM_ToggleRows_Difficulty: 1 where retail locks MEDIUM and HARD cups until the tier below is complete
+ * (PC), 0 where they are open from the start (3DS). */
+int NativeXDiff_LockCupTiers(void);
+
+/* UI_CupStandings, for an Arcade cup the player won: credits the win on every tier at or below the one it
+ * was won on, opens what that completes, and returns 1; 0 (PC) leaves the win to retail. */
 int NativeXDiff_CreditCupWin(int arcadeDifficulty, int cupID);
 
-/* UI_CupStandings: retail has just completed the four cups of `difficulty` (0 EASY, 1 MEDIUM, 2 HARD). */
-void NativeXDiff_OnTierComplete(int difficulty);
-
-/* CS_Camera: the podium's save prompt, extended with the unlock lines when this cup unlocked a tier. */
+/* CS_Camera: the podium's save prompt, extended with the unlock lines when this cup unlocked a tier, and
+ * with the plural arena line when it opened more than one battle arena. */
 s16 NativeXDiff_CupProgressString(s16 stringIndex);
 
 /* GAMEPROG_SaveCupProgress: marks the new tiers' cup wins as saved. */

@@ -428,6 +428,10 @@ void MM_ToggleRows_Difficulty(void)
 		if (
 		    // if locked
 		    (isUnlocked == 0) &&
+#ifdef CTR_NATIVE
+		    // 3DS opens every retail tier from the start (platform/native_extra_difficulty.c); PC keeps retail's lock
+		    NativeXDiff_LockCupTiers() &&
+#endif
 
 		    // If you're in Arcade mode
 		    ((gGT->gameMode1 & ARCADE_MODE) != 0) &&

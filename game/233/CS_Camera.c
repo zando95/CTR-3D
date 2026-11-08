@@ -258,7 +258,8 @@ void CS_Camera_ThTick_Podium(struct Thread *th)
 		}
 
 #ifdef CTR_NATIVE
-		// a line for SUPER HARD or ULTRA HARD when this cup unlocked it (platform/native_extra_difficulty.c)
+		// a line for SUPER HARD or ULTRA HARD when this cup unlocked it, and the arena line in the plural when it
+		// opened more than one (platform/native_extra_difficulty.c)
 		stringIndex = NativeXDiff_CupProgressString(stringIndex);
 #endif
 

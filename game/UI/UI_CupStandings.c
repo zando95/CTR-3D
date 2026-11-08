@@ -700,7 +700,8 @@ void UI_CupStandings_InputAndDraw(void)
 					                                            // If you're in Arcade Mode
 					                                            ((gGT->gameMode1 & ARCADE_MODE) != 0)))
 #ifdef CTR_NATIVE
-					    // SUPER HARD and ULTRA HARD cups have stars of their own (platform/native_extra_difficulty.c); never on PC
+					    // 3DS credits the win itself, on every tier at or below the one it was won on, SUPER and ULTRA HARD
+					    // included (platform/native_extra_difficulty.c); PC leaves it to retail below
 					    && !NativeXDiff_CreditCupWin(gGT->arcadeDifficulty, gGT->cup.cupID)
 #endif
 					)
@@ -749,10 +750,6 @@ void UI_CupStandings_InputAndDraw(void)
 
 								// battle map is now unlocked (233 overlay)
 								gGT->gameMode2 |= CUP_NEW_BATTLE;
-#ifdef CTR_NATIVE
-								// the fourth HARD cup also unlocks SUPER HARD (platform/native_extra_difficulty.c)
-								NativeXDiff_OnTierComplete(difficulty);
-#endif
 							}
 						}
 					}

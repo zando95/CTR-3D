@@ -26,6 +26,7 @@ It's been some time since Beta 1.0 released, and this update aims to polish off 
 - Saves are crash-safe
 - Saving no longer freezes the game.
 - PAL Penta renamed to Super Penta in Options menu
+- Arcade Mode Cup progression: "Hard" is unlocked right away. Beating a cup on Hard unlocks the Easy and Medium stars as well.
 
 ### Bug fixes
 
