@@ -120,7 +120,7 @@ struct NativeOptText
 static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
     /* English (NTSC-U file 1): unchanged */
     {"OPTIONS",
-     {"PAL PENTA", "RESERVES METER", "BOTTOM MAP", "AUTOSAVE GHOST", "RANDOM CPUS", "TEXTURE FILTER"},
+     {"SUPER PENTA", "RESERVES METER", "BOTTOM MAP", "AUTOSAVE GHOST", "RANDOM CPUS", "TEXTURE FILTER"},
      "OFF",
      "ON",
      "LANGUAGE",
@@ -129,7 +129,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      9},
     /* French */
     {"OPTIONS",
-     {"PENTA PAL", "JAUGE RESERVE", "CARTE EN BAS", "SAUV. FANTOME", "CPU ALEATOIRES", "FILTRE TEXTURE"},
+     {"SUPER PENTA", "JAUGE RESERVE", "CARTE EN BAS", "SAUV. FANTOME", "CPU ALEATOIRES", "FILTRE TEXTURE"},
      "NON",
      "OUI",
      "LANGUE",
@@ -138,7 +138,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* German */
     {"OPTIONEN",
-     {"PAL PENTA", "RESERVEANZEIGE", "KARTE UNTEN", "AUTOSAVE GEIST", "ZUFALLSGEGNER", "TEXTURFILTER"},
+     {"SUPER PENTA", "RESERVEANZEIGE", "KARTE UNTEN", "AUTOSAVE GEIST", "ZUFALLSGEGNER", "TEXTURFILTER"},
      "AUS",
      "EIN",
      "SPRACHE",
@@ -147,7 +147,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Italian */
     {"OPZIONI",
-     {"PENTA PAL", "BARRA RISERVA", "MAPPA IN BASSO", "SALVA FANTASMA", "CPU CASUALI", "FILTRO TEXTURE"},
+     {"SUPER PENTA", "BARRA RISERVA", "MAPPA IN BASSO", "SALVA FANTASMA", "CPU CASUALI", "FILTRO TEXTURE"},
      "NO",
      "SI",
      "LINGUA",
@@ -156,7 +156,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Spanish */
     {"OPCIONES",
-     {"PENTA PAL", "MEDIDOR RESERVA", "MAPA INFERIOR", "FANTASMA AUTO", "CPU ALEATORIOS", "FILTRO TEXTURAS"},
+     {"SUPER PENTA", "MEDIDOR RESERVA", "MAPA INFERIOR", "FANTASMA AUTO", "CPU ALEATORIOS", "FILTRO TEXTURAS"},
      "NO",
      "SI",
      "IDIOMA",
@@ -165,7 +165,7 @@ static const struct NativeOptText s_optText[OPT_LANG_COUNT] = {
      10},
     /* Dutch */
     {"OPTIES",
-     {"PAL PENTA", "RESERVEMETER", "KAART ONDER", "SPOOK OPSLAAN", "WILLEKEUR CPU", "TEXTUURFILTER"},
+     {"SUPER PENTA", "RESERVEMETER", "KAART ONDER", "SPOOK OPSLAAN", "WILLEKEUR CPU", "TEXTUURFILTER"},
      "UIT",
      "AAN",
      "TAAL",

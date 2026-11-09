@@ -63,7 +63,7 @@ The screens:
 
 The main menu rows are ADVENTURE, TIME TRIAL, ARCADE, HIGH SCORE, SCRAPBOOK once it is unlocked, OPTIONS and QUIT (YES or NO, NO preselected; YES exits like HOME > Close). VS and Battle are not on the menu.
 
-OPTIONS has five toggles: PAL PENTA (Penta Penguin's PAL/Japanese stats), RESERVES METER (the boost-reserves bar), BOTTOM MAP, AUTOSAVE GHOST (your fastest Time Trial run on each track is saved and raced), and TEXTURE FILTER. Flipping one saves it to `/3ds/ctr_native/options.cfg`, so the settings are remembered between launches; delete that file to go back to the defaults.
+OPTIONS has five toggles: SUPER PENTA (Penta Penguin's PAL/Japanese stats), RESERVES METER (the boost-reserves bar), BOTTOM MAP, AUTOSAVE GHOST (your fastest Time Trial run on each track is saved and raced), and TEXTURE FILTER. Flipping one saves it to `/3ds/ctr_native/options.cfg`, so the settings are remembered between launches; delete that file to go back to the defaults.
 
 Below the toggles is a **LANGUAGE** row: confirm cycles through English, French, German, Italian, Spanish and Dutch, and the game text changes immediately. The choice is remembered in `/3ds/ctr_native/language.cfg`; delete that file to go back to English. The OPTIONS menu itself is translated too (title, every option, and ON/OFF as SI/NO, JA/NEIN, OUI/NON and so on). Voices stay English unless you install PAL voices (see below), because the NTSC-U disc has no other voice tracks.
 
@@ -109,7 +109,7 @@ Everything here is on by default unless it says otherwise. The toggles are the O
 - **Nitros Oxide as a playable character**, unlocked with the cheat code ROSWELL (see the top of this page). The retail select screen was built for 15 racers, so entering the code switches it to a 16-slot layout (the slot layout follows the PS Vita port, [Rinnegatamante/Crash-Team-Racing-High-Octane](https://github.com/Rinnegatamante/Crash-Team-Racing-High-Octane), GPL-3.0). His select-screen model is read from the disc's own files at runtime; nothing of the game is included in this repository.
 - **VS and Battle modes** are not offered.
 
-The PC build from this repository carries the changes that are not 3DS-specific: PAL Penta, the reserves meter, the ice-reflection fix and the cheat codes. On PC they are always on; only the 3DS build has the OPTIONS menu.
+The PC build from this repository carries the changes that are not 3DS-specific: Super Penta, the reserves meter, the ice-reflection fix and the cheat codes. On PC they are always on; only the 3DS build has the OPTIONS menu.
 
 ## Building from source
 
