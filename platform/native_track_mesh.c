@@ -468,6 +468,16 @@ static const u8 sTrackModeTriIdx[16][3] = {
 
 static void NativeTrackMesh_Free(void)
 {
+	/* The render worker walks the PREVIOUS frame while the game thread runs
+	 * this one, and that walk reads every array below (leaf ranges, boxes,
+	 * atlas bins, the animation patch tables). An adventure-hub swap rebuilds
+	 * the mesh mid-race, so drain the queue before tearing anything down;
+	 * otherwise the in-flight walk finds the mesh gone and presents a frame
+	 * with no track. This fences the worker, not the GPU: the rebuild's first
+	 * linear-memory write comes tens of milliseconds after this, far past the
+	 * last submitted frame's GPU work. No-op without a render thread. */
+	NativeRenderQueue_Fence();
+
 #if defined(__3DS__)
 	/* Release the dedicated atlas pool's linear-heap textures too -- this is
 	 * the only teardown path a level currently has (called both on rebuild
@@ -1194,14 +1204,10 @@ static u32 NativeTrackAnim_PatchVertices(s32 camX, s32 camZ)
  * (curFrame latch), not to the track: a chain with frameSkip set holds for
  * several vblanks and costs nothing on the frames in between.
  *
- * RESIDUAL, stated rather than papered over: the mesh REBUILD runs on the game
- * thread (NativeTrackMesh_Frame, from the 1P gate) and starts by freeing
- * s_trackMesh, so a level transition can in principle free these arrays
- * between this function's builtFor check and its use of them. That is the
- * exact exposure the existing resident DRAW path already has against
- * leafRanges, and closing it properly means a build/teardown handshake for the
- * whole mesh, not a lock bolted onto this one reader. Matched to the existing
- * path deliberately; do not read this comment as a claim that it is safe.
+ * The mesh REBUILD runs on the game thread (NativeTrackMesh_Frame, from the 1P
+ * gate) and starts by freeing s_trackMesh; NativeTrackMesh_Free drains the
+ * render queue first, so this function (which runs inside a queued walk) never
+ * sees the arrays freed under it.
  */
 void NativeTrackAnim_PatchFrame(void)
 {
