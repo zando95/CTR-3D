@@ -1,7 +1,7 @@
 /* Arcade-menu modes (3DS only); the contract is in include/native_arcade_modes.h.
  *
  * The ARCADE RACE TYPE menu (D230.menuRaceType) keeps retail's two rows, SINGLE and CUP, and gains
- * one row per mode below them. The row set is swapped in by NativeArcade_RaceTypeRows every frame
+ * a row for each offered mode below them. The row set is swapped in by NativeArcade_RaceTypeRows every frame
  * from MM_MenuProc_Main, the same way NativeOptions_MainMenuRows swaps the main-menu rows, and the
  * row choice is taken in NativeArcade_HandleRaceTypeRow before retail's SingleCup handler sees it.
  * On PC every hook is a passthrough: replays navigate these menus by row position, so the PC row
@@ -48,12 +48,13 @@ static const char *const s_namBossRaces[NAM_LANG_COUNT] = {
 
 static s32 s_namLang = 0;
 
+/* BOSS RACES is not offered: NativeArcade_HandleRaceTypeRow still handles NAM_LNG_BOSS_RACES, so
+ * offering it again is a row {NAM_LNG_BOSS_RACES, ...} after CUP with the nav indices shifted. */
 static struct MenuRow s_namRaceTypeRows[] = {
     {LNG_SINGLE, 0, 1, 0, 0},
     {LNG_CUP, 0, 2, 1, 1},
-    {NAM_LNG_BOSS_RACES, 1, 3, 2, 2},
-    {LNG_CTR_CHALLENGE_TITLE, 2, 4, 3, 3},
-    {LNG_RELIC_RACE, 3, 4, 4, 4},
+    {LNG_CTR_CHALLENGE_TITLE, 1, 3, 2, 2},
+    {LNG_RELIC_RACE, 2, 3, 3, 3},
     {RECTMENU_STRING_NONE, 0, 0, 0, 0},
 };
 
