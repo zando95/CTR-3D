@@ -2436,6 +2436,166 @@ static int NativeTrackMesh_QuadIsVisiblePad(const struct QuadBlock *block, const
 	return 0;
 }
 
+/*
+ * Layered faces. Levels stack two textured faces on one surface and let the painter's order
+ * choose (the hub tunnels: a double-sided black face under each textured wall face, draw_order_high
+ * 10-15 vs 0, so retail always paints the textured one last). The depth buffer can only reproduce
+ * that if both layers are the SAME surface, but the two quads often index their corners in mirror
+ * order, so the default (0,2,1)(1,2,3) split cuts them along opposite diagonals; on a non-planar
+ * quad one layer's triangles then rise through the other's, and the under layer shows through in
+ * patches that change with distance. Here the under layer (the larger draw_order_high byte) takes
+ * its partner's diagonal, so the two are identical surfaces and the drawOrder tie-break orders them
+ * everywhere.
+ *
+ * Corners match within TRACK_LAYER_TOLERANCE world units. Triangle faces (faceMode 1/2) are skipped.
+ * altSplit is one byte per quadblock, bit f set = face f splits along corners 0-3 instead of 1-2.
+ */
+#define TRACK_LAYER_TOLERANCE 8
+
+struct NativeTrackLayerFace
+{
+	s16 cx, cy, cz;
+	u16 quad;
+	u8 face;
+	s8 drawOrder;
+};
+
+internal int NativeTrackLayer_CompareCx(const void *a, const void *b)
+{
+	return (int)((const struct NativeTrackLayerFace *)a)->cx - (int)((const struct NativeTrackLayerFace *)b)->cx;
+}
+
+internal int NativeTrackLayer_Near(const struct LevVertex *a, const struct LevVertex *b)
+{
+	return (abs(a->pos.x - b->pos.x) <= TRACK_LAYER_TOLERANCE) && (abs(a->pos.y - b->pos.y) <= TRACK_LAYER_TOLERANCE) &&
+	       (abs(a->pos.z - b->pos.z) <= TRACK_LAYER_TOLERANCE);
+}
+
+/* Fills corner[0..3] with the face's four vertices in emit order; 0 if the face does not emit as a
+ * textured quad (no texture, triangle face mode, or an index outside the pool). */
+internal int NativeTrackLayer_FaceCorners(const struct QuadBlock *block, int face, const struct LevVertex *vertexArray, int numVertex,
+                                          const struct LevVertex *corner[4])
+{
+	u32 faceBits = (CTR_ReadU32LE(&block->draw_order_low) >> (8 + 5 * face)) & 0x1f;
+	u32 faceMode = (faceBits >> 3) & 3;
+
+	if ((block->ptr_texture_mid[face] == NULL) || (faceMode == 1) || (faceMode == 2))
+	{
+		return 0;
+	}
+	for (int c = 0; c < 4; c++)
+	{
+		u16 vi = block->index[sTrackFaceCorners[face][c]];
+
+		if (vi >= numVertex)
+		{
+			return 0;
+		}
+		corner[c] = &vertexArray[vi];
+	}
+	return 1;
+}
+
+internal void NativeTrackLayer_MatchSplits(const struct QuadBlock *quadBlocks, int numQuadBlock, const struct LevVertex *vertexArray, int numVertex,
+                                           u8 *altSplit, int *outPairs, int *outAltSplit)
+{
+	struct NativeTrackLayerFace *faces = (struct NativeTrackLayerFace *)malloc((size_t)numQuadBlock * 4 * sizeof(struct NativeTrackLayerFace));
+	int count = 0;
+
+	*outPairs = 0;
+	*outAltSplit = 0;
+
+	if (faces == NULL)
+	{
+		return;
+	}
+
+	for (int q = 0; q < numQuadBlock; q++)
+	{
+		for (int f = 0; f < 4; f++)
+		{
+			const struct LevVertex *corner[4];
+			s32 sx = 0, sy = 0, sz = 0;
+
+			if (!NativeTrackLayer_FaceCorners(&quadBlocks[q], f, vertexArray, numVertex, corner))
+			{
+				continue;
+			}
+			for (int c = 0; c < 4; c++)
+			{
+				sx += corner[c]->pos.x;
+				sy += corner[c]->pos.y;
+				sz += corner[c]->pos.z;
+			}
+			faces[count].cx = (s16)(sx / 4);
+			faces[count].cy = (s16)(sy / 4);
+			faces[count].cz = (s16)(sz / 4);
+			faces[count].quad = (u16)q;
+			faces[count].face = (u8)f;
+			faces[count].drawOrder = (s8)((const u8 *)&quadBlocks[q].draw_order_high)[f];
+			count++;
+		}
+	}
+
+	qsort(faces, (size_t)count, sizeof(faces[0]), NativeTrackLayer_CompareCx);
+
+	for (int i = 0; i < count; i++)
+	{
+		const struct NativeTrackLayerFace *under = &faces[i];
+		const struct LevVertex *u[4];
+
+		NativeTrackLayer_FaceCorners(&quadBlocks[under->quad], under->face, vertexArray, numVertex, u);
+
+		/* Sorted by cx, so every candidate within tolerance is contiguous around i. */
+		int lo = i;
+
+		while ((lo > 0) && (under->cx - faces[lo - 1].cx <= TRACK_LAYER_TOLERANCE))
+		{
+			lo--;
+		}
+
+		for (int j = lo; (j < count) && (faces[j].cx - under->cx <= TRACK_LAYER_TOLERANCE); j++)
+		{
+			const struct NativeTrackLayerFace *over = &faces[j];
+			const struct LevVertex *p[4];
+			int matched = 1;
+
+			if ((j == i) || (over->drawOrder >= under->drawOrder) || (abs(over->cy - under->cy) > TRACK_LAYER_TOLERANCE) ||
+			    (abs(over->cz - under->cz) > TRACK_LAYER_TOLERANCE))
+			{
+				continue;
+			}
+
+			NativeTrackLayer_FaceCorners(&quadBlocks[over->quad], over->face, vertexArray, numVertex, p);
+			for (int c = 0; (c < 4) && matched; c++)
+			{
+				matched = NativeTrackLayer_Near(u[c], p[0]) || NativeTrackLayer_Near(u[c], p[1]) || NativeTrackLayer_Near(u[c], p[2]) ||
+				          NativeTrackLayer_Near(u[c], p[3]);
+			}
+			if (!matched)
+			{
+				continue;
+			}
+
+			(*outPairs)++;
+
+			/* The over layer splits along its corners 1-2. If the under layer's own 1-2 diagonal is
+			 * not that one but its 0-3 diagonal is, cut it along 0-3. */
+			if (!((NativeTrackLayer_Near(u[1], p[1]) && NativeTrackLayer_Near(u[2], p[2])) ||
+			      (NativeTrackLayer_Near(u[1], p[2]) && NativeTrackLayer_Near(u[2], p[1]))) &&
+			    ((NativeTrackLayer_Near(u[0], p[1]) && NativeTrackLayer_Near(u[3], p[2])) ||
+			     (NativeTrackLayer_Near(u[0], p[2]) && NativeTrackLayer_Near(u[3], p[1]))))
+			{
+				altSplit[under->quad] |= (u8)(1u << under->face);
+				(*outAltSplit)++;
+			}
+			break;
+		}
+	}
+
+	free(faces);
+}
+
 void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 {
 	/* Latch = pointer + content fingerprint (arena heaps reuse addresses),
@@ -2609,6 +2769,15 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	for (int i = 0; i < numQuadBlock; i++)
 	{
 		padQuads += NativeTrackMesh_QuadIsTurboTrigger(&quadBlocks[i]) || NativeTrackMesh_QuadIsVisiblePad(&quadBlocks[i], padTrig, padTrigCount);
+	}
+
+	/* NULL is a degrade, not a failure: every face keeps the default split. */
+	u8 *altSplit = (u8 *)calloc((size_t)numQuadBlock, 1);
+	int layerPairs = 0, layerAltSplit = 0;
+
+	if (altSplit != NULL)
+	{
+		NativeTrackLayer_MatchSplits(quadBlocks, numQuadBlock, vertexArray, numVertex, altSplit, &layerPairs, &layerAltSplit);
 	}
 
 	for (int n = 0; n < mesh->numBspNodes; n++)
@@ -2981,16 +3150,43 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 				}
 				else
 				{
-					/* ctr-tools' export split: (0,2,1)(1,2,3). */
-					idx[0] = (u16)(baseVert + 0);
-					idx[1] = (u16)(baseVert + 2);
-					idx[2] = (u16)(baseVert + 1);
-					idx[3] = (u16)(baseVert + 1);
-					idx[4] = (u16)(baseVert + 2);
-					idx[5] = (u16)(baseVert + 3);
+					/* ctr-tools' export split: (0,2,1)(1,2,3), diagonal 1-2. A layered
+					 * face cut along 0-3 instead (NativeTrackLayer_MatchSplits) keeps
+					 * the same winding: (0,2,3)(0,3,1). */
+					ptrdiff_t quadIdx = block - quadBlocks;
+					int splitAlt = (altSplit != NULL) && (quadIdx >= 0) && (quadIdx < numQuadBlock) && ((altSplit[quadIdx] & (1u << face)) != 0);
+
+					if (splitAlt)
+					{
+						idx[0] = (u16)(baseVert + 0);
+						idx[1] = (u16)(baseVert + 2);
+						idx[2] = (u16)(baseVert + 3);
+						idx[3] = (u16)(baseVert + 0);
+						idx[4] = (u16)(baseVert + 3);
+						idx[5] = (u16)(baseVert + 1);
+					}
+					else
+					{
+						idx[0] = (u16)(baseVert + 0);
+						idx[1] = (u16)(baseVert + 2);
+						idx[2] = (u16)(baseVert + 1);
+						idx[3] = (u16)(baseVert + 1);
+						idx[4] = (u16)(baseVert + 2);
+						idx[5] = (u16)(baseVert + 3);
+					}
 					s_trackMesh.indexCount += 6;
 
-					if (doubleSided)
+					if (doubleSided && splitAlt)
+					{
+						idx[6] = (u16)(baseVert + 0);
+						idx[7] = (u16)(baseVert + 3);
+						idx[8] = (u16)(baseVert + 2);
+						idx[9] = (u16)(baseVert + 0);
+						idx[10] = (u16)(baseVert + 1);
+						idx[11] = (u16)(baseVert + 3);
+						s_trackMesh.indexCount += 6;
+					}
+					else if (doubleSided)
 					{
 						/* Backface culling: reverse-wound copies so a
 						 * DOUBLE-SIDED quad shows from both sides under
@@ -3092,6 +3288,7 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	}
 
 	free(animMark);
+	free(altSplit);
 
 	/* Atlas layout over the interned texture table. Plain refs
 	 * contribute their near layout; AnimTex refs contribute EVERY frame's
@@ -3384,6 +3581,11 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 		Platform_Log("[TRKMESH] notex: null=%d animNull=%d badWord=%d sample0=%08x sample1=%08x\n", notexNull, notexAnimNull, notexBadWord, notexSample[0],
 		             notexSample[1]);
 	}
+
+	/* pairs = layered faces found (NativeTrackLayer_MatchSplits); altSplit = how many of their under
+	 * layers needed the other diagonal. altSplit > 0 with patches still showing means the match
+	 * missed them. */
+	Platform_LogInstrument("[TRKLAYER] lvl=%d pairs=%d altSplit=%d\n", NativePerf_CurrentLevelID(), layerPairs, layerAltSplit);
 
 	/*
 	 * Semi-transparency census. Platform-neutral
