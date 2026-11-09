@@ -179,7 +179,9 @@ void RB_Hazard_ThCollide_Generic(struct Thread *thread)
 	int soundID;
 
 	struct Instance *crateInst = mw->crateInst;
-	if (crateInst != 0)
+	// A crate instance outlives its thread (RB_Crate clears the pointer), and
+	// retail reads through it unchecked: harmless on PS1, a fault natively.
+	if ((crateInst != 0) && (crateInst->thread != 0))
 	{
 		struct Crate *crateObj = (struct Crate *)crateInst->thread->object;
 
