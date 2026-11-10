@@ -303,6 +303,62 @@ static s32 NativeOptions_ReadSavedLanguage(void)
 	return -1;
 }
 
+/* Every selectable language file, read once at boot (NativeOptions_PreloadLanguages) and handed to
+ * LOAD_LangFile from memory (NativeOptions_LangFileFromMemory). A switch in OPTIONS must not read the
+ * disc image: on the console that read, plus the voice manifest probe, stalled the menu for as long
+ * as the SD card took. A language missing here (allocation or read failure) still reads the disc. */
+static u8 *s_optLangCache[OPT_LANG_COUNT];
+static u32 s_optLangCacheSize[OPT_LANG_COUNT];
+
+unsigned long long N3DS_GetTickCount(void);
+unsigned long long N3DS_GetTickFrequency(void);
+
+static void NativeOptions_PreloadLanguages(void)
+{
+	struct BigHeader *bigfile = (struct BigHeader *)sdata->ptrBigfile1;
+	struct BigEntry *entries;
+	const unsigned long long t0 = N3DS_GetTickCount();
+	const unsigned long long freq = N3DS_GetTickFrequency();
+	int cached = 0;
+
+	if (bigfile == NULL)
+	{
+		return;
+	}
+	entries = BIG_GETENTRY(bigfile);
+
+	for (s32 i = 0; i < OPT_LANG_COUNT; i++)
+	{
+		const int fileIndex = s_optLangFile[i];
+		const u32 readSize = ((u32)entries[BI_LANGUAGEFILE + fileIndex].size + LOAD_CD_DATA_SECTOR_ROUND_MASK) & ~LOAD_CD_DATA_SECTOR_ROUND_MASK;
+		u32 size = 0;
+		u8 *buf;
+
+		NativeAudio_PreloadVoiceManifest(fileIndex);
+
+		if ((s_optLangCache[i] != NULL) || (readSize == 0))
+		{
+			continue;
+		}
+		buf = (u8 *)malloc(readSize);
+		if (buf == NULL)
+		{
+			continue;
+		}
+		if (LOAD_ReadFile_ex(bigfile, LT_SETADDR, BI_LANGUAGEFILE + fileIndex, buf, &size, NULL) == NULL)
+		{
+			free(buf);
+			continue;
+		}
+		s_optLangCache[i] = buf;
+		s_optLangCacheSize[i] = readSize;
+		cached++;
+	}
+
+	Platform_LogInstrument("[LANGPRE] %d/%d language files cached in %ums\n", cached, OPT_LANG_COUNT,
+	                       (unsigned)(((N3DS_GetTickCount() - t0) * 1000ull) / ((freq != 0ull) ? freq : 1ull)));
+}
+
 static void NativeOptions_ApplyLanguage(s32 langIndex)
 {
 	s_optLangIndex = langIndex;
@@ -687,7 +743,30 @@ void NativeOptions_BootSettings(void)
 	{
 		NativeOptions_ApplyLanguage(saved);
 	}
+
+	NativeOptions_PreloadLanguages();
 #endif
+}
+
+/* LOAD_LangFile asks here before reading a language file from the disc: 1 = the file was copied
+ * into dst from the boot cache. Always 0 on PC, which has no language switch. */
+int NativeOptions_LangFileFromMemory(int fileIndex, void *dst, u32 dstSize)
+{
+#ifdef __3DS__
+	for (s32 i = 0; i < OPT_LANG_COUNT; i++)
+	{
+		if ((s_optLangFile[i] == fileIndex) && (s_optLangCache[i] != NULL) && (s_optLangCacheSize[i] <= dstSize))
+		{
+			memcpy(dst, s_optLangCache[i], s_optLangCacheSize[i]);
+			return 1;
+		}
+	}
+#else
+	(void)fileIndex;
+	(void)dst;
+	(void)dstSize;
+#endif
+	return 0;
 }
 
 /* The N. Oxide unlock line for the selected language; PC has no language switch, so it is English. */

@@ -13,6 +13,7 @@
 // platform/native_options.c -- nonzero when the platform re-reads a language file at runtime
 // (local-extern idiom).
 extern int NativeOptions_RuntimeLanguageSwitch(void);
+extern int NativeOptions_LangFileFromMemory(int fileIndex, void *dst, u32 dstSize);
 #endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800326b4-0x80032700.
@@ -267,10 +268,16 @@ void LOAD_LangFile(int bigfilePtr, int lang)
 
 	lngFile = sdata->lngFile;
 
-	lngFile = LOAD_ReadFile_ex((struct BigHeader *)bigfilePtr, LT_SETADDR, BI_LANGUAGEFILE + lang, lngFile, &size, NULL);
-	if (lngFile == NULL)
+#if defined(CTR_NATIVE)
+	// A language switch from the native OPTIONS menu is served from the files cached at boot.
+	if (!NativeOptions_LangFileFromMemory(lang, lngFile, (u32)sdata->langBufferSize))
+#endif
 	{
-		return;
+		lngFile = LOAD_ReadFile_ex((struct BigHeader *)bigfilePtr, LT_SETADDR, BI_LANGUAGEFILE + lang, lngFile, &size, NULL);
+		if (lngFile == NULL)
+		{
+			return;
+		}
 	}
 
 	numStrings = lngFile->numStrings;

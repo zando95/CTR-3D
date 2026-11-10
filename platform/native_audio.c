@@ -3532,6 +3532,18 @@ int NativeAudio_HasPalVoicePack(void)
 	return (s_voicePack != 0) && (NativeAudio_GetPalXnf(s_voicePack) != NULL);
 }
 
+/* Reads (or learns the absence of) the voice manifest a language would select, without selecting
+ * it, so a later language switch costs no SD access. Game thread, before the voice cache warm. */
+void NativeAudio_PreloadVoiceManifest(int languageFileIndex)
+{
+	int pack = ((languageFileIndex >= 2) && (languageFileIndex <= 7)) ? (languageFileIndex - 1) : 0;
+
+	if (pack != 0)
+	{
+		(void)NativeAudio_GetPalXnf(pack);
+	}
+}
+
 internal void NativeAudio_PalVoiceShutdown(void)
 {
 	for (int pack = 0; pack <= NATIVE_AUDIO_PAL_PACK_COUNT; pack++)
@@ -3550,6 +3562,11 @@ void NativeAudio_SetVoiceLanguage(int languageFileIndex)
 int NativeAudio_HasPalVoicePack(void)
 {
 	return 0;
+}
+
+void NativeAudio_PreloadVoiceManifest(int languageFileIndex)
+{
+	(void)languageFileIndex;
 }
 #endif /* __3DS__ */
 
