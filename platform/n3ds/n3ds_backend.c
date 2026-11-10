@@ -33,6 +33,15 @@
 #define N3DS_LOG_PATH "sdmc:/ctr3ds.log"
 #define N3DS_LOG_PREV_PATH "sdmc:/ctr3ds.prev.log"
 
+/*
+ * Overrides libctru's weak default. Left at 0, libctru halves the free
+ * application memory between the two heaps and caps the linear half at 32 MiB:
+ * a New 3DS reaches the cap, an original 3DS gets about 23 MiB, short of the
+ * decode-cache atlases. Fixed here, the linear heap is the same on both and
+ * the application heap takes whatever is left.
+ */
+u32 __ctru_linear_heap_size = 32u * 1024u * 1024u;
+
 static FILE *s_logFile = NULL;
 
 /*
