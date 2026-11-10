@@ -453,8 +453,10 @@ struct NativeAudioXaSource
 #if defined(__3DS__)
 	/* Voice-cache RAM backing (see the XA voice cache section). Non-NULL wins
 	 * over both file backends: every sector read is a memcpy from this blob,
-	 * indexed 0..totalSectors-1 at sectorSize stride. The blob is immutable
-	 * after build, so the worker pump reads it without locking. */
+	 * indexed 0..totalSectors-1 at sectorSize stride. The worker pump reads
+	 * the blob without locking: only a rebuild rewrites it, and the rebuild
+	 * stops a stream backed by it before its first write, which lands after a
+	 * whole XA file has been read from the card. */
 	const u8 *ramSectors;
 #endif
 };
@@ -3537,6 +3539,25 @@ int NativeAudio_HasPalVoicePack(void)
 	return (s_voicePack != 0) && (NativeAudio_GetPalXnf(s_voicePack) != NULL);
 }
 
+/* The pack whose lines a lookup returns while `pack` is selected: a pack that is not installed plays
+ * the disc's English (0). */
+internal int NativeAudio_EffectiveVoicePack(int pack)
+{
+	return ((pack != 0) && (NativeAudio_GetPalXnf(pack) != NULL)) ? pack : 0;
+}
+
+/* Reads (or learns the absence of) the voice manifest a language would select, without selecting
+ * it, so a later language switch costs no SD access. Game thread, before the voice cache warm. */
+void NativeAudio_PreloadVoiceManifest(int languageFileIndex)
+{
+	int pack = ((languageFileIndex >= 2) && (languageFileIndex <= 7)) ? (languageFileIndex - 1) : 0;
+
+	if (pack != 0)
+	{
+		(void)NativeAudio_GetPalXnf(pack);
+	}
+}
+
 internal void NativeAudio_PalVoiceShutdown(void)
 {
 	for (int pack = 0; pack <= NATIVE_AUDIO_PAL_PACK_COUNT; pack++)
@@ -3555,6 +3576,11 @@ void NativeAudio_SetVoiceLanguage(int languageFileIndex)
 int NativeAudio_HasPalVoicePack(void)
 {
 	return 0;
+}
+
+void NativeAudio_PreloadVoiceManifest(int languageFileIndex)
+{
+	(void)languageFileIndex;
 }
 #endif /* __3DS__ */
 
@@ -4223,13 +4249,15 @@ internal struct NativeAudioXaVoiceCache s_xaVoiceCache;
  * once per play. */
 internal s32 s_xaAudioSectorCountMemo[NATIVE_AUDIO_XA_KEY_MAX];
 
-/* Which voice pack the RAM cache holds: the one selected when the boot warm ran (0 = the disc's English).
- * Switching language later leaves the cache as it is; the other language's lines stream from the SD card. */
+/* Which voice pack the RAM cache holds (0 = the disc's English): the effective pack of the language
+ * selected when it was built, never a pack that is not installed, because the build keeps only lines
+ * whose lookup lands in this pack. A different voice language is cached by
+ * NativeAudio_VoiceCacheRebuildBegin; until then its lines stream from the SD card. */
 internal int s_xaCachePack;
 
 /* Build scratch: wanted tracks of the category being built. Static because
- * 512 entries is stack-hostile on the 3DS main thread. Only touched inside
- * NativeAudio_XAVoiceCacheBuild (main thread, once). */
+ * 512 entries is stack-hostile on the 3DS main thread. Only touched by the
+ * cache build (main thread). */
 internal struct
 {
 	s32 xaID;
@@ -4841,7 +4869,7 @@ void NativeAudio_VoiceCacheEnsureBegin(void)
 	s_vce.active = 1;
 
 	/* The language chosen at boot (LOAD_LangFile has already run) decides whose voices are cached. */
-	s_xaCachePack = s_voicePack;
+	s_xaCachePack = NativeAudio_EffectiveVoicePack(s_voicePack);
 	if (s_xaCachePack != 0)
 	{
 		NativeAudio_XAVoiceCacheLog("[PALVOICE] caching the %s voice pack", NativeAudio_PalPackCode(s_xaCachePack));
@@ -4994,6 +5022,66 @@ int NativeAudio_VoiceCacheEnsureStep(int budgetSectors)
 #else
 	(void)budgetSectors;
 	return 1;
+#endif
+}
+
+/* Refills the voice cache with the selected language's lines when they differ from the ones it holds.
+ * Returns 1 when a refill started: drive it with NativeAudio_VoiceCacheEnsureStep until that returns
+ * nonzero, starting no voice line in between (an open meanwhile takes the SD path). Returns 0 when the
+ * cache already holds these voices, the boot warm has not finished, or there is no memory for it.
+ * Main thread. */
+int NativeAudio_VoiceCacheRebuildBegin(void)
+{
+#if defined(__3DS__)
+	int pack = NativeAudio_EffectiveVoicePack(s_voicePack);
+	struct NativeAudioXaClosedSource closed;
+
+	if (s_vce.active || (pack == s_xaCachePack))
+	{
+		return 0;
+	}
+
+	/* A playing line backed by the cache would read the blob while it is rewritten. */
+	closed.open = 0;
+	NativeAudio_LockOutput();
+	if (s_audio.xaStream.source.ramSectors != NULL)
+	{
+		closed = NativeAudio_FreeXA();
+	}
+	NativeAudio_UnlockOutput();
+	if (closed.open)
+	{
+		NativeAudio_XASourceClose(&closed.source);
+	}
+
+	s_xaVoiceCache.built = 0;
+	s_xaVoiceCache.blobUsed = 0;
+	memset(s_xaVoiceCache.tracks, 0, sizeof(s_xaVoiceCache.tracks));
+	s_xaCachePack = pack;
+
+	if (s_xaVoiceCache.blob == NULL)
+	{
+		s_xaVoiceCache.blob = (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES);
+		if (s_xaVoiceCache.blob == NULL)
+		{
+			NativeAudio_XAVoiceCacheLog("[XAPRELOAD] no %u KiB to rebuild the voice cache -- voice lines stay on the SD path",
+			                            (unsigned)(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES >> 10));
+			return 0;
+		}
+	}
+
+	NativeAudio_XAVoiceCacheLog("[PALVOICE] rebuilding the voice cache for %s", (pack != 0) ? NativeAudio_PalPackCode(pack) : "the disc's English");
+
+	/* Stage 1 onward: the music counts the boot warm memoized do not depend on the language. */
+	memset(&s_vce, 0, sizeof(s_vce));
+	s_vce.active = 1;
+	s_vce.stage = 1;
+	s_vce.plannedSectors = NativeAudio_XAVoiceCachePlannedSectors(NATIVE_AUDIO_XA_CATEGORY_GAME) +
+	                       NativeAudio_XAVoiceCachePlannedSectors(NATIVE_AUDIO_XA_CATEGORY_EXTRA);
+	NativeAudio_XAVoiceCacheBuildCategoryBegin(NATIVE_AUDIO_XA_CATEGORY_GAME);
+	return 1;
+#else
+	return 0;
 #endif
 }
 

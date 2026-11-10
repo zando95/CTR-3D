@@ -407,6 +407,10 @@ static const u8 sTrackUvPerm[8][4] = {
  * UV indices 0-3 sit at +0, +4, +8, +10 (clut/tpage interleave between). */
 static const u8 sTrackUvByteOfs[4] = {0, 4, 8, 10};
 
+#if defined(__3DS__)
+static void NativeTrackAnim_FreeFastList(void);
+#endif
+
 /*
  * faceMode 1/2 faces are TRIANGLES, not quads (the Coco Park stripe +
  * Crash Cove sky-plank classes). Retail indexes the face's full 5-bit value
@@ -487,6 +491,9 @@ static void NativeTrackMesh_Free(void)
 	 * shape, freed here for exactly the same reason. */
 	N3DS_TrackAtlas_Free();
 	N3DS_TrackGeom_Free();
+#endif
+#if defined(__3DS__)
+	NativeTrackAnim_FreeFastList();
 #endif
 	free(s_trackMesh.verts);
 	free(s_trackMesh.indices);
@@ -1073,10 +1080,235 @@ internal void NativeTrackAnim_WaterFade(struct NativeTrackVert *vert, s32 camX, 
 	vert->b = (u8)(((u32)vert->b * (u32)(0x1000 - factor)) >> 12);
 }
 
+#if defined(__3DS__)
+/*
+ * The animated-vertex patch as one pass that writes straight into the GPU's
+ * vertex block. Each record is everything the pass needs to find its source
+ * vertex, its destination and its atlas rect, so the loop reads one packed
+ * stream instead of four sparse ones. Nothing on 3DS reads the patched fields
+ * of s_trackMesh.verts afterwards, so that copy is left as built.
+ *
+ * Built on the game thread once the rects are placed; the walk only reads it.
+ * NativeTrackMesh_Free drains the render queue before freeing it.
+ */
+struct NativeTrackAnimFastRec
+{
+	u16 dst;     /* resident vertex index */
+	u16 src;     /* index into animSrcArray */
+	s16 rectIdx; /* water UV rect, -1 when the vertex is not water or has no rect */
+	u8 water;
+	u8 pad;
+};
+static struct NativeTrackAnimFastRec *s_animFast;
+static u32 s_animFastCount;
+
+static void NativeTrackAnim_FreeFastList(void)
+{
+	free(s_animFast);
+	s_animFast = NULL;
+	s_animFastCount = 0;
+}
+
+static void NativeTrackAnim_BuildFastList(void)
+{
+	const unsigned texRefMax = (unsigned)(sizeof(s_trackMesh.texRectIndex) / sizeof(s_trackMesh.texRectIndex[0]));
+	u32 i;
+
+	NativeTrackAnim_FreeFastList();
+
+	if ((s_trackMesh.animVertCount == 0) || (s_trackMesh.animVerts == NULL) || (s_trackMesh.srcVert == NULL) || (s_trackMesh.verts == NULL))
+	{
+		return;
+	}
+
+	/* NULL is a degrade: PatchVertices falls back to the staged path. */
+	s_animFast = (struct NativeTrackAnimFastRec *)malloc((size_t)s_trackMesh.animVertCount * sizeof(struct NativeTrackAnimFastRec));
+	if (s_animFast == NULL)
+	{
+		return;
+	}
+
+	for (i = 0; i < s_trackMesh.animVertCount; i++)
+	{
+		u32 vi = s_trackMesh.animVerts[i];
+		struct NativeTrackAnimFastRec *rec;
+		const struct NativeTrackVert *vert;
+		u16 sv;
+
+		if ((vi >= s_trackMesh.vertCount) || (vi > 0xffff))
+		{
+			continue;
+		}
+
+		sv = s_trackMesh.srcVert[vi];
+		if (sv == TRACK_SRCVERT_NONE)
+		{
+			continue;
+		}
+
+		vert = &s_trackMesh.verts[vi];
+		rec = &s_animFast[s_animFastCount++];
+		rec->dst = (u16)vi;
+		rec->src = sv;
+		rec->water = (u8)((vert->faceFlags & 0x20) != 0);
+		rec->pad = 0;
+		rec->rectIdx = -1;
+
+		if (rec->water)
+		{
+			s16 rectIdx = ((unsigned)vert->texRef < texRefMax) ? s_trackMesh.texRectIndex[vert->texRef] : (s16)-1;
+
+			if ((rectIdx >= 0) && (rectIdx < s_trackMesh.atlas.rectCount))
+			{
+				rec->rectIdx = rectIdx;
+			}
+		}
+	}
+}
+
+/* Same result per vertex as the staged path below: position and colour from
+ * the level's vertex, the water UV through NativeTrackAtlas_EncodeUV's
+ * arithmetic, then NativeTrackAnim_WaterFade's fade. */
+static u32 NativeTrackAnim_PatchVerticesFast(s32 camX, s32 camZ)
+{
+	const struct NativeTrackAnimFastRec *rec = s_animFast;
+	const struct NativeTrackAnimFastRec *end = s_animFast + s_animFastCount;
+	const struct LevVertex *srcArray = s_trackMesh.animSrcArray;
+	const u32 srcCount = s_trackMesh.animSrcCount;
+	const struct NativeTrackAtlasRect *rects = s_trackMesh.atlas.rects;
+	int stride = 0, gpuCount = 0;
+	u8 *base = (u8 *)N3DS_TrackGeom_PatchBegin(&stride, &gpuCount);
+	u32 patched = 0;
+	int lo = 0x7fffffff, hi = -1;
+
+	if ((base == NULL) || (stride != (int)sizeof(N3DS_TrackVertex)))
+	{
+		return 0;
+	}
+
+	for (; rec != end; rec++)
+	{
+		const struct LevVertex *src;
+		N3DS_TrackVertex *out;
+		u32 r, g, b;
+		s32 x, z;
+
+		if ((u32)rec->src >= srcCount)
+		{
+			s_vertPatchSrcOOB++;
+			continue;
+		}
+		if ((int)rec->dst >= gpuCount)
+		{
+			continue;
+		}
+
+		src = &srcArray[rec->src];
+		out = (N3DS_TrackVertex *)(void *)(base + (size_t)rec->dst * sizeof(N3DS_TrackVertex));
+		x = src->pos.x;
+		z = src->pos.z;
+		r = src->color_hi[0];
+		g = src->color_hi[1];
+		b = src->color_hi[2];
+
+		out->x = (s16)x;
+		out->y = src->pos.y;
+		out->z = (s16)z;
+
+		if (rec->water)
+		{
+			s32 dx = x - camX;
+			s32 dz = z - camZ;
+			s32 major, minor, falloff;
+
+			if (rec->rectIdx >= 0)
+			{
+				const struct NativeTrackAtlasRect *rect = &rects[rec->rectIdx];
+
+				if (rect->atlasUnit != TRACK_ATLAS_UNIT_INVALID)
+				{
+					int pageU = src->color_lo[0];
+					int pageV = src->color_lo[1];
+
+					if ((pageU < rect->minU) || (pageU > rect->maxU) || (pageV < rect->minV) || (pageV > rect->maxV))
+					{
+						s_animPatchOutOfRect++;
+						pageU = (pageU < rect->minU) ? rect->minU : ((pageU > rect->maxU) ? rect->maxU : pageU);
+						pageV = (pageV < rect->minV) ? rect->minV : ((pageV > rect->maxV) ? rect->maxV : pageV);
+					}
+
+					out->u = (s16)((((int)rect->atlasX + (pageU - (int)rect->srcU)) << 1) + 1);
+					out->v = (s16)(((2 * TRACK_ATLAS_DIM) - 1) - (((int)rect->atlasY + (pageV - (int)rect->srcV)) << 1));
+				}
+			}
+
+			if (dx < 0)
+			{
+				dx = -dx;
+			}
+			if (dz < 0)
+			{
+				dz = -dz;
+			}
+			major = (dx < dz) ? dz : dx;
+			minor = (dx < dz) ? dx : dz;
+			falloff = major + (minor >> 2) - 0x1000;
+			if (falloff >= 0)
+			{
+				r = 0;
+				g = 0;
+				b = 0;
+			}
+			else
+			{
+				s32 factor = (falloff << 2) + 0x1000;
+
+				if (factor >= 0)
+				{
+					const u32 keep = (u32)(0x1000 - factor);
+
+					r = (r * keep) >> 12;
+					g = (g * keep) >> 12;
+					b = (b * keep) >> 12;
+				}
+			}
+		}
+
+		out->r = (u8)r;
+		out->g = (u8)g;
+		out->b = (u8)b;
+
+		if ((int)rec->dst < lo)
+		{
+			lo = (int)rec->dst;
+		}
+		if ((int)rec->dst > hi)
+		{
+			hi = (int)rec->dst;
+		}
+		patched++;
+	}
+
+	if (hi >= 0)
+	{
+		N3DS_TrackGeom_PatchEnd(lo, hi);
+	}
+	N3DS_TrackGeom_FlushPatched();
+	return patched;
+}
+#endif
+
 static u32 NativeTrackAnim_PatchVertices(s32 camX, s32 camZ)
 {
 	u32 i;
 	u32 patched = 0;
+
+#if defined(__3DS__)
+	if ((s_animFast != NULL) && (s_trackMesh.animSrcArray != NULL))
+	{
+		return NativeTrackAnim_PatchVerticesFast(camX, camZ);
+	}
+#endif
 
 	if ((s_trackMesh.animVertCount == 0) || (s_trackMesh.animVerts == NULL) || (s_trackMesh.animSrcArray == NULL) || (s_trackMesh.srcVert == NULL))
 	{
@@ -3435,6 +3667,9 @@ void NativeTrackMesh_Frame(struct Level *level, struct mesh_info *mesh)
 	 * neither runs, so the unit column below is optimistic there -- PC verifies
 	 * COUNTS and UV arithmetic, never pixels, same as the rest of this file. */
 	NativeTrackAnim_BuildVertexLists();
+#if defined(__3DS__)
+	NativeTrackAnim_BuildFastList();
+#endif
 
 	/* Latch only now, on success -- see the fingerprint comment up top. On
 	 * 3DS, a transient track-atlas allocation shortfall (linear-heap

@@ -8,6 +8,7 @@
 // (no VS/BATTLE, adds OPTIONS) and open the native options box.
 extern struct MenuRow *NativeOptions_MainMenuRows(struct MenuRow *rows);
 extern s32 NativeOptions_HandleMainMenuChoice(struct RectMenu *mainMenu, s32 choose);
+extern void NativeOptions_MainMenuUpdate(struct RectMenu *mainMenu);
 #endif
 
 // NOTE(aalhendi): ASM-verified against retail 230 0x800abaf0-0x800abcac.
@@ -79,6 +80,9 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 	// If you are at the highest hierarchy level of main menu
 	if (mainMenu->funcState == RECTMENU_FUNC_STATE_UPDATE)
 	{
+#ifdef CTR_NATIVE
+		NativeOptions_MainMenuUpdate(mainMenu);
+#endif
 		MM_Title_MenuUpdate();
 
 		if (

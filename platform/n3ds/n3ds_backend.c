@@ -991,6 +991,27 @@ void N3DS_TrackGeom_FlushPatched(void)
 	GSPGPU_FlushDataCache((u8 *)s_trackGeomMem + s_trackPatchLoByte, (u32)(s_trackPatchHiByte - s_trackPatchLoByte));
 	s_trackPatchTouched = 0;
 }
+
+void *N3DS_TrackGeom_PatchBegin(int *vertStride, int *vertCount)
+{
+	if (!s_trackGeomReady || (s_trackGeomMem == NULL))
+	{
+		return NULL;
+	}
+
+	*vertStride = s_trackGeomVertStride;
+	*vertCount = s_trackGeomVertCount;
+	return s_trackGeomMem;
+}
+
+void N3DS_TrackGeom_PatchEnd(int loVert, int hiVert)
+{
+	if (s_trackGeomReady && (loVert >= 0) && (hiVert >= loVert) && (hiVert < s_trackGeomVertCount))
+	{
+		N3DS_TrackGeom_MarkPatched(loVert, hiVert);
+	}
+}
+
 /* Set by Begin only when geometry is actually ready; End always clears it
  * and always restores packet state regardless (cheap, and foolproof against
  * any Begin/Leaf/End call-order mistake upstream). */

@@ -34,10 +34,15 @@ void NativeAudio_VoiceCacheEnsureBegin(void);
 int NativeAudio_VoiceCacheEnsureStep(int budgetSectors);
 u32 NativeAudio_VoiceCacheWarmSectorsRead(void);
 int NativeAudio_VoiceCacheWarmPercent(void);
+// After a language switch: refills the cache with the new language's voices when they differ (1 =
+// started; step it with VoiceCacheEnsureStep like the boot warm, WarmPercent shows its progress).
+// Always 0 off the 3DS.
+int NativeAudio_VoiceCacheRebuildBegin(void);
 int NativeAudio_PlayXAFile(const char *relativePath, int channelFilter, int volumeLeft, int volumeRight);
 int NativeAudio_GetXATrackLength(int categoryID, int xaID);
 void NativeAudio_SetVoiceLanguage(int languageFileIndex);
 int NativeAudio_HasPalVoicePack(void);
+void NativeAudio_PreloadVoiceManifest(int languageFileIndex);
 int NativeAudio_IsXAPlaying(void);
 int NativeAudio_GetXACurrOffset(void);
 int NativeAudio_GetXAMaxSample(void);
