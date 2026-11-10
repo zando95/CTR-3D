@@ -4973,6 +4973,19 @@ unsigned long N3DS_LinearFreeBytes(void)
 	return (unsigned long)linearSpaceFree();
 }
 
+void N3DS_LogMemory(const char *where)
+{
+	struct mallinfo mi = mallinfo();
+	char line[160];
+
+	snprintf(line, sizeof(line), "[CTR-3DS] mem %s: heap %lu KiB used of %lu, linear %lu KiB free of %lu, new3ds=%d", where,
+	         (unsigned long)mi.uordblks / 1024UL, (unsigned long)envGetHeapSize() / 1024UL, (unsigned long)linearSpaceFree() / 1024UL,
+	         (unsigned long)envGetLinearHeapSize() / 1024UL, N3DS_IsNew3DS());
+	N3DS_DebugLog(line);
+	/* Committed to the card at once: the line after it may be the allocation that fails. Boot and load only, never a timed frame. */
+	N3DS_LogFlushNow();
+}
+
 /*
  * Once-per-frame main-thread heartbeat, thaw detector, and light watchdog
  * (Rosalina-freeze hardening). Called exactly

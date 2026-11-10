@@ -4168,7 +4168,14 @@ internal int NativeAudio_XAStreamCountAudioSectors(struct NativeAudioXaSource *s
  * not XA), the XA MUSIC files are 26 MiB, and the count memo below still
  * removes their repeat whole-file scans after the first open of each track.
  */
-#define NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
+/* Blob size, fixed before the blob is allocated. A New 3DS has the heap for
+ * every GAME and EXTRA line. An original 3DS has about 14 MiB of heap for the
+ * whole game, so it caches what fits the small size and the rest stream from
+ * the SD card. */
+#define NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES (32u * 1024u * 1024u)
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES (4u * 1024u * 1024u)
+internal u32 s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES;
+#define NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES (s_xaVoiceCacheMaxBytes)
 #define NATIVE_AUDIO_XA_TRACK_INDEX_MAX       512
 /* Cache/memo keys: the disc's tracks use their XNF entryIndex, a PAL pack's are offset by pack * 512. */
 #define NATIVE_AUDIO_XA_KEY_MAX               ((NATIVE_AUDIO_PAL_PACK_COUNT + 1) * NATIVE_AUDIO_XA_TRACK_INDEX_MAX)
@@ -4835,6 +4842,11 @@ void NativeAudio_VoiceCacheEnsureBegin(void)
 		NativeAudio_XAVoiceCacheLog("[PALVOICE] caching the %s voice pack", NativeAudio_PalPackCode(s_xaCachePack));
 	}
 
+	if (!N3DS_IsNew3DS())
+	{
+		s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES;
+	}
+	N3DS_LogMemory("before voice cache");
 	s_xaVoiceCache.blob = (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES);
 	if (s_xaVoiceCache.blob == NULL)
 	{
@@ -4968,6 +4980,7 @@ int NativeAudio_VoiceCacheEnsureStep(int budgetSectors)
 	else
 	{
 		s_xaVoiceCache.built = 1;
+		N3DS_LogMemory("voice cache built");
 		NativeAudio_XAVoiceCacheLog("[XAPRELOAD] voice cache built: %d tracks, %d sectors, %u KiB of %u KiB budget", s_vce.tracks, s_vce.sectors,
 		                            (unsigned)(s_xaVoiceCache.blobUsed >> 10), (unsigned)(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES >> 10));
 	}

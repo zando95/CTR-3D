@@ -680,6 +680,9 @@ void N3DS_DebugSetVRAMForDump(const void *vram, unsigned int bytes, const unsign
  * Reported on screen so runaway allocation is visible as it happens. */
 unsigned long N3DS_HeapUsedBytes(void);
 unsigned long N3DS_LinearFreeBytes(void);
+/* One log line: heap size and bytes in use, linear heap size and bytes free, tagged with `where`,
+ * flushed to the card before it returns. Boot and load only. */
+void N3DS_LogMemory(const char *where);
 
 /* ------------------------------------------------------------------ app --- */
 /* Zero once the user has closed the applet (HOME/power), meaning the process
