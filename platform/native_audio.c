@@ -285,6 +285,14 @@ global_variable struct
  * comfortably under that.
  */
 #define NATIVE_AUDIO_XA_SPAN_SECTORS       64
+/*
+ * With no audio thread the read and the decode run on the game thread, so a
+ * stall is a visible frame. The span shrinks to bound one read, and the pump
+ * keeps only the open-time prime depth ahead, one sector per vblank, instead
+ * of bursting toward the deep ring: the same bytes per second, spread out.
+ */
+#define NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE   16
+#define NATIVE_AUDIO_XA_AHEAD_TARGET_INLINE   NATIVE_AUDIO_XA_PRIME_TARGET
 #else
 #define NATIVE_AUDIO_XA_RING_SECTORS       6     // resident sector-slots per stream (~94.5 KiB @ mono capacity)
 #define NATIVE_AUDIO_XA_RING_AHEAD_TARGET  4     // refill ceiling, sectors kept ahead of playback
@@ -4064,6 +4072,24 @@ internal int NativeAudio_XASourceReadSectors(struct NativeAudioXaSource *source,
  * of file shorter than a span is handled by shrinking the fill; a failed
  * bulk read falls through so the existing error handling stays in charge).
  */
+/* Span fills since the last NativeAudio_TakeXaSpanProfile: how many, how many
+ * physical sectors they asked for, and the time inside the read. Written by
+ * whichever one thread pumps the live stream; the pending stream's fills on
+ * the game thread can race a worker's by a count, which a diagnostic allows. */
+internal unsigned s_xaSpanProfFills;
+internal unsigned s_xaSpanProfSectors;
+internal unsigned long long s_xaSpanProfTicks;
+
+void NativeAudio_TakeXaSpanProfile(unsigned *fills, unsigned *sectors, unsigned long long *ticks)
+{
+	*fills = s_xaSpanProfFills;
+	*sectors = s_xaSpanProfSectors;
+	*ticks = s_xaSpanProfTicks;
+	s_xaSpanProfFills = 0;
+	s_xaSpanProfSectors = 0;
+	s_xaSpanProfTicks = 0;
+}
+
 internal int NativeAudio_XAStreamReadSectorBuffered(struct NativeAudioXaStream *stream, int sectorIndex, u8 *dst)
 {
 	struct NativeAudioXaSource *source = &stream->source;
@@ -4082,13 +4108,20 @@ internal int NativeAudio_XAStreamReadSectorBuffered(struct NativeAudioXaStream *
 
 	if ((sectorIndex < stream->spanStartSector) || (sectorIndex >= stream->spanStartSector + stream->spanSectorCount))
 	{
-		int fill = NATIVE_AUDIO_XA_SPAN_SECTORS;
+		int fill = N3DS_AudioThreadIsRunning() ? NATIVE_AUDIO_XA_SPAN_SECTORS : NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE;
+		unsigned long long fillStart;
+		int filled;
 
 		if (fill > source->totalSectors - sectorIndex)
 		{
 			fill = source->totalSectors - sectorIndex;
 		}
-		if ((fill <= 0) || !NativeAudio_XASourceReadSectors(source, sectorIndex, fill, stream->spanBuf, stream->discScratch))
+		fillStart = N3DS_AudioTicksNow();
+		filled = (fill > 0) && NativeAudio_XASourceReadSectors(source, sectorIndex, fill, stream->spanBuf, stream->discScratch);
+		s_xaSpanProfTicks += N3DS_AudioTicksNow() - fillStart;
+		s_xaSpanProfFills++;
+		s_xaSpanProfSectors += (fill > 0) ? (unsigned)fill : 0u;
+		if (!filled)
 		{
 			stream->spanSectorCount = 0;
 			return NativeAudio_XASourceReadSector(source, sectorIndex, dst, stream->discScratch);
@@ -5346,6 +5379,16 @@ internal void NativeAudio_XAStreamPump(void)
 		if (!active)
 		{
 			s_refilling = 0;
+			return;
+		}
+		if (!N3DS_AudioThreadIsRunning())
+		{
+			/* Game thread: no burst. A sector is 3.2 vblanks of audio at the
+			 * least, so one per vblank outruns playback. */
+			if (ahead < NATIVE_AUDIO_XA_AHEAD_TARGET_INLINE)
+			{
+				NativeAudio_XAStreamDecodeNextSector(&s_audio.xaStream);
+			}
 			return;
 		}
 		if (!s_refilling && (ahead >= (NATIVE_AUDIO_XA_RING_AHEAD_TARGET / 3)))

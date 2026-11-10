@@ -5230,6 +5230,21 @@ void NativeRenderer_SwapWindow(void)
 					         prof.vblanks, prof.parcels, prof.lockWaitUs, prof.renderUs, prof.lifecycleUs, prof.mirrorUs, prof.parcelUs, prof.pumpUs);
 					N3DS_DebugLog(profLine);
 
+					{
+						unsigned spanFills = 0;
+						unsigned spanSectors = 0;
+						unsigned long long spanTicks = 0;
+
+						NativeAudio_TakeXaSpanProfile(&spanFills, &spanSectors, &spanTicks);
+						if (spanFills != 0)
+						{
+							/* SYSCLOCK_ARM11 / 1e6 ticks per microsecond. */
+							snprintf(profLine, sizeof(profLine), "[CTR-3DS] xaspan fills=%u sectors=%u readUs=%u", spanFills, spanSectors,
+							         (unsigned)(spanTicks / 268ULL));
+							N3DS_DebugLog(profLine);
+						}
+					}
+
 					if (g_dbg_statsVerbose)
 					{
 						printf("aprof  wake %-5d life %-6d mir %-5d\n", prof.wakes, prof.lifecycleUs, prof.mirrorUs);
