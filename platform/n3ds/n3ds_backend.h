@@ -489,6 +489,13 @@ void N3DS_TrackGeom_PatchPosColor(const unsigned short *vertIndices, const short
  * no longer flush per chunk (which re-flushed most of the buffer many times a
  * frame -- the animated verts scatter across it). */
 void N3DS_TrackGeom_FlushPatched(void);
+/* Direct form of the two Patch calls above: the caller writes N3DS_TrackVertex
+ * fields in place between Begin and End, staying under vertCount, then names
+ * the inclusive vertex range it touched so FlushPatched covers it. Begin
+ * returns NULL when no geometry is uploaded. Same thread rule as the Patch
+ * calls: only after the previous frame's GPU work has been awaited. */
+void *N3DS_TrackGeom_PatchBegin(int *vertStride, int *vertCount);
+void N3DS_TrackGeom_PatchEnd(int loVert, int hiVert);
 
 /* Begin/Leaf/End bracket one frame's resident-track draw batch, called from
  * NativeRenderer_EndScene immediately before the packet
