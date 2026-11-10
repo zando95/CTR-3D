@@ -1,6 +1,6 @@
 /* Native options menu and main-menu row filter.
  *
- * game/230/MM_MenuFlow.c and game/MAIN/MainMain.c call the three NativeOptions_*
+ * game/230/MM_MenuFlow.c and game/MAIN/MainMain.c call the NativeOptions_*
  * hooks at the bottom of this file. On PC every hook is a passthrough/no-op --
  * the retail main menu must stay untouched there (replay inputs navigate menus
  * by position, so PC row layout is behavioral surface). On 3DS the main menu
@@ -514,6 +514,42 @@ static void NativeOptions_RefreshLabels(void)
 	sdata->lngStrings[NATIVE_LNG_MIRROR] = s_optMirrorLabel;
 }
 
+/* Leaving OPTIONS with a different voice language refills the voice cache (NativeAudio_VoiceCacheRebuildBegin)
+ * behind this box, which takes the OPTIONS box's place under the OPTIONS title until the refill ends and then
+ * returns to the main menu. Changing language inside OPTIONS refills nothing, so cycling through languages
+ * costs one refill at most. The refill runs inside the menu's own frames (NativeOptions_MainMenuUpdate), about
+ * OPT_VOICE_FRAME_MS of reads per frame, so the menu keeps drawing and the music keeps playing. The box holds
+ * the player in the main menu: anything further in (the track-select preview video, a race load) would read
+ * the card alongside the refill. */
+#define OPT_VOICE_STEP_SECTORS 16
+#define OPT_VOICE_FRAME_MS     20
+
+static s32 s_optVoiceRebuilding;
+static u32 s_optVoiceFrames;
+static unsigned long long s_optVoiceStartTick;
+static char s_optVoiceLabel[OPT_LABEL_MAX];
+
+static struct MenuRow s_optVoiceRows[] = {
+    {NATIVE_LNG_OPT_VOICE_LOADING, 0, 0, 0, 0},
+    {RECTMENU_STRING_NONE, 0, 0, 0, 0},
+};
+
+/* No funcPtr: the box takes no input. Back is blocked and Cross does nothing, both silently. */
+static struct RectMenu s_optVoiceMenu = {
+    .stringIndexTitle = RECTMENU_STRING_NONE,
+    .state = CENTER_ON_X | USE_SMALL_FONT | MENU_CANT_GO_BACK | MUTE_SOUND_OF_MOVING_CURSOR,
+    .rows = &s_optVoiceRows[0],
+};
+
+/* The disc's own LOADING... in the selected language, then the percent, padded so the box keeps its width. */
+static void NativeOptions_VoiceLoadingLabel(void)
+{
+	const char *loading = sdata->lngStrings[LNG_LOADING];
+
+	snprintf(s_optVoiceLabel, sizeof(s_optVoiceLabel), "%s %2d%%", (loading != NULL) ? loading : "LOADING...", NativeAudio_VoiceCacheWarmPercent());
+	sdata->lngStrings[NATIVE_LNG_OPT_VOICE_LOADING] = s_optVoiceLabel;
+}
+
 static void NativeOptions_MenuProc(struct RectMenu *menu)
 {
 	/* The engine also invokes funcPtr outside input events; only a real
@@ -529,6 +565,15 @@ static void NativeOptions_MenuProc(struct RectMenu *menu)
 	/* rowSelected -1 is the engine's back/close signal */
 	if (row == -1)
 	{
+		if (NativeAudio_VoiceCacheRebuildBegin())
+		{
+			s_optVoiceRebuilding = 1;
+			s_optVoiceFrames = 0;
+			s_optVoiceStartTick = N3DS_GetTickCount();
+			NativeOptions_VoiceLoadingLabel();
+			menu->ptrPrevBox_InHierarchy->ptrNextBox_InHierarchy = &s_optVoiceMenu;
+			return;
+		}
 		menu->ptrPrevBox_InHierarchy->state &= ~(ONLY_DRAW_TITLE | DRAW_NEXT_MENU_IN_HIERARCHY);
 		return;
 	}
@@ -668,6 +713,42 @@ struct MenuRow *NativeOptions_MainMenuRows(struct MenuRow *rows)
 	return mirror ? &s_optMainRowsMirror[0] : &s_optMainRowsBasic[0];
 #else
 	return rows;
+#endif
+}
+
+/* Called once per frame by MM_MenuProc_Main (its UPDATE pass): drives the voice cache refill that leaving
+ * OPTIONS started, and closes the progress box back to the main menu when it ends. */
+void NativeOptions_MainMenuUpdate(struct RectMenu *mainMenu)
+{
+#ifdef __3DS__
+	const unsigned long long freq = N3DS_GetTickFrequency();
+	const unsigned long long t0 = N3DS_GetTickCount();
+	const unsigned long long budget = freq * OPT_VOICE_FRAME_MS / 1000;
+	s32 done;
+
+	if (!s_optVoiceRebuilding)
+	{
+		return;
+	}
+
+	do
+	{
+		done = NativeAudio_VoiceCacheEnsureStep(OPT_VOICE_STEP_SECTORS);
+	} while (!done && ((N3DS_GetTickCount() - t0) < budget));
+
+	s_optVoiceFrames++;
+	if (!done)
+	{
+		NativeOptions_VoiceLoadingLabel();
+		return;
+	}
+
+	s_optVoiceRebuilding = 0;
+	mainMenu->state &= ~(ONLY_DRAW_TITLE | DRAW_NEXT_MENU_IN_HIERARCHY);
+	Platform_LogInstrument("[VOICEREBUILD] %u frames, %ums\n", (unsigned)s_optVoiceFrames,
+	                       (unsigned)(((N3DS_GetTickCount() - s_optVoiceStartTick) * 1000ull) / freq));
+#else
+	(void)mainMenu;
 #endif
 }
 
