@@ -1102,11 +1102,231 @@ struct NativeTrackAnimFastRec
 static struct NativeTrackAnimFastRec *s_animFast;
 static u32 s_animFastCount;
 
+/*
+ * Which fast records each draw slot (leaf range) can show, so the patch only
+ * rewrites the vertices of slots the frame actually draws. A resident vertex
+ * belongs to exactly one face and every face lands in exactly one slot, so a
+ * slot's records are a few runs of consecutive fast-list entries (the list is
+ * in vertex order). Slot s owns runs s_animLeafRun[s_animLeafRunOfs[s] ..
+ * s_animLeafRunOfs[s + 1]); a slot with none has no animated vertex.
+ *
+ * s_animLeafStamp[s] holds the snapshot sequence the slot was last patched
+ * for. The draw checks it (NativeTrackAnim_EnsureLeavesPatched), so a slot is
+ * never drawn with a vertex block older than its own frame. The walk reads and
+ * writes all three tables; built on the game thread with the fast list.
+ */
+struct NativeTrackAnimRun
+{
+	u32 first; /* first fast-list record */
+	u32 count; /* consecutive records */
+};
+static struct NativeTrackAnimRun *s_animLeafRun;
+static u32 *s_animLeafRunOfs; /* s_animLeafSlotCount + 1 entries */
+static u32 *s_animLeafStamp;  /* s_animLeafSlotCount entries */
+static u32 s_animLeafSlotCount;
+static u32 s_animLeafSlotsPatched; /* slots patched this window, walk-side */
+static u32 s_animLeafVertsSum;     /* vertices patched this window */
+static u32 s_animLeafLateSlots;    /* slots the draw had to patch itself: must stay 0 */
+
 static void NativeTrackAnim_FreeFastList(void)
 {
 	free(s_animFast);
 	s_animFast = NULL;
 	s_animFastCount = 0;
+	free(s_animLeafRun);
+	free(s_animLeafRunOfs);
+	free(s_animLeafStamp);
+	s_animLeafRun = NULL;
+	s_animLeafRunOfs = NULL;
+	s_animLeafStamp = NULL;
+	s_animLeafSlotCount = 0;
+	s_animLeafSlotsPatched = 0;
+	s_animLeafVertsSum = 0;
+	s_animLeafLateSlots = 0;
+}
+
+static int NativeTrackAnim_LeafGateActive(void)
+{
+	return (s_animFast != NULL) && (s_animLeafRunOfs != NULL) && (s_animLeafStamp != NULL) && (s_animLeafRun != NULL) && (s_animLeafSlotCount != 0);
+}
+
+/*
+ * Marks the fast records one slot's triangles reference and turns them into
+ * runs of consecutive records. Counts the runs; writes them when `out` is not
+ * NULL. `mark` must be all zero on entry and is all zero again on return.
+ * Reads the index range itself, so a slot owns exactly the vertices its draw
+ * can show (the atlas binning splits a leaf's triangles across slots, the
+ * vertices stay where they were emitted).
+ */
+static u32 NativeTrackAnim_SlotRuns(u32 slot, const u32 *recOfVert, u8 *mark, struct NativeTrackAnimRun *out)
+{
+	const struct NativeTrackLeafRange *range = &s_trackMesh.leafRanges[slot];
+	u32 lo = 0xffffffffu, hi = 0, runs = 0, t, r;
+
+	for (t = 0; t < range->indexCount; t++)
+	{
+		const u32 vert = s_trackMesh.indices[range->firstIndex + t];
+		u32 rec;
+
+		if (vert >= s_trackMesh.vertCount)
+		{
+			continue;
+		}
+
+		rec = recOfVert[vert];
+		if (rec == 0xffffffffu)
+		{
+			continue;
+		}
+
+		mark[rec] = 1;
+		if (rec < lo)
+		{
+			lo = rec;
+		}
+		if (rec > hi)
+		{
+			hi = rec;
+		}
+	}
+
+	if (lo == 0xffffffffu)
+	{
+		return 0;
+	}
+
+	for (r = lo; r <= hi; r++)
+	{
+		u32 first;
+
+		if (mark[r] == 0)
+		{
+			continue;
+		}
+
+		first = r;
+		while ((r <= hi) && (mark[r] != 0))
+		{
+			mark[r] = 0;
+			r++;
+		}
+
+		if (out != NULL)
+		{
+			out[runs].first = first;
+			out[runs].count = r - first;
+		}
+		runs++;
+	}
+
+	return runs;
+}
+
+/*
+ * Once per level, after the fast list: the per-slot run tables the leaf-gated
+ * patch walks. Failure is a degrade, never a dropped level: with no tables the
+ * patch rewrites every fast record each frame, as it did before the gate.
+ *
+ * Logs how many fast records no slot references (the unused corner of a
+ * triangle face; never drawn, so never patched) and how many two slots share
+ * (expected 0; a shared record is patched once per slot that draws it, which is
+ * harmless because the patch is idempotent within a frame).
+ */
+static void NativeTrackAnim_BuildLeafRuns(void)
+{
+	const u32 slotCount = s_trackMesh.leafCount;
+	u32 *recOfVert = NULL;
+	u8 *mark = NULL;
+	u32 slot, r, totalRuns = 0, cursor = 0;
+	u32 unclaimed = 0, shared = 0, withAnim = 0;
+
+	if ((s_animFast == NULL) || (s_animFastCount == 0) || (slotCount == 0) || (s_trackMesh.leafRanges == NULL) || (s_trackMesh.indices == NULL) ||
+	    (s_trackMesh.vertCount == 0))
+	{
+		return;
+	}
+
+	recOfVert = (u32 *)malloc((size_t)s_trackMesh.vertCount * sizeof(u32));
+	mark = (u8 *)calloc(s_animFastCount, 1);
+	s_animLeafRunOfs = (u32 *)malloc(((size_t)slotCount + 1u) * sizeof(u32));
+	s_animLeafStamp = (u32 *)calloc(slotCount, sizeof(u32));
+
+	if ((recOfVert == NULL) || (mark == NULL) || (s_animLeafRunOfs == NULL) || (s_animLeafStamp == NULL))
+	{
+		goto fail;
+	}
+
+	memset(recOfVert, 0xff, (size_t)s_trackMesh.vertCount * sizeof(u32));
+	for (r = 0; r < s_animFastCount; r++)
+	{
+		recOfVert[s_animFast[r].dst] = r;
+	}
+
+	for (slot = 0; slot < slotCount; slot++)
+	{
+		totalRuns += NativeTrackAnim_SlotRuns(slot, recOfVert, mark, NULL);
+	}
+
+	if (totalRuns == 0)
+	{
+		goto fail;
+	}
+
+	s_animLeafRun = (struct NativeTrackAnimRun *)malloc((size_t)totalRuns * sizeof(struct NativeTrackAnimRun));
+	if (s_animLeafRun == NULL)
+	{
+		goto fail;
+	}
+
+	for (slot = 0; slot < slotCount; slot++)
+	{
+		const u32 runs = NativeTrackAnim_SlotRuns(slot, recOfVert, mark, &s_animLeafRun[cursor]);
+
+		s_animLeafRunOfs[slot] = cursor;
+		cursor += runs;
+		withAnim += (runs != 0);
+	}
+	s_animLeafRunOfs[slotCount] = cursor;
+
+	/* Claim census: mark[] doubles as a saturating per-record claim count. */
+	for (r = 0; r < cursor; r++)
+	{
+		u32 k;
+
+		for (k = 0; k < s_animLeafRun[r].count; k++)
+		{
+			u8 *claim = &mark[s_animLeafRun[r].first + k];
+
+			if (*claim < 255)
+			{
+				(*claim)++;
+			}
+		}
+	}
+	for (r = 0; r < s_animFastCount; r++)
+	{
+		unclaimed += (mark[r] == 0);
+		shared += (mark[r] > 1);
+	}
+
+	s_animLeafSlotCount = slotCount;
+	free(recOfVert);
+	free(mark);
+
+	Platform_LogInstrument("[TRKANIM] leaf gate slots=%u withAnim=%u runs=%u records=%u unclaimed=%u shared=%u\n", (unsigned)slotCount, (unsigned)withAnim,
+	                       (unsigned)totalRuns, (unsigned)s_animFastCount, (unsigned)unclaimed, (unsigned)shared);
+	return;
+
+fail:
+	free(recOfVert);
+	free(mark);
+	free(s_animLeafRun);
+	free(s_animLeafRunOfs);
+	free(s_animLeafStamp);
+	s_animLeafRun = NULL;
+	s_animLeafRunOfs = NULL;
+	s_animLeafStamp = NULL;
+	s_animLeafSlotCount = 0;
 }
 
 static void NativeTrackAnim_BuildFastList(void)
@@ -1164,27 +1384,66 @@ static void NativeTrackAnim_BuildFastList(void)
 			}
 		}
 	}
+
+	NativeTrackAnim_BuildLeafRuns();
+}
+
+/* One patching pass over the GPU vertex block: the block's address, the
+ * source arrays, the camera the water fade reads, and the dst range and count
+ * of what the pass wrote. */
+struct NativeTrackAnimPatchCtx
+{
+	const struct LevVertex *srcArray;
+	u32 srcCount;
+	const struct NativeTrackAtlasRect *rects;
+	u8 *base;
+	int gpuCount;
+	s32 camX, camZ;
+	int lo, hi;
+	u32 patched;
+};
+
+static int NativeTrackAnim_PatchBegin(struct NativeTrackAnimPatchCtx *ctx, s32 camX, s32 camZ)
+{
+	int stride = 0;
+
+	ctx->srcArray = s_trackMesh.animSrcArray;
+	ctx->srcCount = s_trackMesh.animSrcCount;
+	ctx->rects = s_trackMesh.atlas.rects;
+	ctx->gpuCount = 0;
+	ctx->base = (u8 *)N3DS_TrackGeom_PatchBegin(&stride, &ctx->gpuCount);
+	ctx->camX = camX;
+	ctx->camZ = camZ;
+	ctx->lo = 0x7fffffff;
+	ctx->hi = -1;
+	ctx->patched = 0;
+
+	return (ctx->base != NULL) && (stride == (int)sizeof(N3DS_TrackVertex));
+}
+
+static void NativeTrackAnim_PatchEnd(const struct NativeTrackAnimPatchCtx *ctx)
+{
+	if (ctx->hi >= 0)
+	{
+		N3DS_TrackGeom_PatchEnd(ctx->lo, ctx->hi);
+	}
+	N3DS_TrackGeom_FlushPatched();
 }
 
 /* Same result per vertex as the staged path below: position and colour from
  * the level's vertex, the water UV through NativeTrackAtlas_EncodeUV's
  * arithmetic, then NativeTrackAnim_WaterFade's fade. */
-static u32 NativeTrackAnim_PatchVerticesFast(s32 camX, s32 camZ)
+static void NativeTrackAnim_PatchRecords(struct NativeTrackAnimPatchCtx *ctx, const struct NativeTrackAnimFastRec *rec, const struct NativeTrackAnimFastRec *end)
 {
-	const struct NativeTrackAnimFastRec *rec = s_animFast;
-	const struct NativeTrackAnimFastRec *end = s_animFast + s_animFastCount;
-	const struct LevVertex *srcArray = s_trackMesh.animSrcArray;
-	const u32 srcCount = s_trackMesh.animSrcCount;
-	const struct NativeTrackAtlasRect *rects = s_trackMesh.atlas.rects;
-	int stride = 0, gpuCount = 0;
-	u8 *base = (u8 *)N3DS_TrackGeom_PatchBegin(&stride, &gpuCount);
+	const struct LevVertex *srcArray = ctx->srcArray;
+	const u32 srcCount = ctx->srcCount;
+	const struct NativeTrackAtlasRect *rects = ctx->rects;
+	u8 *base = ctx->base;
+	const int gpuCount = ctx->gpuCount;
+	const s32 camX = ctx->camX;
+	const s32 camZ = ctx->camZ;
 	u32 patched = 0;
-	int lo = 0x7fffffff, hi = -1;
-
-	if ((base == NULL) || (stride != (int)sizeof(N3DS_TrackVertex)))
-	{
-		return 0;
-	}
+	int lo = ctx->lo, hi = ctx->hi;
 
 	for (; rec != end; rec++)
 	{
@@ -1289,16 +1548,126 @@ static u32 NativeTrackAnim_PatchVerticesFast(s32 camX, s32 camZ)
 		patched++;
 	}
 
-	if (hi >= 0)
+	ctx->lo = lo;
+	ctx->hi = hi;
+	ctx->patched += patched;
+}
+
+/*
+ * Patches every slot in the snapshot that has animated vertices and has not
+ * been patched for this snapshot yet; returns how many it patched. The walk's
+ * patch and the draw's check (NativeTrackAnim_EnsureLeavesPatched) both come
+ * through here, so "patched for this snapshot" means the same thing to both.
+ * A slot listed twice in one snapshot is patched once. A slot outside the
+ * table (a snapshot from another mesh) is skipped.
+ */
+static u32 NativeTrackAnim_PatchSlots(struct NativeTrackAnimPatchCtx *ctx, const struct NativeTrackFrameSnapshot *snap)
+{
+	u32 i, slots = 0;
+
+	for (i = 0; i < snap->leafCount; i++)
 	{
-		N3DS_TrackGeom_PatchEnd(lo, hi);
+		const u32 slot = snap->leafSlot[i];
+		u32 run;
+
+		if ((slot >= s_animLeafSlotCount) || (s_animLeafRunOfs[slot] == s_animLeafRunOfs[slot + 1]) || (s_animLeafStamp[slot] == snap->frameSeq))
+		{
+			continue;
+		}
+
+		s_animLeafStamp[slot] = snap->frameSeq;
+		for (run = s_animLeafRunOfs[slot]; run < s_animLeafRunOfs[slot + 1]; run++)
+		{
+			const struct NativeTrackAnimFastRec *first = &s_animFast[s_animLeafRun[run].first];
+
+			NativeTrackAnim_PatchRecords(ctx, first, first + s_animLeafRun[run].count);
+		}
+		slots++;
 	}
-	N3DS_TrackGeom_FlushPatched();
-	return patched;
+
+	return slots;
+}
+
+/*
+ * With the per-slot tables built, rewrite only the vertices of the slots this
+ * frame's snapshot draws; a vertex of any other slot keeps its old values until
+ * a snapshot draws its slot again, and is rewritten before that draw. Without
+ * the tables, rewrite every fast record.
+ *
+ * A degraded snapshot draws nothing, so it patches nothing.
+ */
+static u32 NativeTrackAnim_PatchVerticesFast(s32 camX, s32 camZ, const struct NativeTrackFrameSnapshot *snap)
+{
+	const int gated = (snap != NULL) && NativeTrackAnim_LeafGateActive();
+	struct NativeTrackAnimPatchCtx ctx;
+
+	if (gated && (snap->degraded != 0))
+	{
+		return 0;
+	}
+
+	if (!NativeTrackAnim_PatchBegin(&ctx, camX, camZ))
+	{
+		return 0;
+	}
+
+	if (gated)
+	{
+		s_animLeafSlotsPatched += NativeTrackAnim_PatchSlots(&ctx, snap);
+	}
+	else
+	{
+		NativeTrackAnim_PatchRecords(&ctx, s_animFast, s_animFast + s_animFastCount);
+	}
+
+	NativeTrackAnim_PatchEnd(&ctx);
+	s_animLeafVertsSum += ctx.patched;
+	return ctx.patched;
+}
+
+/*
+ * Called by the track draw before it issues any leaf, on the walk, with the
+ * snapshot it is about to draw. The walk's patch reads the published snapshot
+ * through the same accessor, so the two see one snapshot and this finds
+ * nothing to do (s_animLeafLateSlots stays 0). If they ever saw different
+ * ones, it patches the slots the draw is about to show that the patch did not
+ * reach, so no slot is drawn with a vertex block older than its own frame.
+ */
+void NativeTrackAnim_EnsureLeavesPatched(const struct NativeTrackFrameSnapshot *snap)
+{
+	struct NativeTrackAnimPatchCtx ctx;
+	u32 i;
+
+	if ((snap == NULL) || (snap->valid == 0) || (snap->degraded != 0) || (s_trackMesh.builtFor == NULL) || !NativeTrackAnim_LeafGateActive())
+	{
+		return;
+	}
+
+	for (i = 0; i < snap->leafCount; i++)
+	{
+		const u32 slot = snap->leafSlot[i];
+
+		if ((slot < s_animLeafSlotCount) && (s_animLeafRunOfs[slot] != s_animLeafRunOfs[slot + 1]) && (s_animLeafStamp[slot] != snap->frameSeq))
+		{
+			break;
+		}
+	}
+	if (i == snap->leafCount)
+	{
+		return;
+	}
+
+	if (!NativeTrackAnim_PatchBegin(&ctx, snap->camX, snap->camZ))
+	{
+		return;
+	}
+
+	s_animLeafLateSlots += NativeTrackAnim_PatchSlots(&ctx, snap);
+	NativeTrackAnim_PatchEnd(&ctx);
 }
 #endif
 
-static u32 NativeTrackAnim_PatchVertices(s32 camX, s32 camZ)
+static u32 NativeTrackAnim_PatchVertices(s32 camX, s32 camZ, const struct NativeTrackFrameSnapshot *snap)
 {
 	u32 i;
 	u32 patched = 0;
@@ -1306,8 +1675,10 @@ static u32 NativeTrackAnim_PatchVertices(s32 camX, s32 camZ)
 #if defined(__3DS__)
 	if ((s_animFast != NULL) && (s_trackMesh.animSrcArray != NULL))
 	{
-		return NativeTrackAnim_PatchVerticesFast(camX, camZ);
+		return NativeTrackAnim_PatchVerticesFast(camX, camZ, snap);
 	}
+#else
+	(void)snap;
 #endif
 
 	if ((s_trackMesh.animVertCount == 0) || (s_trackMesh.animVerts == NULL) || (s_trackMesh.animSrcArray == NULL) || (s_trackMesh.srcVert == NULL))
@@ -1467,6 +1838,7 @@ void NativeTrackAnim_PatchFrame(void)
 	 * publishes valid=0 by construction. Reusing it here costs one load and
 	 * needs no new protocol.
 	 */
+	const struct NativeTrackFrameSnapshot *snap;
 	s32 camX;
 	s32 camZ;
 
@@ -1475,21 +1847,19 @@ void NativeTrackAnim_PatchFrame(void)
 		return;
 	}
 
+	snap = NativeTrackFrame_ForWalk();
+
+	if ((snap == NULL) || (snap->valid == 0))
 	{
-		const struct NativeTrackFrameSnapshot *snap = NativeTrackFrame_ForWalk();
-
-		if ((snap == NULL) || (snap->valid == 0))
-		{
-			return;
-		}
-
-		camX = snap->camX;
-		camZ = snap->camZ;
+		return;
 	}
+
+	camX = snap->camX;
+	camZ = snap->camZ;
 
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_TRACK_ANIM);
 
-	patched = NativeTrackAnim_PatchVertices(camX, camZ);
+	patched = NativeTrackAnim_PatchVertices(camX, camZ, snap);
 
 	/* Deliberately NOT an early return: a track can have moving water and no
 	 * animated textures, and the heartbeat below is the only runtime evidence
@@ -1633,6 +2003,16 @@ static void NativeTrackAnim_Report(void)
 		Platform_LogInstrument("[TRKANIM] window steps=%u vertsLast=%u skipUnit=%u skipRect=%u animVerts=%u srcOOB=%u\n", s_animPatchSteps,
 		             s_trackMesh.animPatchVertsLast, s_trackMesh.animPatchSkipUnit, s_trackMesh.animPatchSkipRect, s_trackMesh.animVertCount,
 		             s_vertPatchSrcOOB);
+#if defined(__3DS__)
+		if (NativeTrackAnim_LeafGateActive())
+		{
+			Platform_LogInstrument("[TRKANIM] leaf gate window frames=%u avgVerts=%u avgSlots=%u lateSlots=%u\n", (unsigned)s_animPatchFrames,
+			                       (unsigned)(s_animLeafVertsSum / s_animPatchFrames), (unsigned)(s_animLeafSlotsPatched / s_animPatchFrames),
+			                       (unsigned)s_animLeafLateSlots);
+			s_animLeafVertsSum = 0;
+			s_animLeafSlotsPatched = 0;
+		}
+#endif
 		s_animPatchFrames = 0;
 		s_animPatchSteps = 0;
 	}

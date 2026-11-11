@@ -175,6 +175,23 @@ global_variable u32 s_modelEmitSeq;
 /* Open instance, game thread only. -1 = none open. */
 global_variable int s_modelEmitCurInst = -1;
 
+/* The open instance holds its capture-table stores (NativeModelEmit_OwnGteStores):
+ * every triangle it offers is either claimed or re-stored on decline. */
+global_variable int s_modelEmitOwnsStores;
+/* Triangles declined inside a store-holding instance; each was re-stored. */
+global_variable u32 s_modelEmitOwnedDeclinesTotal;
+
+internal void NativeModelEmit_DropStoreHold(void)
+{
+	if (s_modelEmitOwnsStores)
+	{
+		s_modelEmitOwnsStores = 0;
+#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
+		GTECapture_ReleaseStoresForOwnedModel();
+#endif
+	}
+}
+
 /* Session-lifetime totals, and a one-shot warning the first time anything is
  * dropped -- a periodic line lands on 1 frame in 64 and would miss the other
  * 63, the same gap NativeTrackFrame_Record's drop accounting exists to close. */
@@ -356,6 +373,8 @@ int NativeModelEmit_BeginInstance(const struct InstDrawPerPlayer *idpp, const st
 	struct NativeModelEmitSnapshot *dst = &s_modelEmitBuf[s_modelEmitWriteIdx];
 	struct NativeModelEmitInstance *inst;
 	int r, c;
+
+	NativeModelEmit_DropStoreHold();
 
 	if ((g_dbg_modelRender == 0) || (idpp == NULL) || (pb == NULL))
 	{
@@ -684,6 +703,21 @@ int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const in
 			s_modelEmitDropWarned = 1;
 			Platform_Log("[MDLEMIT] WARNING: first triangle-cap drop this session (cap=%d) -- snapshot marked degraded\n", MODELEMIT_MAX_TRIS);
 		}
+
+#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
+		/* The caller writes this triangle's packet, which resolves depth from the
+		 * capture table, but the instance projected it under the store hold.
+		 * Lift the hold for the rest of the instance (the split writer projects
+		 * clip vertices of its own) and store this triangle's corners now. Every
+		 * later triangle of the instance declines too (the cap only fills), and
+		 * each re-stores: strip and fan corners were projected under the hold. */
+		if (s_modelEmitOwnsStores)
+		{
+			GTECapture_ReleaseStoresForOwnedModel();
+			GTE_CaptureStoreTriangle(packedXY3, packedZ3);
+			s_modelEmitOwnedDeclinesTotal++;
+		}
+#endif
 		return 0;
 	}
 
@@ -832,9 +866,22 @@ int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const in
 	return 1;
 }
 
+void NativeModelEmit_OwnGteStores(void)
+{
+#if defined(CTR_NATIVE_GTE_CAPTURE) && CTR_NATIVE_GTE_CAPTURE
+	if ((s_modelEmitCurInst >= 0) && NativeModelEmit_SkipRetailDraw())
+	{
+		s_modelEmitOwnsStores = 1;
+		GTECapture_HoldStoresForOwnedModel();
+	}
+#endif
+}
+
 void NativeModelEmit_EndInstance(void)
 {
 	struct NativeModelEmitSnapshot *dst = &s_modelEmitBuf[s_modelEmitWriteIdx];
+
+	NativeModelEmit_DropStoreHold();
 
 	if (s_modelEmitCurInst < 0)
 	{
@@ -1027,10 +1074,11 @@ void NativeModelEmit_EndFrame(void)
 		s_modelEmitWinSemiTris = 0;
 		s_modelEmitWinSnapRescued = 0;
 
-		Platform_LogInstrument("[MDLEMIT] lvl=%d f=%lu tris/f=%lu texTris/f=%lu inst/f=%lu peakTris=%lu/%d droppedTris=%lu droppedInst=%lu\n",
+		Platform_LogInstrument("[MDLEMIT] lvl=%d f=%lu tris/f=%lu texTris/f=%lu inst/f=%lu peakTris=%lu/%d droppedTris=%lu droppedInst=%lu ownedDeclines=%lu\n",
 		                       NativePerf_CurrentLevelID(), (unsigned long)f, (unsigned long)(s_modelEmitWinTris / f),
 		                       (unsigned long)(s_modelEmitWinTextured / f), (unsigned long)(s_modelEmitWinInsts / f), (unsigned long)s_modelEmitWinPeakTris,
-		                       MODELEMIT_MAX_TRIS, (unsigned long)s_modelEmitDroppedTrisTotal, (unsigned long)s_modelEmitDroppedInstTotal);
+		                       MODELEMIT_MAX_TRIS, (unsigned long)s_modelEmitDroppedTrisTotal, (unsigned long)s_modelEmitDroppedInstTotal,
+		                       (unsigned long)s_modelEmitOwnedDeclinesTotal);
 
 		/* Emitted on the same window boundary so the two lines describe the
 		 * same stretch of play. Ranges are printed alongside the error because
@@ -1110,6 +1158,7 @@ void NativeModelEmit_Clear(void)
 	dst->degraded = 0;
 	dst->valid = 0;
 	s_modelEmitCurInst = -1;
+	NativeModelEmit_DropStoreHold();
 }
 
 void NativeModelEmit_PublishForWalk(void)
@@ -1687,6 +1736,10 @@ int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const in
 	(void)blendOverride;
 	/* 0 = "not claimed", so a compiled-out build always writes the packet. */
 	return 0;
+}
+
+void NativeModelEmit_OwnGteStores(void)
+{
 }
 
 void NativeModelEmit_EndInstance(void)

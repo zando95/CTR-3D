@@ -36,6 +36,7 @@ extern int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, c
 extern int NativeModelEmit_FrontFacing(const u32 *packedXY3, const u32 *packedZ3, int frontNegative);
 extern void NativeModelEmit_EndInstance(void);
 extern int NativeModelEmit_SkipRetailDraw(void);
+extern void NativeModelEmit_OwnGteStores(void);
 extern int NativeModelEmit_SpecularEnabled(void);
 #endif
 
@@ -4711,6 +4712,11 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 	 * Evaluated once per instance, not per triangle, and only meaningful when
 	 * the capture is actually running. */
 	const int mdlReplaces = mdlCapture && NativeModelEmit_SkipRetailDraw();
+
+	if (mdlReplaces)
+	{
+		NativeModelEmit_OwnGteStores();
+	}
 #endif
 
 	// NOTE(aalhendi): ASM-verified NTSC-U 926 0x8006a52c-0x8006a8e0;
@@ -5590,6 +5596,11 @@ static void RenderBucket_DrawFunc_NormalAlt(struct RenderBucketDrawContext *ctx)
 	const int mdlCapture = !mdlSpecularWriter && NativeModelEmit_BeginInstance(ctx->idpp, ctx->pb, mdlGhost || mdlDepthFade, 0, ctx->inst, mdlGhost,
 	                                                                           RenderBucket_Scratch()->split.fadeColor.word);
 	const int mdlReplaces = mdlCapture && NativeModelEmit_SkipRetailDraw();
+
+	if (mdlReplaces)
+	{
+		NativeModelEmit_OwnGteStores();
+	}
 #endif
 
 	// NOTE(aalhendi): ASM-verified NTSC-U 926 alternate entry

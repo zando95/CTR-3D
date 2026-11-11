@@ -1076,6 +1076,10 @@ void NativeTrackDraw_IssueForWalk(void)
 		qw[3] = trz / h;
 	}
 
+	/* The patch rewrote the vertices of this snapshot's slots on this walk; this
+	 * only acts if it somehow patched for a different snapshot. */
+	NativeTrackAnim_EnsureLeavesPatched(snap);
+
 	N3DS_TrackDraw_Begin(qx, qy, qw, h);
 
 	/*

@@ -139,6 +139,14 @@ int NativeTrackMesh_LeafIndexForBsp(unsigned bspIndex);
 // when the gate is compiled out.
 void NativeTrackAnim_PatchFrame(void);
 
+// 3DS only. The animated-vertex patch above rewrites only the vertices of the
+// leaf slots the frame's snapshot draws. The track draw calls this with the
+// snapshot it is about to draw, on the walk, before it issues any leaf: any
+// slot in it that the patch has not covered for that snapshot is patched now,
+// so no slot is ever drawn with a vertex block older than its own frame.
+struct NativeTrackFrameSnapshot;
+void NativeTrackAnim_EnsureLeavesPatched(const struct NativeTrackFrameSnapshot *snap);
+
 // Raw vertex/index arrays backing every leaf range above, and their counts.
 // NULL/0 when nothing is built. u16 indices -- see the .c file's build-time
 // guard against exceeding that format's range.

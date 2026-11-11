@@ -21,6 +21,21 @@
 // Defined only in CTR_NATIVE_GTE_CAPTURE builds (every caller gates on it).
 extern int g_dbg_gteCapture;
 
+// Store hold for one model instance the native model path owns (native draw
+// replaces the packet write). Nothing reads the capture entries of a claimed
+// triangle, so its projections skip Store; the instance's matrix is noted once
+// at Hold so matrix ids advance as if it had stored. Implemented as a
+// save-and-zero of g_dbg_gteCapture, so GTE_RotTransPers pays no extra test.
+// Game-thread only; Release is idempotent and must run on every instance exit.
+void GTECapture_HoldStoresForOwnedModel(void);
+void GTECapture_ReleaseStoresForOwnedModel(void);
+// Re-runs the GTE projection of one triangle (packed VXY/VZ register pairs,
+// as RenderBucket_LoadPrimRTPT loads them) so its three vertices reach the
+// table, then restores every GTE register the projection touched. Cold path:
+// a triangle the native path declined inside an owned instance still writes a
+// packet, and that packet looks its depth up here.
+void GTE_CaptureStoreTriangle(const u32 *packedXY3, const u32 *packedZ3);
+
 void GTECapture_Store(s16 sx, s16 sy, s64 sxFull, s64 syFull, u16 sz3, s32 hOverSz3, s16 vx, s16 vy, s16 vz);
 int GTECapture_Lookup(s16 sx, s16 sy, u8 *fracX8, u8 *fracY8);
 /* Store one exhaust-smoke billboard corner's depth (sz3) keyed by its
