@@ -362,6 +362,62 @@ internal int GTE_RotTransPers(int idx, int lm)
 	return h_over_sz3;
 }
 
+#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+/* Owned-model store hold (native_gte_capture.h). Saves the user's ablation
+ * state rather than forcing 1 on release, so `gtecapture 0/2` A/Bs survive.
+ * The held instance's R/TR words are constant for its whole draw func (set
+ * once before dispatch), so one NoteMatrix here advances the matrix id exactly
+ * as its first projected vertex would have: ids, provenance and the depth
+ * bracket's per-matrix reclassification see the same sequence as an unheld
+ * frame, minus the stores. */
+global_variable int s_gteHoldActive;
+global_variable int s_gteHoldSavedMode;
+
+void GTECapture_HoldStoresForOwnedModel(void)
+{
+	if (!s_gteHoldActive)
+	{
+		if (g_dbg_gteCapture == 1)
+		{
+			GTECapture_NoteMatrix(&gteRegs.CP2C.p[0]);
+		}
+		s_gteHoldSavedMode = g_dbg_gteCapture;
+		s_gteHoldActive = 1;
+		g_dbg_gteCapture = 0;
+	}
+}
+
+void GTECapture_ReleaseStoresForOwnedModel(void)
+{
+	if (s_gteHoldActive)
+	{
+		g_dbg_gteCapture = s_gteHoldSavedMode;
+		s_gteHoldActive = 0;
+	}
+}
+
+void GTE_CaptureStoreTriangle(const u32 *packedXY3, const u32 *packedZ3)
+{
+	const GTERegisters savedRegs = gteRegs;
+	const int savedSf = m_sf;
+	const s64 savedMac0 = m_mac0;
+	const s64 savedMac3 = m_mac3;
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		gteRegs.CP2D.p[i << 1].d = packedXY3[i];
+		gteRegs.CP2D.p[(i << 1) + 1].d = packedZ3[i];
+	}
+	GTE_operator(0x0280030); /* RTPT, the op RenderBucket_LoadPrimRTPT issues */
+
+	gteRegs = savedRegs;
+	m_sf = savedSf;
+	m_mac0 = savedMac0;
+	m_mac3 = savedMac3;
+}
+#endif
+
 int GTE_operator(int op)
 {
 	int v;

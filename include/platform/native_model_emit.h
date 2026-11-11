@@ -115,6 +115,21 @@ int NativeModelEmit_Triangle(const u32 *packedXY3, const u32 *packedZ3, const in
 // model path). Folded into the caller's per-instance classification.
 int NativeModelEmit_SpecularEnabled(void);
 
+// Whether native-only mode is on (the packet write is skipped for claimed
+// triangles). Always 0 on PC, where the native model draw does not exist.
+int NativeModelEmit_SkipRetailDraw(void);
+
+// Called by a draw func right after a BeginInstance that returned nonzero, for
+// the funcs in which every triangle that writes a packet was first offered to
+// Triangle() (DrawFunc_Normal, DrawFunc_NormalAlt; the triangles they do not
+// offer are ones their writers draw nothing for). In native-only mode it holds
+// the open instance's capture-table stores until EndInstance: a claimed
+// triangle writes no packet, so nothing looks its corners up. A triangle
+// Triangle() declines still writes a packet, so the decline lifts the hold and
+// re-stores it. Not for funcs that write packets for triangles they never
+// offer (the reflection func's straddlers and selector stay packet).
+void NativeModelEmit_OwnGteStores(void);
+
 // Closes the instance opened by BeginInstance. Safe to call after a
 // BeginInstance that returned 0.
 void NativeModelEmit_EndInstance(void);
