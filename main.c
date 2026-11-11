@@ -245,6 +245,7 @@ int main(int argc, char *argv[])
 
 	// An original 3DS fails the renderer's boot-time allocations partway
 	// through, so it is turned away before any of them run.
+#if !defined(CTR_NATIVE_OLD3DS_BOOT)
 	if (!N3DS_IsNew3DS())
 	{
 		N3DS_DebugLog("[CTR-3DS] FAIL: not a New 3DS");
@@ -255,6 +256,8 @@ int main(int argc, char *argv[])
 		                         "memory or CPU speed it needs.");
 		return 1;
 	}
+#endif
+	N3DS_LogMemory("at main");
 #endif
 
 	printf("[CTR 3D] Starting...\n");
@@ -341,6 +344,9 @@ int main(int argc, char *argv[])
 		NativePlatform_ShowFatal(NativePlatform_InitFailure());
 		return NativeConsole_Return(1);
 	}
+#if defined(__3DS__)
+	N3DS_LogMemory("after Platform_Init");
+#endif
 
 #if defined(CTR_INTERNAL)
 	if (NativePerf_ConfigureFromArgs(argc, argv) != 0)

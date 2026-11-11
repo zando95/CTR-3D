@@ -31,10 +31,21 @@
  * Falls back cleanly (leaves N3DS_AudioThreadIsRunning() false, never spawns
  * a same-core thread) if this is not a New3DS, or if
  * APT_SetAppCpuTimeLimit/threadCreate fails to secure real core-1 time. The
- * ndsp sink comes up (or fails) independently of the worker: the StepVBlank
- * fallback submits from the main thread when no worker exists.
+ * ndsp sink comes up (or fails) independently of the worker: with no worker
+ * the game thread drives it through N3DS_AudioInlineStepVBlank.
  */
 void N3DS_AudioThreadInit(void);
+
+/*
+ * One vblank of everything the worker does, run on the calling (game) thread:
+ * voice lifecycle and the DSP channel mirror, the XA parcel top-up, the XA
+ * stream pump, and the sample-decode pump. Call once per vblank when
+ * N3DS_AudioThreadIsRunning() is false, with NO audio lock held. No-op while
+ * a worker is running. The DSP free-runs between calls, so a slow frame
+ * drains the XA cushion (~200ms) rather than stopping sound; a stall longer
+ * than the cushion is a gap in XA only.
+ */
+void N3DS_AudioInlineStepVBlank(void);
 
 /*
  * O(1): bump the target-vblank counter under the small counter lock and
@@ -47,8 +58,8 @@ void N3DS_AudioThreadNotifyVBlank(void);
  * Stop and join the worker thread, if one was ever created, but leave the
  * wake handle and ndsp sink up. No-op (null-safe) if no worker is running.
  * N3DS_AudioThreadIsRunning() reads false immediately after, so
- * NativeAudio_StepVBlank's main-thread fallback takes over submitting to the
- * same sink from the next vblank -- a runtime bisect switch, not a shutdown;
+ * NativeAudio_StepVBlank drives the same sink from the game thread from the
+ * next vblank -- a runtime bisect switch, not a shutdown;
  * there is no way back to the worker in this process lifetime.
  */
 void N3DS_AudioThreadStopAndJoin(void);
@@ -69,9 +80,8 @@ void N3DS_AudioThreadShutdown(void);
  */
 void N3DS_NdspForceOff(void);
 
-/* Did Init actually secure a real core-1 worker thread? If false, the
- * caller must render (and discard) synchronously on the main thread instead
- * -- see NativeAudio_StepVBlank's 3DS fallback branch. */
+/* Did Init secure a worker thread? If false, the caller services audio from
+ * the game thread with N3DS_AudioInlineStepVBlank. */
 int N3DS_AudioThreadIsRunning(void);
 
 /* Diagnostic: target - rendered, i.e. how many vblanks of mixing the worker
@@ -140,13 +150,10 @@ void N3DS_AudioUnlock(void);
  *
  * sampleRate is the rate the samples were produced at, not assumed 44100:
  * the XA path feeds this channel source PCM at its own 37800/18900 rate and
- * lets the DSP resample in hardware, avoiding a CPU resampler. The worker's
- * XA path submits 630 (or 315) frames at 37800 (or 18900); the no-worker
- * StepVBlank fallback submits 735 at 44100 (full software mixer). Exactly
- * one producer exists per process lifetime.
+ * lets the DSP resample in hardware, avoiding a CPU resampler: 630 (or 315)
+ * frames at 37800 (or 18900). Exactly one producer thread exists at a time.
  *
- * gainLeft/gainRight scale the channel (ndspChnSetMix); the fallback passes
- * 1.0f since its mixer already applied volume.
+ * gainLeft/gainRight scale the channel (ndspChnSetMix).
  *
  * frameCount must be 1..N3DS_NDSP_PARCEL_FRAMES_MAX. Returns 1 if queued, 0
  * if dropped (counted).

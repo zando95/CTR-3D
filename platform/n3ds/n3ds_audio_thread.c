@@ -6,10 +6,9 @@
  * are the point of the design.
  *
  * This file also owns the ndsp output sink: a small ring of linear-memory
- * wave buffers the mixer (worker thread, or the StepVBlank fallback) submits
- * one vblank's rendered stereo PCM into. ndsp resamples 44100 Hz -> the
- * DSP's native output rate per channel, so the mixer keeps producing the
- * exact PSX SPU rate it always has.
+ * wave buffers the XA producer (the worker thread, or the game thread's
+ * N3DS_AudioInlineStepVBlank when no worker exists) submits one vblank's
+ * source-rate stereo PCM into. ndsp resamples it to the DSP's output rate.
  */
 
 #include <3ds.h>
@@ -102,19 +101,17 @@ extern void NativeAudio_TakeWorkerProfileForAudioThread(unsigned long long *life
  * fed XA source PCM at its native 37800/18900 rate (630/315 frames
  * per vblank) so the DSP resamples in hardware and the CPU resampler --
  * measured at 52-56ms per 16.7ms parcel on the ARM11, i.e. the "talking into
- * a fan" announcer -- disappears entirely. The full-mixer StepVBlank
- * fallback still submits 735 at 44100. Both go through the same sink; only
- * the frame COUNT and the channel rate differ, and the parcel unit keeps its
- * meaning for the worker's cushion target either way.
+ * a fan" announcer -- disappears entirely. 735 (one vblank at 44100) stays
+ * the bound; the parcel unit keeps its meaning for the cushion target at any
+ * source rate.
  *
  * N3DS_NdspSubmitMusicParcel rejects (and counts) anything outside
  * 1..MAX, so a drift is loud in the counters rather than silent corruption.
  */
 #define N3DS_NDSP_PARCEL_FRAMES_MAX 735
 /* The software mixer's fixed PSX SPU rate (native_audio.c
- * NATIVE_AUDIO_SAMPLE_RATE, hand-matched like the frame count above). Only
- * the StepVBlank fallback produces at this rate now; it is also the channel's
- * starting rate before any producer has submitted. */
+ * NATIVE_AUDIO_SAMPLE_RATE, hand-matched like the frame count above): the
+ * channel's starting rate before any producer has submitted. */
 #define N3DS_NDSP_MIXER_RATE_HZ     44100
 /*
  * The sink accumulates N3DS_NDSP_AGG_PARCELS parcels into one wave buffer
@@ -193,8 +190,8 @@ static volatile int s_audioThreadRunning; /* set true only after a real thread o
  * ndsp sink state. Written only from N3DS_AudioThreadInit/Shutdown (main
  * thread) and N3DS_NdspSubmitMusicParcel. Submit runs on exactly one thread
  * at any point in the process lifetime -- the worker when one exists, else
- * the main thread's StepVBlank fallback (N3DS_AudioThreadIsRunning never
- * flips true after init) -- so the ring cursor needs no lock of its own.
+ * the game thread through N3DS_AudioInlineStepVBlank (N3DS_AudioThreadIsRunning
+ * never flips true after init) -- so the ring cursor needs no lock of its own.
  */
 static int s_ndspInitAttempted;
 static int s_ndspUp;
@@ -292,9 +289,8 @@ static void N3DS_NdspSinkInit(void)
 	ndspSetOutputMode(NDSP_OUTPUT_STEREO);
 	ndspChnReset(N3DS_NDSP_CHANNEL);
 	ndspChnSetInterp(N3DS_NDSP_CHANNEL, NDSP_INTERP_POLYPHASE);
-	/* Starting rate only. The first submit re-pokes this to whatever the
-	 * producer actually rendered at -- 37800/18900 for native-rate XA, 44100
-	 * for the full-mixer fallback (N3DS_NdspApplyChannelState). */
+	/* Starting rate only. The first submit re-pokes this to the XA track's
+	 * own 37800/18900 (N3DS_NdspApplyChannelState). */
 	ndspChnSetRate(N3DS_NDSP_CHANNEL, (float)N3DS_NDSP_MIXER_RATE_HZ);
 	ndspChnSetFormat(N3DS_NDSP_CHANNEL, NDSP_FORMAT_STEREO_PCM16);
 	memset(mix, 0, sizeof(mix));
@@ -1198,6 +1194,66 @@ static void N3DS_BeatWatchdogCheck(unsigned int wakeCount)
 	s_awPrevRw = rwCounter;
 }
 
+/*
+ * Cushion-driven XA: top the music channel's queue up to the cushion target
+ * whenever XA has content. A stall on the calling thread (an SD read in the
+ * pump, a slow frame when there is no worker) drains cushion instead of
+ * gapping the audio, and the next call refills it; nothing is discarded. XA
+ * position therefore runs up to the cushion ahead of real time, as the PS1's
+ * CD buffer did. The guard bounds one call so a long stall is followed by a
+ * refill over a few calls, not one burst. Takes the render lock itself per
+ * parcel: call with NO locks held.
+ */
+static void N3DS_AudioXaTopUp(void)
+{
+	u64 mark = svcGetSystemTick();
+	int guard = 0;
+	int xaIdle = 0;
+
+	while ((N3DS_NdspGetQueuedBlocks() < N3DS_NdspCushionTarget()) && (guard < 8))
+	{
+		if (!NativeAudio_RenderXAParcelForAudioThread())
+		{
+			xaIdle = 1; /* XA idle, or the track just ended */
+			break;
+		}
+		guard++;
+	}
+	if (xaIdle)
+	{
+		N3DS_NdspFlushPending(); /* play out a track's tail parcels */
+	}
+	s_profParcelTicks += svcGetSystemTick() - mark;
+	s_profParcels += (u32)guard;
+}
+
+void N3DS_AudioInlineStepVBlank(void)
+{
+	u64 mark;
+
+	if (s_audioThreadRunning)
+	{
+		return; /* the worker owns every step below */
+	}
+	s_profWakes++;
+
+	N3DS_AudioRenderLockTimed();
+	mark = svcGetSystemTick();
+	NativeAudio_RenderVBlankForAudioThread();
+	LightLock_Unlock(&s_audioRenderLock);
+	s_profRenderTicks += svcGetSystemTick() - mark;
+	s_profVBlanks++;
+
+	/* Each of the three below takes the render lock itself. */
+	N3DS_AudioXaTopUp();
+
+	mark = svcGetSystemTick();
+	NativeAudio_XAPumpForAudioThread();
+	s_profPumpTicks += svcGetSystemTick() - mark;
+
+	NativeAudio_HwDecodePumpForAudioThread();
+}
+
 static void N3DS_AudioThreadMain(void *arg)
 {
 	const u64 xaPeriodTicks = SYSCLOCK_ARM11 / 60;
@@ -1209,7 +1265,6 @@ static void N3DS_AudioThreadMain(void *arg)
 	{
 		u64 now = svcGetSystemTick();
 		s64 waitNs = 0;
-		u64 mark;
 
 		if ((s64)(nextXaTick - now) > 0)
 		{
@@ -1262,46 +1317,7 @@ static void N3DS_AudioThreadMain(void *arg)
 			LightLock_Unlock(&s_audioCounterLock);
 		}
 
-		/*
-		 * Wall-clock XA: produce every parcel whose deadline has passed
-		 * (catch-up capped -- after a long stall we resync rather than
-		 * blast the queue). Independent of the lifecycle drain above, so
-		 * the music holds real time even when vblank emission crawls.
-		 */
-		/*
-		 * Cushion-driven XA (hardware run 4's log): keeping the queue at a
-		 * "just-in-time" depth meant every SD stall on this same thread
-		 * (the pump below, contending with main-thread bulk loads) gapped
-		 * the music -- ndspQ sat at 0 through the whole announcer, ring
-		 * full, zero underruns: delivery latency, not pacing, was the
-		 * bottleneck all along. So: top the queue up to ~200ms of parcels
-		 * whenever XA has content, every wake. Stalls drain cushion
-		 * instead of audio, catch-up refills it, and nothing is ever
-		 * discarded. The wall-clock wait below is just the wake cadence
-		 * now. XA position runs up to the cushion ahead of real time --
-		 * the PS1's CD buffered ahead the same way.
-		 */
-		{
-			int guard = 0;
-			int xaIdle = 0;
-
-			mark = svcGetSystemTick();
-			while ((N3DS_NdspGetQueuedBlocks() < N3DS_NdspCushionTarget()) && (guard < 8))
-			{
-				if (!NativeAudio_RenderXAParcelForAudioThread()) /* takes the render lock itself */
-				{
-					xaIdle = 1; /* XA idle (or track just ended) */
-					break;
-				}
-				guard++;
-			}
-			if (xaIdle)
-			{
-				N3DS_NdspFlushPending(); /* play out a track's tail parcels */
-			}
-			s_profParcelTicks += svcGetSystemTick() - mark;
-			s_profParcels += (u32)guard;
-		}
+		N3DS_AudioXaTopUp();
 		now = svcGetSystemTick();
 		nextXaTick = now + xaPeriodTicks; /* next top-up check one vblank out */
 
@@ -1360,7 +1376,7 @@ void N3DS_AudioThreadInit(void)
 
 	/*
 	 * The ndsp sink comes up regardless of whether a worker thread does:
-	 * the StepVBlank fallback path submits to it from the main thread when
+	 * the game thread drives it (N3DS_AudioInlineStepVBlank) when
 	 * no worker could be secured. Guarded internally against the repeat
 	 * calls described above.
 	 */
@@ -1368,14 +1384,14 @@ void N3DS_AudioThreadInit(void)
 
 	/* The worker's wake event is a kernel handle (see its declaration);
 	 * created once and kept across repeat Init calls. Without it there can
-	 * be no worker, but the sink above stays up -- the StepVBlank fallback
-	 * still submits audibly. */
+	 * be no worker, but the sink above stays up and the game thread drives
+	 * it. */
 	if (s_audioWakeHandle == 0)
 	{
 		if (R_FAILED(svcCreateEvent(&s_audioWakeHandle, RESET_STICKY)))
 		{
 			s_audioWakeHandle = 0;
-			N3DS_DebugLog("[CTR-3DS] audio worker: NO (svcCreateEvent failed) -- main-thread fallback");
+			N3DS_DebugLog("[CTR-3DS] audio worker: NO (svcCreateEvent failed) -- game thread drives the DSP");
 			return;
 		}
 	}
@@ -1388,7 +1404,7 @@ void N3DS_AudioThreadInit(void)
 		 * assume -- never fall back to a same-core thread (see "What
 		 * changed from v1" in the design doc: core_id=-1 does NOT mean "any
 		 * free core", it means "all CPUs", which resolves to core 0 here). */
-		N3DS_DebugLog("[CTR-3DS] audio worker: NO (APT says not New3DS) -- main-thread fallback");
+		N3DS_DebugLog("[CTR-3DS] audio worker: NO (APT says not New3DS) -- game thread drives the DSP");
 		return;
 	}
 
@@ -1401,7 +1417,7 @@ void N3DS_AudioThreadInit(void)
 	 * tools/hello-world-3ds), so the worker never touches core 1 and no
 	 * core-1 time is reserved. Core 3 first (nothing else of ours runs
 	 * there); core 2 second (shared with the render worker, which runs at
-	 * main priority); otherwise the main-thread fallback. Never a thread on
+	 * main priority); otherwise the game thread drives the DSP itself. Never a thread on
 	 * main's own core: core_id=-1 means "all CPUs" and resolves to core 0.
 	 */
 	mainPriority = 0x30;
@@ -1441,7 +1457,7 @@ void N3DS_AudioThreadInit(void)
 	}
 	else
 	{
-		N3DS_DebugLog("[CTR-3DS] audio worker: NO (threadCreate failed on cores 3 and 2) -- main-thread fallback");
+		N3DS_DebugLog("[CTR-3DS] audio worker: NO (threadCreate failed on cores 3 and 2) -- game thread drives the DSP");
 	}
 }
 
@@ -1473,9 +1489,8 @@ void N3DS_AudioThreadStopAndJoin(void)
 	}
 	/*
 	 * Wake handle and ndsp sink are deliberately left up: N3DS_AudioThreadIsRunning()
-	 * now reads false, so NativeAudio_StepVBlank's main-thread fallback starts
-	 * submitting to the same sink on the very next vblank (see that function's
-	 * 3DS branch) -- exactly the path already exercised whenever Init never
+	 * now reads false, so NativeAudio_StepVBlank drives the same sink from the
+	 * game thread on the very next vblank (see that function's 3DS branch) -- exactly the path already exercised whenever Init never
 	 * secured a worker in the first place. One-way: nothing here restarts the
 	 * worker.
 	 */

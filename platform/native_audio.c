@@ -54,6 +54,10 @@
  * waits on more than one chunk.
  */
 #define NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES 8192
+/* With no audio thread the pump runs once per vblank the game emits, and those
+ * arrive in a burst per rendered frame, so the head must outlast a slow frame:
+ * 16384 samples is ~93ms at 4x pitch, ~370ms at 1x. */
+#define NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES_INLINE 16384
 #define NATIVE_AUDIO_HW_DECODE_CHUNK_SAMPLES 4096
 #define NATIVE_AUDIO_HW_DECODE_PUMP_SAMPLES 16384
 
@@ -281,6 +285,14 @@ global_variable struct
  * comfortably under that.
  */
 #define NATIVE_AUDIO_XA_SPAN_SECTORS       64
+/*
+ * With no audio thread the read and the decode run on the game thread, so a
+ * stall is a visible frame. The span shrinks to bound one read, and the pump
+ * keeps only the open-time prime depth ahead, one sector per vblank, instead
+ * of bursting toward the deep ring: the same bytes per second, spread out.
+ */
+#define NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE   16
+#define NATIVE_AUDIO_XA_AHEAD_TARGET_INLINE   NATIVE_AUDIO_XA_PRIME_TARGET
 #else
 #define NATIVE_AUDIO_XA_RING_SECTORS       6     // resident sector-slots per stream (~94.5 KiB @ mono capacity)
 #define NATIVE_AUDIO_XA_RING_AHEAD_TARGET  4     // refill ceiling, sectors kept ahead of playback
@@ -2540,7 +2552,8 @@ internal int NativeAudio_HwDecodeChunk(struct NativeAudioHwSampleCacheEntry *ent
 }
 
 /*
- * Once per audio-thread wake (n3ds_audio_thread.c): finish any entry whose
+ * Once per audio-thread wake, or once per vblank from the game thread when
+ * there is no audio thread (n3ds_audio_thread.c): finish any entry whose
  * key-on only decoded the head chunk. Budgeted and split into short lock
  * holds -- see the NATIVE_AUDIO_HW_DECODE_* sizing note.
  */
@@ -2787,7 +2800,7 @@ internal int NativeAudio_UpdateVoiceSample(struct NativeAudioVoice *voice)
 			 * silence. One whole-range flush covers zeros and head both;
 			 * the pump flushes its own chunks as they land. */
 			memset(entry->pcm, 0, (size_t)scanCount * sizeof(s16));
-			NativeAudio_HwDecodeChunk(entry, NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES);
+			NativeAudio_HwDecodeChunk(entry, N3DS_AudioThreadIsRunning() ? NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES : NATIVE_AUDIO_HW_DECODE_HEAD_SAMPLES_INLINE);
 			N3DS_HwVoiceStoreCommit(entry->pcm, scanCount);
 
 			NativeAudio_FreeVoicePcm(voice);
@@ -4059,6 +4072,24 @@ internal int NativeAudio_XASourceReadSectors(struct NativeAudioXaSource *source,
  * of file shorter than a span is handled by shrinking the fill; a failed
  * bulk read falls through so the existing error handling stays in charge).
  */
+/* Span fills since the last NativeAudio_TakeXaSpanProfile: how many, how many
+ * physical sectors they asked for, and the time inside the read. Written by
+ * whichever one thread pumps the live stream; the pending stream's fills on
+ * the game thread can race a worker's by a count, which a diagnostic allows. */
+internal unsigned s_xaSpanProfFills;
+internal unsigned s_xaSpanProfSectors;
+internal unsigned long long s_xaSpanProfTicks;
+
+void NativeAudio_TakeXaSpanProfile(unsigned *fills, unsigned *sectors, unsigned long long *ticks)
+{
+	*fills = s_xaSpanProfFills;
+	*sectors = s_xaSpanProfSectors;
+	*ticks = s_xaSpanProfTicks;
+	s_xaSpanProfFills = 0;
+	s_xaSpanProfSectors = 0;
+	s_xaSpanProfTicks = 0;
+}
+
 internal int NativeAudio_XAStreamReadSectorBuffered(struct NativeAudioXaStream *stream, int sectorIndex, u8 *dst)
 {
 	struct NativeAudioXaSource *source = &stream->source;
@@ -4077,13 +4108,20 @@ internal int NativeAudio_XAStreamReadSectorBuffered(struct NativeAudioXaStream *
 
 	if ((sectorIndex < stream->spanStartSector) || (sectorIndex >= stream->spanStartSector + stream->spanSectorCount))
 	{
-		int fill = NATIVE_AUDIO_XA_SPAN_SECTORS;
+		int fill = N3DS_AudioThreadIsRunning() ? NATIVE_AUDIO_XA_SPAN_SECTORS : NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE;
+		unsigned long long fillStart;
+		int filled;
 
 		if (fill > source->totalSectors - sectorIndex)
 		{
 			fill = source->totalSectors - sectorIndex;
 		}
-		if ((fill <= 0) || !NativeAudio_XASourceReadSectors(source, sectorIndex, fill, stream->spanBuf, stream->discScratch))
+		fillStart = N3DS_AudioTicksNow();
+		filled = (fill > 0) && NativeAudio_XASourceReadSectors(source, sectorIndex, fill, stream->spanBuf, stream->discScratch);
+		s_xaSpanProfTicks += N3DS_AudioTicksNow() - fillStart;
+		s_xaSpanProfFills++;
+		s_xaSpanProfSectors += (fill > 0) ? (unsigned)fill : 0u;
+		if (!filled)
 		{
 			stream->spanSectorCount = 0;
 			return NativeAudio_XASourceReadSector(source, sectorIndex, dst, stream->discScratch);
@@ -4194,7 +4232,14 @@ internal int NativeAudio_XAStreamCountAudioSectors(struct NativeAudioXaSource *s
  * not XA), the XA MUSIC files are 26 MiB, and the count memo below still
  * removes their repeat whole-file scans after the first open of each track.
  */
-#define NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
+/* Blob size, fixed before the blob is allocated. A New 3DS has the heap for
+ * every GAME and EXTRA line. An original 3DS has about 14 MiB of heap for the
+ * whole game, so it caches what fits the small size and the rest stream from
+ * the SD card. */
+#define NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES (32u * 1024u * 1024u)
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES (4u * 1024u * 1024u)
+internal u32 s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES;
+#define NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES (s_xaVoiceCacheMaxBytes)
 #define NATIVE_AUDIO_XA_TRACK_INDEX_MAX       512
 /* Cache/memo keys: the disc's tracks use their XNF entryIndex, a PAL pack's are offset by pack * 512. */
 #define NATIVE_AUDIO_XA_KEY_MAX               ((NATIVE_AUDIO_PAL_PACK_COUNT + 1) * NATIVE_AUDIO_XA_TRACK_INDEX_MAX)
@@ -4863,6 +4908,11 @@ void NativeAudio_VoiceCacheEnsureBegin(void)
 		NativeAudio_XAVoiceCacheLog("[PALVOICE] caching the %s voice pack", NativeAudio_PalPackCode(s_xaCachePack));
 	}
 
+	if (!N3DS_IsNew3DS())
+	{
+		s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES;
+	}
+	N3DS_LogMemory("before voice cache");
 	s_xaVoiceCache.blob = (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES);
 	if (s_xaVoiceCache.blob == NULL)
 	{
@@ -4996,6 +5046,7 @@ int NativeAudio_VoiceCacheEnsureStep(int budgetSectors)
 	else
 	{
 		s_xaVoiceCache.built = 1;
+		N3DS_LogMemory("voice cache built");
 		NativeAudio_XAVoiceCacheLog("[XAPRELOAD] voice cache built: %d tracks, %d sectors, %u KiB of %u KiB budget", s_vce.tracks, s_vce.sectors,
 		                            (unsigned)(s_xaVoiceCache.blobUsed >> 10), (unsigned)(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES >> 10));
 	}
@@ -5328,6 +5379,16 @@ internal void NativeAudio_XAStreamPump(void)
 		if (!active)
 		{
 			s_refilling = 0;
+			return;
+		}
+		if (!N3DS_AudioThreadIsRunning())
+		{
+			/* Game thread: no burst. A sector is 3.2 vblanks of audio at the
+			 * least, so one per vblank outruns playback. */
+			if (ahead < NATIVE_AUDIO_XA_AHEAD_TARGET_INLINE)
+			{
+				NativeAudio_XAStreamDecodeNextSector(&s_audio.xaStream);
+			}
 			return;
 		}
 		if (!s_refilling && (ahead >= (NATIVE_AUDIO_XA_RING_AHEAD_TARGET / 3)))
@@ -6159,8 +6220,9 @@ internal void NativeAudio_MixFrame(s16 *outLeft, s16 *outRight)
 	 * real time regardless of frame rate, which is what the PS1's CD
 	 * hardware did (per-vblank advance chopped the boot announcer into
 	 * starved fragments whenever frames ran slow).
-	 * The no-worker fallback still advances XA here, per vblank, exactly
-	 * as before.
+	 * With no worker the game thread runs that same parcel path
+	 * (N3DS_AudioInlineStepVBlank), so this branch is reached only by a
+	 * caller that renders through MixFrame directly.
 	 */
 	if (s_audio.xa.active && !N3DS_AudioThreadIsRunning())
 #else
@@ -7600,24 +7662,13 @@ void NativeAudio_StepVBlank(void)
 		}
 		else
 		{
-			/* Fallback: no worker thread secured (Old3DS, or couldn't claim
-			 * core 1). Renders synchronously on the main thread -- the full
-			 * mixer, so this path is SLOW, but correct and audible: it
-			 * submits to the same ndsp sink the worker would. */
-			s16 scratch[NATIVE_AUDIO_VBLANK_FRAMES * NATIVE_AUDIO_CHANNELS];
-
-			NativeAudio_LockOutput(); /* real on this path too -- harmless,
-			                              nothing else contends for it when
-			                              there is no worker thread */
-			NativeAudio_RenderFramesNoLock(scratch, NATIVE_AUDIO_VBLANK_FRAMES);
-			/* Full software mixer, so this path produces at the SPU rate with
-			 * volume already applied per sample -- unlike the worker's XA
-			 * parcels, which ride the channel at the source rate. Exactly one
-			 * of the two producers exists per process lifetime, so the sink
-			 * only ever sees one rate regime. */
-			N3DS_NdspSubmitMusicParcel(scratch, NATIVE_AUDIO_VBLANK_FRAMES, NATIVE_AUDIO_SAMPLE_RATE, 1.0f, 1.0f);
-			NativeAudio_HwVoiceMirrorNoLock();
-			NativeAudio_UnlockOutput();
+			/* No worker thread (an original 3DS has one usable core, or the
+			 * thread could not be created): the same DSP path, driven from
+			 * here. Voices play on their own DSP channels and XA goes to the
+			 * music channel at its source rate, so nothing is mixed or
+			 * resampled on this thread. Includes the XA stream pump and the
+			 * sample-decode pump. */
+			N3DS_AudioInlineStepVBlank();
 		}
 	}
 	/* No CTR_INTERNAL stats-reporting block on this path: with output
@@ -7648,16 +7699,11 @@ void NativeAudio_StepVBlank(void)
 #endif
 
 #if defined(__3DS__)
-	if (!(s_audio.output.deterministicRenderMode && N3DS_AudioThreadIsRunning()))
+	if (!s_audio.output.deterministicRenderMode)
 	{
-		/* No worker thread handling this vblank (fallback path, or
-		 * deterministicRenderMode somehow false) -- pump XA decode
-		 * ourselves, exactly as before this change. When the worker IS
-		 * handling this vblank, it calls NativeAudio_XAPumpForAudioThread()
-		 * itself after releasing s_audioRenderLock (n3ds_audio_thread.c),
-		 * restoring the single-thread invariant between XA decode-pump and
-		 * XA position-advance (already inside MixFrame, worker-side) that
-		 * made this safe before lever 3 existed.. */
+		/* Nothing above serviced this vblank. With deterministic render mode
+		 * on, the worker or N3DS_AudioInlineStepVBlank pumps XA itself, on
+		 * the same thread that advances the XA position. */
 		NativeAudio_XAStreamPump();
 	}
 #else

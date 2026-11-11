@@ -33,6 +33,15 @@
 #define N3DS_LOG_PATH "sdmc:/ctr3ds.log"
 #define N3DS_LOG_PREV_PATH "sdmc:/ctr3ds.prev.log"
 
+/*
+ * Overrides libctru's weak default. Left at 0, libctru halves the free
+ * application memory between the two heaps and caps the linear half at 32 MiB:
+ * a New 3DS reaches the cap, an original 3DS gets about 23 MiB, short of the
+ * decode-cache atlases. Fixed here, the linear heap is the same on both and
+ * the application heap takes whatever is left.
+ */
+u32 __ctru_linear_heap_size = 32u * 1024u * 1024u;
+
 static FILE *s_logFile = NULL;
 
 /*
@@ -4992,6 +5001,19 @@ unsigned long N3DS_HeapUsedBytes(void)
 unsigned long N3DS_LinearFreeBytes(void)
 {
 	return (unsigned long)linearSpaceFree();
+}
+
+void N3DS_LogMemory(const char *where)
+{
+	struct mallinfo mi = mallinfo();
+	char line[160];
+
+	snprintf(line, sizeof(line), "[CTR-3DS] mem %s: heap %lu KiB used of %lu, linear %lu KiB free of %lu, new3ds=%d", where,
+	         (unsigned long)mi.uordblks / 1024UL, (unsigned long)envGetHeapSize() / 1024UL, (unsigned long)linearSpaceFree() / 1024UL,
+	         (unsigned long)envGetLinearHeapSize() / 1024UL, N3DS_IsNew3DS());
+	N3DS_DebugLog(line);
+	/* Committed to the card at once: the line after it may be the allocation that fails. Boot and load only, never a timed frame. */
+	N3DS_LogFlushNow();
 }
 
 /*
