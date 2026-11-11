@@ -220,14 +220,6 @@ endif()
 # Both scales start at retail 100% even when compiled in, so an enabled build is
 # byte-identical until something moves them. Runtime: dumpreq 'lodgeo N' /
 # 'lodtex N' on 3DS, F4/F6 or --lod-geo/--lod-tex on PC. 1P only.
-# Test builds for the original 3DS: skips the "New 3DS required" boot screen.
-# The console still gets the small voice cache and the single-core fallbacks,
-# which key off the hardware, not this option.
-option(CTR_NATIVE_OLD3DS_BOOT "Let the 3DS build start on an original 3DS (test builds)" OFF)
-if(CTR_NATIVE_OLD3DS_BOOT)
-    target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_OLD3DS_BOOT=1)
-endif()
-
 option(CTR_NATIVE_LOD_BIAS
     "LOD distance scaling + [LODPROBE] slot counters (1P; measured: no fps win)"
     OFF)

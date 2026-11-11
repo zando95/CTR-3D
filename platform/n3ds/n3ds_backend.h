@@ -33,7 +33,7 @@ void N3DS_SleepMs(unsigned int ms);
 void N3DS_GfxInit(void);
 
 /* Full-screen error panel for failures that end the run: startup asset and
- * graphics failures, an Old 3DS, a disc read that cannot succeed. Without it
+ * graphics failures, a disc read that cannot succeed. Without it
  * the app would exit to the Homebrew Launcher with nothing on screen. Tears
  * down whatever gfx/citro3d state is still up, brings up its own console on
  * the top screen, waits for any button or ~60s, and releases the screen; the

@@ -242,21 +242,6 @@ int main(int argc, char *argv[])
 	}
 
 	N3DS_DebugLog("[CTR-3DS] main() entered");
-
-	// An original 3DS fails the renderer's boot-time allocations partway
-	// through, so it is turned away before any of them run.
-#if !defined(CTR_NATIVE_OLD3DS_BOOT)
-	if (!N3DS_IsNew3DS())
-	{
-		N3DS_DebugLog("[CTR-3DS] FAIL: not a New 3DS");
-		NativePlatform_ShowFatal("This console is not a New Nintendo 3DS.\n\n"
-		                         "CTR 3D needs a New Nintendo 3DS,\n"
-		                         "New 3DS XL or New 2DS XL. The original\n"
-		                         "3DS, 3DS XL and 2DS do not have the\n"
-		                         "memory or CPU speed it needs.");
-		return 1;
-	}
-#endif
 	N3DS_LogMemory("at main");
 #endif
 
