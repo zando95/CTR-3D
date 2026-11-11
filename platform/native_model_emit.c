@@ -906,6 +906,650 @@ void NativeModelEmit_EndInstance(void)
 }
 
 /*
+ * ---------------------------------------------------------------- model frame cache
+ *
+ * A model's command list is frame-invariant and its vertex positions depend
+ * only on the frame pair it draws (RenderBucket_PackModelVertexXY reads
+ * nothing but the frames), so every instance drawing the same (command list,
+ * frame, next frame, colour table, texture table) captures the same
+ * triangles. The first draw of a key runs the retail walk and records every
+ * triangle with a usable texture, culled or not; later draws copy the record
+ * into the snapshot and skip the walk: no vertex decode, no GTE projection,
+ * no NCLIP.
+ *
+ * Back faces are culled here, in model space, by retail's own rule. With a
+ * view-space vertex v = R p / 4096 + t, the GTE's screen cross product (NCLIP)
+ * has the sign of det(R) * n . (p0 - eye), where n = (p1 - p0) x (p2 - p0)
+ * and eye = -4096 R^-1 t. Retail draws a face when (NCLIP < 0) equals the
+ * instance REVERSE_CULL bit XOR command bit 29, skips the test when command
+ * bit 28 is clear, and rejects NCLIP == 0. The test is float, so thin faces
+ * retail's whole-pixel NCLIP drops are drawn, the population
+ * RenderBucket_CaptureSnapCulledTriangle already rescues on the walk.
+ *
+ * Off-screen and near faces are not rejected: the GPU clips them, and models
+ * have no near plane.
+ *
+ * Texture layouts are re-read on every draw, since a layout can be rewritten at
+ * runtime. The colour table's contents are hashed into the key on every draw,
+ * since a setup callback can rewrite the table between instances; each colour
+ * variant is its own entry. Every entry is dropped when the level changes:
+ * frame and command pointers are MEMPACK addresses that a later load reuses.
+ */
+#define MODELCACHE_ARENA_BYTES (1536u * 1024u)
+#define MODELCACHE_MAX_ENTRIES 1024
+#define MODELCACHE_BUCKETS     512
+/* Largest instance the fill records; larger ones keep the walk. */
+#define MODELCACHE_FILL_MAX_TRIS 2048
+
+#define MODELCACHE_TRI_DOUBLE_SIDED 0x01
+#define MODELCACHE_TRI_FLIP         0x02 /* command bit 29 */
+
+struct NativeModelCacheTri
+{
+	s16 p[3][3];
+	u8 rgb[3][3];
+	u8 flags;
+	const struct TextureLayout *tex;
+	float n[3];
+};
+
+struct NativeModelCacheKey
+{
+	u32 cmdList;
+	const void *frame;
+	const void *next;
+	u32 colorLayout;
+	const void *texLayout;
+	u32 deltaArray;
+	u32 colorHash;
+};
+
+struct NativeModelCacheEntry
+{
+	struct NativeModelCacheKey key;
+	u32 offset;
+	u32 bytes;
+	u16 triCount;
+	s16 nextInBucket;
+	u8 live;
+};
+
+global_variable u8 *s_mcArena;
+global_variable int s_mcArenaFailed;
+global_variable u32 s_mcArenaHead;
+global_variable struct NativeModelCacheEntry s_mcEntries[MODELCACHE_MAX_ENTRIES];
+global_variable s16 s_mcBuckets[MODELCACHE_BUCKETS];
+global_variable u32 s_mcHeadIdx;  /* next metadata slot, allocation order */
+global_variable u32 s_mcTailIdx;  /* oldest live metadata slot */
+global_variable u32 s_mcLiveCount;
+global_variable int s_mcLevel = -1;
+global_variable const void *s_mcLevelPtr;
+
+global_variable struct NativeModelCacheTri s_mcFillTris[MODELCACHE_FILL_MAX_TRIS];
+global_variable u32 s_mcFillCount;
+global_variable int s_mcFillActive;
+global_variable struct NativeModelCacheKey s_mcFillKey;
+/* The open fill's eye and cull terms, for the [MDLCACHE] agreement check
+ * against retail's NCLIP on the same triangles. */
+global_variable float s_mcFillEye[3];
+global_variable float s_mcFillDet;
+global_variable int s_mcFillInstNeg;
+
+global_variable u32 s_mcWinHits, s_mcWinMisses, s_mcWinFills, s_mcWinEvicts, s_mcWinNoRoom;
+global_variable u32 s_mcWinCullAgree, s_mcWinCullWeDrawRetailCulled, s_mcWinCullWeCullRetailDrew;
+global_variable u32 s_mcWinTrisIn, s_mcWinTrisOut;
+/* Normal-func instances the cache does not take, by reason: not captured
+ * (HUD, paint-on-top), specular writer, ghost or depth-fade writer, split or
+ * reflect decode. */
+global_variable u32 s_mcWinSkipNoCapture, s_mcWinSkipSpecular, s_mcWinSkipBlend, s_mcWinSkipSplit;
+
+/* Draw funcs dispatched this window: normal, normalAlt, split, special, other. */
+global_variable u32 s_mcWinFunc[5];
+
+void NativeModelCache_NoteFunc(int kind)
+{
+	if ((kind >= 0) && (kind < 5))
+	{
+		s_mcWinFunc[kind]++;
+	}
+}
+
+void NativeModelCache_NoteSkipped(int captured, int specular, int forceBlend)
+{
+	if (!captured)
+	{
+		s_mcWinSkipNoCapture++;
+	}
+	else if (specular)
+	{
+		s_mcWinSkipSpecular++;
+	}
+	else if (forceBlend)
+	{
+		s_mcWinSkipBlend++;
+	}
+	else
+	{
+		s_mcWinSkipSplit++;
+	}
+}
+
+internal u32 NativeModelCache_HashKey(const struct NativeModelCacheKey *k)
+{
+	u32 h = k->cmdList * 2654435761u;
+
+	h ^= (u32)(uintptr_t)k->frame * 40503u;
+	h ^= (u32)(uintptr_t)k->next * 2246822519u;
+	h ^= k->colorLayout * 3266489917u;
+	h ^= (u32)(uintptr_t)k->texLayout;
+	h ^= k->colorHash * 2654435761u;
+	h ^= h >> 15;
+	return h & (MODELCACHE_BUCKETS - 1);
+}
+
+internal int NativeModelCache_SameKey(const struct NativeModelCacheKey *a, const struct NativeModelCacheKey *b)
+{
+	return (a->cmdList == b->cmdList) && (a->frame == b->frame) && (a->next == b->next) && (a->colorLayout == b->colorLayout) &&
+	       (a->texLayout == b->texLayout) && (a->deltaArray == b->deltaArray) && (a->colorHash == b->colorHash);
+}
+
+internal u32 NativeModelCache_ColorHash(const struct InstDrawPerPlayer *idpp);
+
+internal void NativeModelCache_KeyFromIdpp(const struct InstDrawPerPlayer *idpp, struct NativeModelCacheKey *k)
+{
+	k->cmdList = idpp->ptrCommandList;
+	k->frame = idpp->ptrCurrFrame;
+	k->next = idpp->ptrNextFrame;
+	k->colorLayout = idpp->ptrColorLayout;
+	k->texLayout = idpp->ptrTexLayout;
+	k->deltaArray = (u32)idpp->ptrDeltaArray;
+	k->colorHash = NativeModelCache_ColorHash(idpp);
+}
+
+/* FNV-1a over the colour table the walk reads (count in command word 0). */
+internal u32 NativeModelCache_ColorHash(const struct InstDrawPerPlayer *idpp)
+{
+	const u32 *cmd = (const u32 *)(uintptr_t)idpp->ptrCommandList;
+	const u8 *col = (const u8 *)(uintptr_t)idpp->ptrColorLayout;
+	u32 count;
+	u32 h = 2166136261u;
+	u32 i;
+
+	if ((cmd == NULL) || (col == NULL))
+	{
+		return 0;
+	}
+	count = cmd[0];
+	if (count > 256)
+	{
+		count = 256;
+	}
+	for (i = 0; i < count * 4; i++)
+	{
+		h = (h ^ col[i]) * 16777619u;
+	}
+	return h;
+}
+
+internal void NativeModelCache_Unlink(u32 idx)
+{
+	struct NativeModelCacheEntry *e = &s_mcEntries[idx];
+	const u32 b = NativeModelCache_HashKey(&e->key);
+	s16 *link = &s_mcBuckets[b];
+
+	while (*link >= 0)
+	{
+		if ((u32)*link == idx)
+		{
+			*link = e->nextInBucket;
+			break;
+		}
+		link = &s_mcEntries[*link].nextInBucket;
+	}
+	e->live = 0;
+}
+
+internal void NativeModelCache_EvictOldest(void)
+{
+	if (s_mcLiveCount == 0)
+	{
+		return;
+	}
+	if (s_mcEntries[s_mcTailIdx].live)
+	{
+		NativeModelCache_Unlink(s_mcTailIdx);
+		s_mcWinEvicts++;
+	}
+	s_mcTailIdx = (s_mcTailIdx + 1) % MODELCACHE_MAX_ENTRIES;
+	s_mcLiveCount--;
+	if (s_mcLiveCount == 0)
+	{
+		s_mcArenaHead = 0;
+	}
+}
+
+void NativeModelCache_Reset(void)
+{
+	u32 i;
+
+	for (i = 0; i < MODELCACHE_BUCKETS; i++)
+	{
+		s_mcBuckets[i] = -1;
+	}
+	for (i = 0; i < MODELCACHE_MAX_ENTRIES; i++)
+	{
+		s_mcEntries[i].live = 0;
+	}
+	s_mcHeadIdx = 0;
+	s_mcTailIdx = 0;
+	s_mcLiveCount = 0;
+	s_mcArenaHead = 0;
+	s_mcFillActive = 0;
+}
+
+/* Drops every entry when the level changes; see the section comment. */
+internal void NativeModelCache_CheckLevel(void)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const int lvl = (gGT != NULL) ? gGT->levelID : -1;
+	const void *lp = (gGT != NULL) ? (const void *)gGT->level1 : NULL;
+
+	if ((lvl != s_mcLevel) || (lp != s_mcLevelPtr))
+	{
+		s_mcLevel = lvl;
+		s_mcLevelPtr = lp;
+		NativeModelCache_Reset();
+	}
+}
+
+/* Contiguous arena bytes for a new entry, evicting oldest-first. The arena is
+ * a ring: live data runs from the oldest entry's offset to s_mcArenaHead,
+ * wrapping once. Returns the offset, or -1 when the request can never fit. */
+internal s32 NativeModelCache_Alloc(u32 bytes)
+{
+	if ((s_mcArena == NULL) || (bytes > MODELCACHE_ARENA_BYTES))
+	{
+		return -1;
+	}
+
+	for (;;)
+	{
+		u32 tailOff;
+
+		if (s_mcLiveCount >= MODELCACHE_MAX_ENTRIES)
+		{
+			NativeModelCache_EvictOldest();
+			continue;
+		}
+		if (s_mcLiveCount == 0)
+		{
+			s_mcArenaHead = 0;
+			return 0;
+		}
+
+		tailOff = s_mcEntries[s_mcTailIdx].offset;
+		if (s_mcArenaHead > tailOff)
+		{
+			if ((MODELCACHE_ARENA_BYTES - s_mcArenaHead) >= bytes)
+			{
+				return (s32)s_mcArenaHead;
+			}
+			if (tailOff >= bytes)
+			{
+				return 0;
+			}
+		}
+		else if ((s_mcArenaHead < tailOff) && ((tailOff - s_mcArenaHead) >= bytes))
+		{
+			return (s32)s_mcArenaHead;
+		}
+		NativeModelCache_EvictOldest();
+	}
+}
+
+internal struct NativeModelCacheEntry *NativeModelCache_Find(const struct NativeModelCacheKey *k)
+{
+	s16 i = s_mcBuckets[NativeModelCache_HashKey(k)];
+
+	while (i >= 0)
+	{
+		struct NativeModelCacheEntry *e = &s_mcEntries[i];
+
+		if (e->live && NativeModelCache_SameKey(&e->key, k))
+		{
+			return e;
+		}
+		i = e->nextInBucket;
+	}
+	return NULL;
+}
+
+/* The instance's eye in model space and det(R), from the open instance's
+ * captured mvp. Returns 0 for a singular matrix. */
+internal int NativeModelCache_InstanceEye(const struct NativeModelEmitInstance *mi, float eye[3], float *outDet)
+{
+	const float s = 1.0f / 4096.0f;
+	const float a = mi->rot[0][0] * s, b = mi->rot[0][1] * s, c = mi->rot[0][2] * s;
+	const float d = mi->rot[1][0] * s, e = mi->rot[1][1] * s, f = mi->rot[1][2] * s;
+	const float g = mi->rot[2][0] * s, h = mi->rot[2][1] * s, i = mi->rot[2][2] * s;
+	const float A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+	const float det = a * A + b * B + c * C;
+	const float tx = (float)mi->trans[0], ty = (float)mi->trans[1], tz = (float)mi->trans[2];
+	float invDet;
+
+	if ((det > -1e-9f) && (det < 1e-9f))
+	{
+		return 0;
+	}
+	invDet = 1.0f / det;
+	/* eye = -R^-1 t, R^-1 = adj(R) / det (adj = transposed cofactors). */
+	eye[0] = -(A * tx + (-(b * i - c * h)) * ty + (b * f - c * e) * tz) * invDet;
+	eye[1] = -(B * tx + (a * i - c * g) * ty + (-(a * f - c * d)) * tz) * invDet;
+	eye[2] = -(C * tx + (-(a * h - b * g)) * ty + (a * e - b * d) * tz) * invDet;
+	*outDet = det;
+	return 1;
+}
+
+/* Signed stand-in for retail's NCLIP on this face for the given eye, or 0
+ * when the face is edge-on. */
+internal float NativeModelCache_NclipSign(const struct NativeModelCacheTri *t, const float eye[3], float det)
+{
+	const float qx = (float)t->p[0][0] - eye[0];
+	const float qy = (float)t->p[0][1] - eye[1];
+	const float qz = (float)t->p[0][2] - eye[2];
+	const float dot = t->n[0] * qx + t->n[1] * qy + t->n[2] * qz;
+
+	return (det > 0.0f) ? dot : -dot;
+}
+
+internal int NativeModelCache_FaceDrawn(const struct NativeModelCacheTri *t, const float eye[3], float det, int instNeg)
+{
+	float v;
+
+	if (t->flags & MODELCACHE_TRI_DOUBLE_SIDED)
+	{
+		return 1;
+	}
+	v = NativeModelCache_NclipSign(t, eye, det);
+	if (v == 0.0f)
+	{
+		return 0;
+	}
+	return (v < 0.0f) == ((instNeg ^ ((t->flags & MODELCACHE_TRI_FLIP) ? 1 : 0)) != 0);
+}
+
+int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
+{
+	struct NativeModelEmitSnapshot *dst = &s_modelEmitBuf[s_modelEmitWriteIdx];
+	struct NativeModelEmitInstance *mi;
+	struct NativeModelCacheKey key;
+	struct NativeModelCacheEntry *e;
+	const struct NativeModelCacheTri *tris;
+	float eye[3], det;
+	int instNeg;
+	u32 t;
+
+	NativeModelCache_CheckLevel();
+	if ((s_modelEmitCurInst < 0) || (s_mcArena == NULL))
+	{
+		return 0;
+	}
+
+	NativeModelCache_KeyFromIdpp(idpp, &key);
+	e = NativeModelCache_Find(&key);
+	if (e == NULL)
+	{
+		s_mcWinMisses++;
+		return 0;
+	}
+	/* Not enough snapshot room for the whole record: keep the walk, which
+	 * degrades per triangle to the packet path. */
+	if ((dst->triCount + e->triCount) > MODELEMIT_MAX_TRIS)
+	{
+		s_mcWinNoRoom++;
+		return 0;
+	}
+
+	mi = &dst->insts[s_modelEmitCurInst];
+	if (!NativeModelCache_InstanceEye(mi, eye, &det))
+	{
+		return 0;
+	}
+	instNeg = ((s16)(u16)idpp->instFlags < 0);
+	tris = (const struct NativeModelCacheTri *)(s_mcArena + e->offset);
+
+	for (t = 0; t < e->triCount; t++)
+	{
+		const struct NativeModelCacheTri *src = &tris[t];
+		struct NativeModelEmitFace *face;
+		struct NativeModelEmitVert *v;
+		const struct TextureLayout *tex = src->tex;
+		int k;
+
+		if (!NativeModelCache_FaceDrawn(src, eye, det, instNeg))
+		{
+			continue;
+		}
+
+		face = &dst->faces[dst->triCount];
+		v = &dst->verts[dst->triCount * 3];
+
+		if (tex != NULL)
+		{
+			face->tpage = tex->tpage;
+			face->clut = tex->clut;
+			face->textured = 1;
+			v[0].u = tex->u0;
+			v[0].v = tex->v0;
+			v[1].u = tex->u1;
+			v[1].v = tex->v1;
+			v[2].u = tex->u2;
+			v[2].v = tex->v2;
+		}
+		else
+		{
+			face->tpage = 0;
+			face->clut = 0;
+			face->textured = 0;
+			v[0].u = v[0].v = v[1].u = v[1].v = v[2].u = v[2].v = 0;
+		}
+		face->blendOverride = 0xFF;
+		face->_pad[0] = 0;
+		face->_pad[1] = 0;
+
+		for (k = 0; k < 3; k++)
+		{
+			v[k].x = src->p[k][0];
+			v[k].y = src->p[k][1];
+			v[k].z = src->p[k][2];
+			v[k].r = src->rgb[k][0];
+			v[k].g = src->rgb[k][1];
+			v[k].b = src->rgb[k][2];
+			v[k]._pad = 0;
+			if (mi->alphaScale != 0)
+			{
+				v[k].r = NativeModelEmit_FadeComponent(v[k].r, mi->fcR, mi->alphaScale);
+				v[k].g = NativeModelEmit_FadeComponent(v[k].g, mi->fcG, mi->alphaScale);
+				v[k].b = NativeModelEmit_FadeComponent(v[k].b, mi->fcB, mi->alphaScale);
+			}
+		}
+
+		if ((tex != NULL) && NativeModelEmit_TexIsSemiTrans(tex))
+		{
+			s_modelEmitWinSemiTris++;
+		}
+		dst->triCount++;
+		dst->texTris += (u32)face->textured;
+		mi->triCount++;
+	}
+
+	s_mcWinHits++;
+	s_mcWinTrisIn += e->triCount;
+	s_mcWinTrisOut += mi->triCount;
+	return 1;
+}
+
+int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp)
+{
+	const struct NativeModelEmitInstance *mi;
+
+	s_mcFillActive = 0;
+	if (s_modelEmitCurInst < 0)
+	{
+		return 0;
+	}
+	if (s_mcArena == NULL)
+	{
+		if (s_mcArenaFailed)
+		{
+			return 0;
+		}
+		s_mcArena = (u8 *)malloc(MODELCACHE_ARENA_BYTES);
+		if (s_mcArena == NULL)
+		{
+			s_mcArenaFailed = 1;
+			Platform_Log("[MDLCACHE] arena allocation failed (%u bytes); models keep the walk\n", MODELCACHE_ARENA_BYTES);
+			return 0;
+		}
+		NativeModelCache_Reset();
+		NativeModelCache_CheckLevel();
+	}
+
+	mi = &s_modelEmitBuf[s_modelEmitWriteIdx].insts[s_modelEmitCurInst];
+	if (!NativeModelCache_InstanceEye(mi, s_mcFillEye, &s_mcFillDet))
+	{
+		return 0;
+	}
+	s_mcFillInstNeg = ((s16)(u16)idpp->instFlags < 0);
+	NativeModelCache_KeyFromIdpp(idpp, &s_mcFillKey);
+	s_mcFillCount = 0;
+	s_mcFillActive = 1;
+	return 1;
+}
+
+/* retailVerdict: 1 = retail's NCLIP passed this face, 2 = retail's NCLIP
+ * rejected it, 0 = not tested or rejected for another reason. */
+void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, u32 drawCommand,
+                                   int retailVerdict)
+{
+	struct NativeModelCacheTri *t;
+	float e1[3], e2[3];
+	int k;
+
+	if (!s_mcFillActive)
+	{
+		return;
+	}
+	if (s_mcFillCount >= MODELCACHE_FILL_MAX_TRIS)
+	{
+		s_mcFillActive = 0;
+		return;
+	}
+
+	t = &s_mcFillTris[s_mcFillCount++];
+	for (k = 0; k < 3; k++)
+	{
+		NativeModelEmit_UnpackVertex(packedXY3[k], packedZ3[k], &t->p[k][0], &t->p[k][1], &t->p[k][2]);
+		t->rgb[k][0] = (u8)(color3[k] & 0xff);
+		t->rgb[k][1] = (u8)((color3[k] >> 8) & 0xff);
+		t->rgb[k][2] = (u8)((color3[k] >> 16) & 0xff);
+	}
+	t->flags = 0;
+	if ((s32)(drawCommand << 3) >= 0)
+	{
+		t->flags |= MODELCACHE_TRI_DOUBLE_SIDED;
+	}
+	if ((s32)(drawCommand << 2) < 0)
+	{
+		t->flags |= MODELCACHE_TRI_FLIP;
+	}
+	t->tex = tex;
+
+	for (k = 0; k < 3; k++)
+	{
+		e1[k] = (float)t->p[1][k] - (float)t->p[0][k];
+		e2[k] = (float)t->p[2][k] - (float)t->p[0][k];
+	}
+	t->n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+	t->n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+	t->n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+
+	if (retailVerdict != 0)
+	{
+		const int ours = NativeModelCache_FaceDrawn(t, s_mcFillEye, s_mcFillDet, s_mcFillInstNeg);
+
+		if (ours == (retailVerdict == 1))
+		{
+			s_mcWinCullAgree++;
+		}
+		else if (ours)
+		{
+			s_mcWinCullWeDrawRetailCulled++;
+		}
+		else
+		{
+			s_mcWinCullWeCullRetailDrew++;
+		}
+	}
+}
+
+void NativeModelCache_AbortFill(void)
+{
+	s_mcFillActive = 0;
+}
+
+void NativeModelCache_EndFill(void)
+{
+	struct NativeModelCacheEntry *e;
+	struct NativeModelCacheEntry *old;
+	u32 bytes;
+	s32 off;
+	u32 idx;
+	u32 b;
+
+	if (!s_mcFillActive)
+	{
+		return;
+	}
+	s_mcFillActive = 0;
+	if (s_mcFillCount == 0)
+	{
+		return;
+	}
+
+	old = NativeModelCache_Find(&s_mcFillKey);
+	if (old != NULL)
+	{
+		NativeModelCache_Unlink((u32)(old - s_mcEntries));
+	}
+
+	bytes = s_mcFillCount * (u32)sizeof(struct NativeModelCacheTri);
+	off = NativeModelCache_Alloc(bytes);
+	if (off < 0)
+	{
+		return;
+	}
+
+	idx = s_mcHeadIdx;
+	s_mcHeadIdx = (s_mcHeadIdx + 1) % MODELCACHE_MAX_ENTRIES;
+	s_mcLiveCount++;
+
+	e = &s_mcEntries[idx];
+	e->key = s_mcFillKey;
+	e->offset = (u32)off;
+	e->bytes = bytes;
+	e->triCount = (u16)s_mcFillCount;
+	e->live = 1;
+	memcpy(s_mcArena + off, s_mcFillTris, bytes);
+	s_mcArenaHead = (u32)off + bytes;
+
+	b = NativeModelCache_HashKey(&e->key);
+	e->nextInBucket = s_mcBuckets[b];
+	s_mcBuckets[b] = (s16)idx;
+	s_mcWinFills++;
+}
+
+/*
  * [FADESELFTEST] -- proves NativeModelEmit_FadeComponent mirrors the real GTE
  * core, by running the core. One shot, gated behind --model-depth-check, and
  * placed at EndFrame: the frame's writers are done with the GTE, and the next
@@ -1071,6 +1715,25 @@ void NativeModelEmit_EndFrame(void)
 		 */
 		Platform_LogInstrument("[MDLEMIT] semiTris/f=%lu snapRescued=%lu\n", (unsigned long)(s_modelEmitWinSemiTris / (f ? f : 1)),
 		                       (unsigned long)s_modelEmitWinSnapRescued);
+
+		/* hits/misses count instances; trisIn is what the hits held, trisOut
+		 * what survived the model-space cull. cull= compares that cull with
+		 * retail's NCLIP on the triangles of each fill: weCull (a face retail
+		 * drew and this cull would drop) is the number that must stay 0. */
+		Platform_LogInstrument("[MDLCACHE] hits=%lu misses=%lu fills=%lu noRoom=%lu evicts=%lu live=%lu arenaKiB=%lu trisIn=%lu trisOut=%lu cull agree=%lu weDraw=%lu weCull=%lu\n",
+		                       (unsigned long)s_mcWinHits, (unsigned long)s_mcWinMisses, (unsigned long)s_mcWinFills,
+		                       (unsigned long)s_mcWinNoRoom, (unsigned long)s_mcWinEvicts, (unsigned long)s_mcLiveCount,
+		                       (unsigned long)(s_mcArena ? (MODELCACHE_ARENA_BYTES / 1024u) : 0u), (unsigned long)s_mcWinTrisIn, (unsigned long)s_mcWinTrisOut,
+		                       (unsigned long)s_mcWinCullAgree, (unsigned long)s_mcWinCullWeDrawRetailCulled, (unsigned long)s_mcWinCullWeCullRetailDrew);
+		Platform_LogInstrument("[MDLCACHE] skipped: noCapture=%lu specular=%lu blendWriter=%lu split=%lu | funcs normal=%lu alt=%lu split=%lu special=%lu other=%lu\n",
+		                       (unsigned long)s_mcWinSkipNoCapture, (unsigned long)s_mcWinSkipSpecular, (unsigned long)s_mcWinSkipBlend,
+		                       (unsigned long)s_mcWinSkipSplit, (unsigned long)s_mcWinFunc[0], (unsigned long)s_mcWinFunc[1], (unsigned long)s_mcWinFunc[2],
+		                       (unsigned long)s_mcWinFunc[3], (unsigned long)s_mcWinFunc[4]);
+		memset(s_mcWinFunc, 0, sizeof(s_mcWinFunc));
+		s_mcWinSkipNoCapture = s_mcWinSkipSpecular = s_mcWinSkipBlend = s_mcWinSkipSplit = 0;
+		s_mcWinHits = s_mcWinMisses = s_mcWinFills = s_mcWinNoRoom = s_mcWinEvicts = 0;
+		s_mcWinTrisIn = s_mcWinTrisOut = 0;
+		s_mcWinCullAgree = s_mcWinCullWeDrawRetailCulled = s_mcWinCullWeCullRetailDrew = 0;
 		s_modelEmitWinSemiTris = 0;
 		s_modelEmitWinSnapRescued = 0;
 

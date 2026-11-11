@@ -38,6 +38,14 @@ extern void NativeModelEmit_EndInstance(void);
 extern int NativeModelEmit_SkipRetailDraw(void);
 extern void NativeModelEmit_OwnGteStores(void);
 extern int NativeModelEmit_SpecularEnabled(void);
+extern int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp);
+extern int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp);
+extern void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, u32 drawCommand,
+                                          int retailVerdict);
+extern void NativeModelCache_AbortFill(void);
+extern void NativeModelCache_EndFill(void);
+extern void NativeModelCache_NoteSkipped(int captured, int specular, int forceBlend);
+extern void NativeModelCache_NoteFunc(int kind);
 #endif
 
 #ifdef CTR_NATIVE
@@ -2917,6 +2925,11 @@ static int s_rbqSnapCulled;
 /* Sign retail requires of a front face's NCLIP for that triangle: the cull
  * word's sign (instance REVERSE_CULL bit ^ command bit 29). */
 static int s_rbqSnapFrontNegative;
+/* RenderBucket_CheckProjectedPrim's NCLIP verdict on the last triangle: 1 =
+ * the face test passed, 2 = it rejected the face, 0 = not tested, rejected
+ * before it ran, or within the whole-pixel snap error. Feeds the model
+ * cache's agreement check. */
+static int s_rbqNclipVerdict;
 
 /* An NCLIP result this close to zero can change sign under the GTE's
  * whole-pixel truncation: each coordinate moves by under 1, so NCLIP moves by
@@ -2949,6 +2962,7 @@ static int RenderBucket_CheckProjectedPrim(struct RenderBucketDrawContext *ctx, 
 
 #if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
 	s_rbqSnapCulled = 0;
+	s_rbqNclipVerdict = 0;
 #endif
 
 	// NOTE(aalhendi): Source-backs the shared retail projection gate:
@@ -2982,9 +2996,13 @@ static int RenderBucket_CheckProjectedPrim(struct RenderBucketDrawContext *ctx, 
 		{
 #if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
 			s_rbqSnapCulled = RenderBucket_NclipWithinSnapError(opZ);
+			s_rbqNclipVerdict = s_rbqSnapCulled ? 0 : 2;
 #endif
 			return 0;
 		}
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+		s_rbqNclipVerdict = RenderBucket_NclipWithinSnapError(opZ) ? 0 : 1;
+#endif
 	}
 
 	gte_avsz3();
@@ -4712,6 +4730,27 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 	 * Evaluated once per instance, not per triangle, and only meaningful when
 	 * the capture is actually running. */
 	const int mdlReplaces = mdlCapture && NativeModelEmit_SkipRetailDraw();
+	/* Instances the native path owns outright, with the plain writer and no
+	 * split transform, draw from the model frame cache: a recorded key skips
+	 * the walk below entirely, and an unrecorded one records every triangle as
+	 * the walk passes it (platform/native_model_emit.c). */
+	const int mdlCacheable = mdlReplaces && !mdlSpecular && !mdlForceBlend && (ctx->idpp->unkF0 != RB_RETAIL_UNCOMPRESS_SPLIT) &&
+	                         (ctx->idpp->unkF0 != RB_RETAIL_UNCOMPRESS_REFLECT);
+	int mdlFilling = 0;
+
+	if (mdlCacheable)
+	{
+		if (NativeModelCache_TryEmit(ctx->idpp))
+		{
+			NativeModelEmit_EndInstance();
+			return;
+		}
+		mdlFilling = NativeModelCache_BeginFill(ctx->idpp);
+	}
+	else
+	{
+		NativeModelCache_NoteSkipped(mdlCapture, mdlSpecular, mdlForceBlend);
+	}
 
 	if (mdlReplaces)
 	{
@@ -4809,6 +4848,19 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 				{
 					RenderBucket_CaptureSnapCulledTriangle(ctx, drawCommand, mdlDepthFade);
 				}
+				if (mdlFilling)
+				{
+					struct TextureLayout *fillTex = RenderBucket_GetCommandTexture(ctx, drawCommand, &isValidTexture);
+
+					if (isValidTexture != 0)
+					{
+						const u32 fillXY[3] = {ctx->tempPacked[1].xy, ctx->tempPacked[2].xy, ctx->tempPacked[3].xy};
+						const u32 fillZ[3] = {ctx->tempPacked[1].z, ctx->tempPacked[2].z, ctx->tempPacked[3].z};
+						const int fillColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
+
+						NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, fillTex, drawCommand, s_rbqNclipVerdict);
+					}
+				}
 #endif
 				ctx->stripLength++;
 				continue;
@@ -4820,6 +4872,17 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 				ctx->stripLength++;
 				continue;
 			}
+
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+			if (mdlFilling)
+			{
+				const u32 fillXY[3] = {ctx->tempPacked[1].xy, ctx->tempPacked[2].xy, ctx->tempPacked[3].xy};
+				const u32 fillZ[3] = {ctx->tempPacked[1].z, ctx->tempPacked[2].z, ctx->tempPacked[3].z};
+				const int fillColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
+
+				NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, tex, drawCommand, s_rbqNclipVerdict);
+			}
+#endif
 
 #if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
 			// Capture point. Moved AHEAD of the packet write so it still runs
@@ -4903,6 +4966,7 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 					{
 						NativeModelEmit_EndInstance();
 					}
+					NativeModelCache_AbortFill();
 #endif
 					return;
 				}
@@ -4913,6 +4977,10 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 	}
 
 #if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	if (mdlFilling)
+	{
+		NativeModelCache_EndFill();
+	}
 	if (mdlCapture)
 	{
 		NativeModelEmit_EndInstance();
@@ -5875,6 +5943,9 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 		}
 		}
 		GTECapture_WatchNoteLod((ctx->idpp->mh != NULL) ? ctx->idpp->mh->name : NULL);
+#if defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+		NativeModelCache_NoteFunc(axisFunc);
+#endif
 		GTECapture_BeginInstanceDepth(ctx->inst, ctx->pb, ctx->idpp->mvp.t[2], axisFunc);
 		if (GTECapture_WatchIsHiddenInstance())
 		{
