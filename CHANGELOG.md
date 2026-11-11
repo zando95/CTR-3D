@@ -38,7 +38,7 @@ It's been some time since Beta 1.0 released, and this update aims to polish off 
 - Fixed flicker on Adventure mode boss garage doors
 - Fixed flicker on Polar in intro cutscene
 - White screen flash effect now covers the entire screen, and no longer clips geometry.
-- Added boot error messages for missing disc image, Old 3DS, etc.
+- Added boot error messages for missing disc image.
 - Fixed a timing bug that could make animated water and track textures glitch.
 - Smoothed out text on boot screens
 - The black squares in some Adventure hub tunnels are gone.
