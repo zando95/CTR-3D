@@ -6121,6 +6121,20 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 		const GrVertex *triVerts = &s_pendingVertices[startVertex + (i * 3)];
 		int atlasIdx, cellX = 0, cellY = 0, pixelBaseU = 0, pixelBaseV = 0, originU = 0, originV = 0;
 
+		/*
+		 * A zero-area triangle covers no pixels on the PS1 and none here, so it
+		 * is dropped before its texture is resolved. Its UVs still name texels:
+		 * the race standings portraits squash to a flat line while they flip,
+		 * with V reaching up into the display buffer, and resolving that
+		 * footprint costs a framebuffer mirror refresh and a full-page decode
+		 * every frame for a primitive that draws nothing.
+		 */
+		if ((((s32)triVerts[1].x - triVerts[0].x) * ((s32)triVerts[2].y - triVerts[0].y)) ==
+		    (((s32)triVerts[2].x - triVerts[0].x) * ((s32)triVerts[1].y - triVerts[0].y)))
+		{
+			continue;
+		}
+
 		if (perfScopes)
 		{
 			NativePerf_BeginScope(NATIVE_PERF_BUCKET_DRAW_TRIANGLES_RESOLVE);
