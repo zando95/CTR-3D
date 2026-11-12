@@ -123,6 +123,46 @@ void NativeGpu_MarkScreenFadeRange(uintptr_t start, uintptr_t end);
 void NativeGpu_MarkMenuBackdropRange(uintptr_t start, uintptr_t end);
 void NativeGpu_PublishSkyRange(void);
 void NativeGpu_ClearSkyRange(void);
+
+/* Walk census (CTR_NATIVE_WALK_CENSUS, an instrument, default OFF): the
+ * primMem cursor before each producer call in MainFrame_RenderFrame, so the
+ * walk can say which producer each node it visits came from. Marks are set in
+ * call order; a stage whose call did not run this frame stays 0 and is
+ * skipped. Same double-buffer lifecycle as the sky pair. */
+#if defined(CTR_NATIVE_WALK_CENSUS) && defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+#define NATIVE_WALK_CENSUS 1
+enum NativeWalkCensusStage
+{
+	WCEN_SETUP,
+	WCEN_WEATHER,
+	WCEN_CONFETTI,
+	WCEN_STARS,
+	WCEN_HUD,
+	WCEN_BEAKER,
+	WCEN_QUEUE,
+	WCEN_PARTICLES,
+	WCEN_DISPENV,
+	WCEN_BURSTS,
+	WCEN_TURBO,
+	WCEN_SKIDS,
+	WCEN_TITLEDPP,
+	WCEN_EXECUTE,
+	WCEN_TIRES,
+	WCEN_SHADOWS,
+	WCEN_HEAT,
+	WCEN_FADE,
+	WCEN_LEVEL,
+	WCEN_POSTLEVEL,
+	WCEN_REFRESHCARD,
+	WCEN_CLEAR,
+	WCEN_UI,
+	WCEN_END
+};
+void NativeGpu_WalkCensusMark(int stage, const void *cursor);
+#define WALK_CENSUS_MARK(gGT, stage) NativeGpu_WalkCensusMark((stage), (gGT)->backBuffer->primMem.cursor)
+#else
+#define WALK_CENSUS_MARK(gGT, stage) ((void)0)
+#endif
 // Model-space vector that produced this screen coordinate (same rendezvous
 // and same miss-on-collision safety as GTECapture_Lookup). Consumed by the
 // OTWALK_PROFILE retainability instrument; the retained-geometry play proper

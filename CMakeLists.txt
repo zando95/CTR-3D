@@ -200,6 +200,19 @@ if(CTR_NATIVE_OTWALK_PROFILE)
     target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_OTWALK_PROFILE=1)
 endif()
 
+# [WALKCENSUS] lines every 512 walks: the nodes the OT walk still visits,
+# attributed to the MainFrame_RenderFrame producer call that emitted them
+# (weather, HUD, particles, skids, tires, shadows, sky, UI, ...), with payload
+# words, the direct-emit share and per-node time. Needs the GTE capture (3DS).
+# The per-node timer reads add to draw_otag_parse_ms; take parse totals from a
+# build without it.
+option(CTR_NATIVE_WALK_CENSUS
+    "Per-producer census of the nodes the OT walk visits"
+    OFF)
+if(CTR_NATIVE_WALK_CENSUS)
+    target_compile_definitions(ctr_native PRIVATE CTR_NATIVE_WALK_CENSUS=1)
+endif()
+
 # The 3DS z-break substrate (PICA depth test against the per-prim emit ordinal
 # in vertex z) and the draw merge built on it (opaque binned by GPU state
 # across OT buckets, blends replayed in order) are unconditional.

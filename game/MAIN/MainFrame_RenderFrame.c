@@ -85,6 +85,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 
 	MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_SETUP);
 	MAINFRAME_LOG_CHECKPOINT("SETUP");
+	WALK_CENSUS_MARK(gGT, WCEN_SETUP);
 	DrawUnpluggedMsg(gGT, gGamepads);
 	DrawFinalLap(gGT);
 
@@ -134,8 +135,11 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("EFFECTS_1_weather");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipEffects)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_WEATHER);
 		RenderAllWeather(gGT);
+		WALK_CENSUS_MARK(gGT, WCEN_CONFETTI);
 		RenderAllConfetti(gGT);
+		WALK_CENSUS_MARK(gGT, WCEN_STARS);
 		// NOTE(aalhendi): ASM-verified NTSC-U 926 subrange 0x800364f8-0x80036538.
 		if (((gGT->renderFlags & RENDER_FLAG_STARS) != 0) && (gGT->stars.numStars != 0))
 		{
@@ -153,6 +157,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("HUD");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipHUD)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_HUD);
 		RenderAllHUD(gGT);
 	}
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_HUD);
@@ -161,6 +166,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("EFFECTS_2_beakerrain");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipEffects)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_BEAKER);
 		RenderAllBeakerRain(gGT);
 
 		RenderAllBoxSceneSplitLines(gGT);
@@ -171,6 +177,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("QUEUE_INSTANCES");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipInstances)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_QUEUE);
 		RenderBucket_QueueAllInstances(gGT);
 	}
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_QUEUE_INSTANCES);
@@ -179,9 +186,11 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("EFFECTS_3_particles");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipEffects)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_PARTICLES);
 		RenderAllNormalParticles(gGT);
 	}
 
+	WALK_CENSUS_MARK(gGT, WCEN_DISPENV);
 	RenderDispEnv_World(gGT); // == RenderDispEnv_World ==
 
 	CTR_DEBUG_ABLATE(gCtrDebugSkipEffects)
@@ -191,7 +200,9 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 			DecalMP_02(gGT);
 		}
 
+		WALK_CENSUS_MARK(gGT, WCEN_BURSTS);
 		RenderAllFlag0x40(gGT); // I need a better name
+		WALK_CENSUS_MARK(gGT, WCEN_TITLEDPP);
 		RenderAllTitleDPP(gGT);
 	}
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_EFFECTS);
@@ -200,6 +211,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("EXECUTE_INSTANCES");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipInstances)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_EXECUTE);
 		RenderBucket_ExecuteAllInstances(gGT);
 	}
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_EXECUTE_INSTANCES);
@@ -208,13 +220,17 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	MAINFRAME_LOG_CHECKPOINT("EFFECTS_4_tires");
 	CTR_DEBUG_ABLATE(gCtrDebugSkipEffects)
 	{
+		WALK_CENSUS_MARK(gGT, WCEN_TIRES);
 		RenderAllTires(gGT);
 
+		WALK_CENSUS_MARK(gGT, WCEN_SHADOWS);
 		RenderAllShadows(gGT);
 
+		WALK_CENSUS_MARK(gGT, WCEN_HEAT);
 		RenderAllHeatParticles(gGT);
 	}
 
+	WALK_CENSUS_MARK(gGT, WCEN_FADE);
 	PushBuffer_FadeAllWindows();
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_EFFECTS);
 
@@ -226,12 +242,14 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 		{
 			MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_LEVEL_GEOMETRY);
 			MAINFRAME_LOG_CHECKPOINT("LEVEL_GEOMETRY");
+			WALK_CENSUS_MARK(gGT, WCEN_LEVEL);
 			RenderAllLevelGeometry(gGT, lev, ptr_mesh_info);
 			MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_LEVEL_GEOMETRY);
 		}
 
 		MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_POST_LEVEL);
 		MAINFRAME_LOG_CHECKPOINT("POST_LEVEL");
+		WALK_CENSUS_MARK(gGT, WCEN_POSTLEVEL);
 		RenderDispEnv_World(gGT); // == RenderDispEnv_World ==
 
 		if (((gGT->hudFlags & HUD_FLAG_RACE_HUD) != 0) && (gGT->numPlyrCurrGame > 1))
@@ -292,6 +310,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	{
 		MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_REFRESHCARD);
 		MAINFRAME_LOG_CHECKPOINT("REFRESHCARD");
+		WALK_CENSUS_MARK(gGT, WCEN_REFRESHCARD);
 		RefreshCard_Entry();
 		MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_REFRESHCARD);
 	}
@@ -309,12 +328,14 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	{
 		MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_CLEAR_SCREEN);
 		MAINFRAME_LOG_CHECKPOINT("CLEAR_SCREEN");
+		WALK_CENSUS_MARK(gGT, WCEN_CLEAR);
 		CAM_ClearScreen(gGT);
 		MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_CLEAR_SCREEN);
 	}
 
 	MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_UI);
 	MAINFRAME_LOG_CHECKPOINT("UI");
+	WALK_CENSUS_MARK(gGT, WCEN_UI);
 	if ((gGT->renderFlags & RENDER_FLAG_CHECKERED_FLAG) != 0)
 	{
 		RaceFlag_DrawSelf();
@@ -346,6 +367,7 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 #endif
 
 	RenderDispEnv_UI(gGT);
+	WALK_CENSUS_MARK(gGT, WCEN_END);
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_UI);
 
 	MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_RENDER_VSYNC);
@@ -952,7 +974,9 @@ void RenderAllFlag0x40(struct GameTracker *gGT)
 		}
 	}
 
+	WALK_CENSUS_MARK(gGT, WCEN_TURBO);
 	VehTurbo_ProcessBucket(gGT->threadBuckets[TURBO].thread);
+	WALK_CENSUS_MARK(gGT, WCEN_SKIDS);
 
 	int i;
 	struct PushBuffer *pb;

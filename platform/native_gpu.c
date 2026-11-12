@@ -1893,6 +1893,18 @@ global_variable int s_hudshineRangeCount[2];
 #define SCREENFADE_SPANS_MAX 5
 global_variable uintptr_t s_screenfadeRangeStart[2][SCREENFADE_SPANS_MAX];
 global_variable uintptr_t s_screenfadeRangeEnd[2][SCREENFADE_SPANS_MAX];
+#ifdef NATIVE_WALK_CENSUS
+/* Producer cursor marks, indexed by NativeWalkCensusStage, END inclusive. */
+global_variable uintptr_t s_wcMark[2][WCEN_END + 1];
+
+void NativeGpu_WalkCensusMark(int stage, const void *cursor)
+{
+	if ((stage >= 0) && (stage <= WCEN_END))
+	{
+		s_wcMark[s_skyRangeWriteIdx][stage] = (uintptr_t)cursor;
+	}
+}
+#endif
 global_variable int s_screenfadeRangeCount[2];
 
 void NativeGpu_MarkSkyRange(uintptr_t start, uintptr_t end)
@@ -2077,6 +2089,9 @@ void NativeGpu_ClearSkyRange(void)
 	s_uipicRangeEnd[s_skyRangeWriteIdx] = 0;
 	s_hudshineRangeCount[s_skyRangeWriteIdx] = 0;
 	s_screenfadeRangeCount[s_skyRangeWriteIdx] = 0;
+#ifdef NATIVE_WALK_CENSUS
+	memset(s_wcMark[s_skyRangeWriteIdx], 0, sizeof(s_wcMark[0]));
+#endif
 }
 
 internal int NativeGpu_IsSkyPacket(uintptr_t addr)
@@ -4815,6 +4830,108 @@ internal void OTProf_DryWalk(u8 *basePacket)
  * returned for the full node path, as is slot 0, the terminator. Returns the
  * first node not consumed.
  */
+#ifdef NATIVE_WALK_CENSUS
+/*
+ * [WALKCENSUS]: per producer, the nodes the full walk path visited, their
+ * payload words, how many the direct-emit path took, and the time from the
+ * top of the node's visit to its link decode. Classes past the producer
+ * stages: sky (the sky/star span, whatever stage drew it), slot (zero-length
+ * nodes: touched OT slots and fillers), other (outside the frame's marked
+ * primMem span). Logged every WCEN_LOG_WALKS walks, per walk.
+ */
+#define WCEN_CLASS_SKY   (WCEN_END)
+#define WCEN_CLASS_SLOT  (WCEN_END + 1)
+#define WCEN_CLASS_OTHER (WCEN_END + 2)
+#define WCEN_CLASSES     (WCEN_END + 3)
+#define WCEN_LOG_WALKS   512u
+
+global_variable const char *const s_wcNames[WCEN_CLASSES] = {
+    "setup",  "weather", "confetti", "stars",   "hud",  "beaker",    "queue",       "particles", "dispenv", "bursts", "turbo", "skids", "titledpp",
+    "execute", "tires",  "shadows",  "heat",    "fade", "level",     "postlevel",   "refreshcard", "clear", "ui",     "sky",   "slot",  "other"};
+global_variable u32 s_wcWalks;
+global_variable u32 s_wcNodes[WCEN_CLASSES];
+global_variable u32 s_wcWords[WCEN_CLASSES];
+global_variable u32 s_wcDirect[WCEN_CLASSES];
+global_variable u64 s_wcTicks[WCEN_CLASSES];
+
+internal int WalkCensus_Classify(uintptr_t addr, int tagLength)
+{
+	const uintptr_t *mark = s_wcMark[s_skyRangeReadIdx];
+
+	if (tagLength == 0)
+	{
+		return WCEN_CLASS_SLOT;
+	}
+	if (s_skyNodeActive)
+	{
+		return WCEN_CLASS_SKY;
+	}
+	if ((mark[WCEN_SETUP] == 0) || (addr < mark[WCEN_SETUP]) || ((mark[WCEN_END] != 0) && (addr >= mark[WCEN_END])))
+	{
+		return WCEN_CLASS_OTHER;
+	}
+	for (int stage = WCEN_END - 1; stage >= 0; stage--)
+	{
+		if ((mark[stage] != 0) && (addr >= mark[stage]))
+		{
+			return stage;
+		}
+	}
+	return WCEN_CLASS_OTHER;
+}
+
+internal void WalkCensus_RecordNode(const u8 *node, int tagLength, int direct, u64 ticks)
+{
+	const int cls = WalkCensus_Classify((uintptr_t)node, tagLength);
+
+	s_wcNodes[cls]++;
+	s_wcWords[cls] += (u32)tagLength;
+	s_wcDirect[cls] += (u32)(direct != 0);
+	s_wcTicks[cls] += ticks;
+}
+
+internal void WalkCensus_EndWalk(void)
+{
+	u64 freq;
+	u64 totalTicks = 0;
+	int lvl = -1;
+
+	s_wcWalks++;
+	if (s_wcWalks < WCEN_LOG_WALKS)
+	{
+		return;
+	}
+
+	freq = SDL_GetPerformanceFrequency();
+	if ((sdata != NULL) && (sdata->gGT != NULL))
+	{
+		lvl = sdata->gGT->levelID;
+	}
+	for (int cls = 0; cls < WCEN_CLASSES; cls++)
+	{
+		totalTicks += s_wcTicks[cls];
+	}
+	Platform_LogInstrument("[WALKCENSUS] lvl=%d walks=%u total_us/walk=%u | per walk: nodes words direct us\n", lvl, s_wcWalks,
+	                       (u32)((totalTicks * 1000000ull / freq) / s_wcWalks));
+	for (int cls = 0; cls < WCEN_CLASSES; cls++)
+	{
+		if (s_wcNodes[cls] == 0)
+		{
+			continue;
+		}
+		Platform_LogInstrument("[WALKCENSUS] %-11s %6.1f %7.1f %6.1f %7.1f\n", s_wcNames[cls], (double)s_wcNodes[cls] / s_wcWalks,
+		                       (double)s_wcWords[cls] / s_wcWalks, (double)s_wcDirect[cls] / s_wcWalks,
+		                       (double)s_wcTicks[cls] * 1000000.0 / (double)freq / s_wcWalks);
+	}
+
+	s_wcWalks = 0;
+	memset(s_wcNodes, 0, sizeof(s_wcNodes));
+	memset(s_wcWords, 0, sizeof(s_wcWords));
+	memset(s_wcDirect, 0, sizeof(s_wcDirect));
+	memset(s_wcTicks, 0, sizeof(s_wcTicks));
+}
+#endif
+
 #ifdef CTR_INTERNAL
 /* [OTSKIP] totals since the last line: walks, slots consumed by the skip,
  * nodes the full path visited. */
@@ -5054,6 +5171,11 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 				basePacket = NativeGpu_SkipUntouchedOTSlots(basePacket);
 			}
 
+#ifdef NATIVE_WALK_CENSUS
+			const u64 wcStart = SDL_GetPerformanceCounter();
+			int wcDirect = 0;
+#endif
+
 			otWalkIterations++;
 			if (otWalkIterations > 65536)
 			{
@@ -5121,6 +5243,9 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 				if (NativeDirectEmit_TryNode(basePacket, (u32)tagLength))
 				{
 					// handled: nothing to parse
+#ifdef NATIVE_WALK_CENSUS
+					wcDirect = 1;
+#endif
 				}
 				else
 #endif
@@ -5229,8 +5354,15 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 				break;
 			}
 
+#ifdef NATIVE_WALK_CENSUS
+			WalkCensus_RecordNode(basePacket, tagLength, wcDirect, SDL_GetPerformanceCounter() - wcStart);
+#endif
+
 			basePacket = nextPacket;
 		}
+#ifdef NATIVE_WALK_CENSUS
+		WalkCensus_EndWalk();
+#endif
 
 #ifdef CTR_INTERNAL
 		s_otSkipWalks++;
