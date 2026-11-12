@@ -1936,6 +1936,164 @@ void NativeGpu_MarkSkyRange(uintptr_t start, uintptr_t end)
 	}
 }
 
+/*
+ * Sky dome on the GPU (3DS). DrawSky_Full hands its skybox and camera to
+ * NativeGpu_SkyGpuSubmit instead of projecting every face through the software
+ * GTE and writing packets for the walk. The submit keeps exactly the faces
+ * retail's per-face GTE flag test accepts, copied as model-space vertices, and
+ * N3DS_DrawSkyDomeGpu draws them through the model program with the camera's
+ * rotation (no translation: the sky sits at infinity). The screen-bounds test
+ * and the yaw-sector window are left to the GPU's clipper, which keeps a
+ * superset of retail's faces and also covers the wide window's margins.
+ *
+ * Slots follow the sky range's double buffer: written under
+ * s_skyRangeWriteIdx, drawn from s_skyRangeReadIdx. The draw consumes its slot,
+ * so an EndScene with no walk in front of it cannot redraw a stale dome. The
+ * vertices are copied at submit time because the level data can be replaced
+ * before the walk's EndScene runs.
+ */
+int g_dbg_skyGpu = 1;
+
+#if defined(__3DS__) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+#define NATIVE_SKY_GPU 1
+#define SKYGPU_VERT_CAP 3072
+#define SKYGPU_SRC_VERT_CAP 2048
+
+typedef struct
+{
+	int submitted;
+	int vertCount;
+	s16 rot[3][3];
+	s32 h, ofx, ofy;
+	N3DS_Vertex verts[SKYGPU_VERT_CAP];
+} NativeSkyGpuSlot;
+
+global_variable NativeSkyGpuSlot s_skyGpuSlot[2];
+global_variable u8 s_skyGpuVertOk[SKYGPU_SRC_VERT_CAP];
+
+internal void NativeGpu_SkyGpuPutVertex(N3DS_Vertex *dst, const struct ShortVertex *sv)
+{
+	dst->x = sv->Position.vx;
+	dst->y = sv->Position.vy;
+	dst->z = sv->Position.vz;
+	dst->w = 0;
+	dst->u = 0;
+	dst->v = 0;
+	dst->r = sv->Color.r;
+	dst->g = sv->Color.g;
+	dst->b = sv->Color.b;
+	dst->_pad = 0;
+}
+
+int NativeGpu_SkyGpuSubmit(struct Skybox *sky, struct PushBuffer *pb)
+{
+	NativeSkyGpuSlot *slot = &s_skyGpuSlot[s_skyRangeWriteIdx];
+	struct GameTracker *gGT = sdata->gGT;
+	const char *vertBase;
+	u32 vertLimit;
+	s32 h;
+	int numVertex, totalFaces = 0, count = 0, seg, i;
+
+	if ((g_dbg_skyGpu == 0) || (sky == NULL) || (pb == NULL) || slot->submitted)
+	{
+		return 0;
+	}
+	/* One view: split-screen windows each own a projection the single slot
+	 * cannot describe. */
+	if ((gGT == NULL) || (gGT->numPlyrCurrGame != 1) || (pb != &gGT->pushBuffer[0]))
+	{
+		return 0;
+	}
+
+	h = pb->distanceToScreen_PREV;
+	numVertex = sky->numVertex;
+	if ((h <= 0) || (numVertex <= 0) || (numVertex > SKYGPU_SRC_VERT_CAP) || (sky->ptrVertex == NULL))
+	{
+		return 0;
+	}
+	for (seg = 0; seg < NUM_SKYBOX_SEGMENTS; seg++)
+	{
+		totalFaces += (u16)sky->numFaces[seg];
+	}
+	if ((totalFaces * 3) > SKYGPU_VERT_CAP)
+	{
+		return 0;
+	}
+
+	/* Per-vertex half of retail's face test (DrawSky_IsVisible's GTE flag
+	 * bits): RTPT flags SZ3 saturation (view z below 0 or above 0xFFFF) and
+	 * divide overflow (H >= 2*SZ3). Translation is zero, so view z is row 2 of
+	 * the rotation alone, with RTPT's sf=1 shift. Every kept vertex therefore
+	 * sits more than H/2 in front of the eye, so no kept face reaches the w=0
+	 * plane the GPU cannot clip against cleanly. */
+	{
+		const s64 r20 = pb->matrix_ViewProj.m[2][0];
+		const s64 r21 = pb->matrix_ViewProj.m[2][1];
+		const s64 r22 = pb->matrix_ViewProj.m[2][2];
+		const struct ShortVertex *sv = sky->ptrVertex;
+
+		for (i = 0; i < numVertex; i++, sv++)
+		{
+			const s64 sz = ((r20 * sv->Position.vx) + (r21 * sv->Position.vy) + (r22 * sv->Position.vz)) >> 12;
+
+			s_skyGpuVertOk[i] = (u8)((sz <= 0xFFFF) && ((2 * sz) > (s64)h));
+		}
+	}
+
+	vertBase = (const char *)sky->ptrVertex;
+	vertLimit = (u32)numVertex * (u32)sizeof(struct ShortVertex);
+	for (seg = 0; seg < NUM_SKYBOX_SEGMENTS; seg++)
+	{
+		const struct SkyboxFace *face = sky->ptrFaces[seg];
+		const int numFaces = (u16)sky->numFaces[seg];
+		int f;
+
+		if (face == NULL)
+		{
+			continue;
+		}
+		for (f = 0; f < numFaces; f++, face++)
+		{
+			const u32 a = face->A, b = face->B, c = face->C;
+
+			if ((a >= vertLimit) || (b >= vertLimit) || (c >= vertLimit))
+			{
+				continue;
+			}
+			if (!s_skyGpuVertOk[a / sizeof(struct ShortVertex)] || !s_skyGpuVertOk[b / sizeof(struct ShortVertex)] ||
+			    !s_skyGpuVertOk[c / sizeof(struct ShortVertex)])
+			{
+				continue;
+			}
+			NativeGpu_SkyGpuPutVertex(&slot->verts[count + 0], (const struct ShortVertex *)(const void *)(vertBase + a));
+			NativeGpu_SkyGpuPutVertex(&slot->verts[count + 1], (const struct ShortVertex *)(const void *)(vertBase + b));
+			NativeGpu_SkyGpuPutVertex(&slot->verts[count + 2], (const struct ShortVertex *)(const void *)(vertBase + c));
+			count += 3;
+		}
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		slot->rot[i][0] = pb->matrix_ViewProj.m[i][0];
+		slot->rot[i][1] = pb->matrix_ViewProj.m[i][1];
+		slot->rot[i][2] = pb->matrix_ViewProj.m[i][2];
+	}
+	slot->h = h;
+	slot->ofx = (pb->rect.w >> 1) + pb->rect.x;
+	slot->ofy = (pb->rect.h >> 1) + pb->rect.y;
+	slot->vertCount = count;
+	slot->submitted = 1;
+	return 1;
+}
+#else
+int NativeGpu_SkyGpuSubmit(struct Skybox *sky, struct PushBuffer *pb)
+{
+	(void)sky;
+	(void)pb;
+	return 0;
+}
+#endif
+
 /* s46: the glow marks through here -- it lands in BOTH spans, so every sky
  * consumer (far pin, sky-first routing) keeps seeing the union while the
  * stretch can target the glow alone. */
@@ -2091,6 +2249,10 @@ void NativeGpu_ClearSkyRange(void)
 	s_screenfadeRangeCount[s_skyRangeWriteIdx] = 0;
 #ifdef NATIVE_WALK_CENSUS
 	memset(s_wcMark[s_skyRangeWriteIdx], 0, sizeof(s_wcMark[0]));
+#endif
+#ifdef NATIVE_SKY_GPU
+	s_skyGpuSlot[s_skyRangeWriteIdx].submitted = 0;
+	s_skyGpuSlot[s_skyRangeWriteIdx].vertCount = 0;
 #endif
 }
 

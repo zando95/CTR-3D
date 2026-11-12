@@ -2981,12 +2981,90 @@ internal void N3DS_DrawBackdropPass(void)
  * s_skyVerts block above. Same emit triple as the UNTEX bin (BM_NONE, untextured,
  * white atlas); the local lastDoubling=-1 and N3DS_MergeEmit's depth-write memo
  * make it self-contained regardless of the walk's leftover state. */
+#ifdef NATIVE_SKY_GPU
+/*
+ * The sky dome NativeGpu_SkyGpuSubmit recorded for the frame this EndScene
+ * draws, as one model-program draw: the camera's rotation with no
+ * translation, composed exactly as native_model_emit.c composes an instance
+ * (mirror included), every vertex pinned behind all world content at the
+ * infinite-distance parallax. It writes no depth, so the horizon glow and the
+ * stars, far-pinned at the backdrop's depth and drawn after it, still layer
+ * over it.
+ */
+internal int N3DS_SkyDomeGpuPending(void)
+{
+	return s_skyGpuSlot[s_skyRangeReadIdx].submitted;
+}
+
+internal void N3DS_DrawSkyDomeGpu(void)
+{
+	NativeSkyGpuSlot *slot = &s_skyGpuSlot[s_skyRangeReadIdx];
+	float r[3][3], qx[4], qy[4], qw[4];
+	float h, ofxOverH, ofyOverH;
+	int baseVertex, row, col;
+
+	slot->submitted = 0;
+	if ((slot->vertCount < 3) || (slot->h <= 0))
+	{
+		return;
+	}
+
+	h = (float)slot->h;
+	for (row = 0; row < 3; row++)
+	{
+		for (col = 0; col < 3; col++)
+		{
+			r[row][col] = (float)slot->rot[row][col] * (1.0f / 4096.0f);
+		}
+	}
+	ofxOverH = (float)slot->ofx / h;
+	ofyOverH = (float)slot->ofy / h;
+	if (NativeMirror_WorldFrame())
+	{
+		/* mirror mode: x' = axisSum - x, the view-x row negated about the mirrored centre */
+		ofxOverH = (NativeMirror_AxisSum() - (float)slot->ofx) / h;
+		r[0][0] = -r[0][0];
+		r[0][1] = -r[0][1];
+		r[0][2] = -r[0][2];
+	}
+	for (col = 0; col < 3; col++)
+	{
+		qx[col] = r[0][col] + (ofxOverH * r[2][col]);
+		qy[col] = r[1][col] + (ofyOverH * r[2][col]);
+		qw[col] = r[2][col] / h;
+	}
+	qx[3] = 0.0f;
+	qy[3] = 0.0f;
+	qw[3] = 0.0f;
+
+	baseVertex = N3DS_C3DAppendVertices(slot->verts, slot->vertCount);
+	if (baseVertex < 0)
+	{
+		return;
+	}
+	N3DS_ModelDraw_Begin();
+	N3DS_ModelDraw_InstanceSkyDome(qx, qy, qw, h);
+	N3DS_ModelDraw_Run(baseVertex, slot->vertCount / 3, -1, 0, 0);
+	N3DS_ModelDraw_End();
+}
+#else
+internal int N3DS_SkyDomeGpuPending(void)
+{
+	return 0;
+}
+
+internal void N3DS_DrawSkyDomeGpu(void)
+{
+}
+#endif
+
 internal void N3DS_DrawSkyPass(void)
 {
 	int baseVertex;
 	int lastDoubling = -1;
+	const int domePending = N3DS_SkyDomeGpuPending();
 
-	if (s_skyVertUsed <= 0)
+	if ((s_skyVertUsed <= 0) && !domePending)
 	{
 		return;
 	}
@@ -2999,10 +3077,19 @@ internal void N3DS_DrawSkyPass(void)
 	 * Close the run first, so it is recorded under the state it actually
 	 * accumulated with. */
 	N3DS_MergeCloseBlendRun(N3DS_BLEND_CLOSE_STATE);
-	baseVertex = N3DS_TvboCheckedAppend(s_skyVerts, s_skyVertUsed);
-	if (baseVertex >= 0)
+	/* The dome first: the walk's sky-class packets (stars, or a dome the GPU
+	 * path declined) layer over it. */
+	if (domePending)
 	{
-		N3DS_MergeEmit(0, 0, N3DS_WHITE_ATLAS, baseVertex, s_skyVertUsed, &lastDoubling);
+		N3DS_DrawSkyDomeGpu();
+	}
+	if (s_skyVertUsed > 0)
+	{
+		baseVertex = N3DS_TvboCheckedAppend(s_skyVerts, s_skyVertUsed);
+		if (baseVertex >= 0)
+		{
+			N3DS_MergeEmit(0, 0, N3DS_WHITE_ATLAS, baseVertex, s_skyVertUsed, &lastDoubling);
+		}
 	}
 	s_skyVertUsed = 0;
 }

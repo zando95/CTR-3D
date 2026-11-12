@@ -15,6 +15,9 @@ extern void GTECapture_SetStoreSuppressed(int suppressed);
 // s43: register the skybox packets' address span for the far-depth pin. Same
 // local-extern idiom and same header-checked-later guarantee as above.
 extern void NativeGpu_MarkSkyRange(uintptr_t start, uintptr_t end);
+// Returns nonzero when the platform draws this skybox itself (from its level
+// mesh, on the GPU), in which case no packets may be emitted for it.
+extern int NativeGpu_SkyGpuSubmit(struct Skybox *sky, struct PushBuffer *pb);
 #endif
 
 struct DrawSkyContext
@@ -228,6 +231,11 @@ void DrawSky_Full(void *skybox, struct PushBuffer *pb, struct PrimMem *primMem)
 	/* s43: the emitted packets run contiguously from here; the span is closed
 	 * and registered after the last DrawSky_Piece below. */
 	uintptr_t skyPrimStart = (uintptr_t)prim;
+
+	if (NativeGpu_SkyGpuSubmit(sky, pb))
+	{
+		return;
+	}
 #endif
 
 	// NOTE(aalhendi): PSX-backfeed blocker: retail saves/restores ra and s0-s2 in scratchpad 0x00-0x0c.

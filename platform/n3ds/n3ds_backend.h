@@ -540,6 +540,9 @@ void N3DS_TrackGeom_PatchEnd(int loVert, int hiVert);
  * between one Begin/End pair. */
 void N3DS_ModelDraw_Begin(void);
 void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, float h);
+/* The sky dome: same composed rows, but every vertex is pinned behind all world
+ * content at the infinite-distance parallax, and its runs write no depth. */
+void N3DS_ModelDraw_InstanceSkyDome(const float *qx, const float *qy, const float *qw, float h);
 /* startVertex is an N3DS_C3DAppendVertices return value; triangleCount spans
  * 3*triangleCount vertices from it. atlasIndex is a decode-cache atlas (the
  * same pool the packet path binds); textured 0 draws vertex-colour only, which

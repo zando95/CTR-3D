@@ -82,7 +82,8 @@
 .fvec qx            ; f4 -- composed instance row: dp4(qx, v) = w*screenX
 .fvec qy            ; f5 -- composed instance row: dp4(qy, v) = w*screenY
 .fvec qw            ; f6 -- composed instance row: dp4(qw, v) = w = view.z/H
-.fvec hParam        ; f7 -- x = H (distanceToScreen_PREV); y/z/w unused
+.fvec hParam        ; f7 -- x = H (distanceToScreen_PREV); y = sky-dome select
+                    ; (0 for model instances, 1 for the sky dome); z/w unused
 ; STEREO: per-eye parallax vector, same semantics as the other two programs'
 ; `stereo` (x = k, y = k*convergence, z/w = clamp lo/hi; zeros in mono).
 ; Uploaded by N3DS_ModelDraw_Begin. f8 -- which is ctr_track's depthRange
@@ -127,6 +128,14 @@
 .alias  pdScale       depthConst.zzzz
 .alias  pdFar         depthConst.wwww
 
+; x = the sky dome's stored z. Behind every world vertex (world z >= pdFar) and
+;     in front of the backdrop fill's far pin (-32768), with margin inside the
+;     ortho's -32769 end so float24 rounding of w*z cannot clip it. The dome
+;     draws without depth writes, so content far-pinned at -32768 and drawn
+;     after it (horizon glow, stars) still layers over it.
+.constf skyConst(-32640.0, 0.0, 0.0, 0.0)
+.alias  skyFarZ skyConst.xxxx
+
 ; Outputs
 .out outpos position
 .out outtc0 texcoord0
@@ -162,11 +171,19 @@
 	mul r2.z, negOne, r2.y              ; -depth (no SUB opcode)
 	add r2.w, zOrdFromDepth, r2.z       ; zOrd
 
+	; Parallax depth: the clamped depth, or 65535 for the sky dome -- the
+	; infinite-distance parallax the far-pinned packet sky gets. sel = 0 adds
+	; exactly 0, so model instances are unchanged.
+	mul r6.x, negOne, r2.y              ; -depth
+	add r6.x, depthMax, r6.x            ; 65535 - depth
+	mul r6.x, hParam.yyyy, r6.x         ; sel*(65535 - depth)
+	add r6.y, r2.y, r6.x                ; parallax depth (both temps)
+
 	; ---- STEREO parallax (same form as ctr_track.v.pica's block) ---------
 	; p = k - kC/depth; a += w*p shifts post-divide screen X by p pixels.
-	; r2.y is the clamped [64, 65535] depth from just above, so the rcp is
+	; r6.y is in [64, 65535] (the clamped depth, or 65535), so the rcp is
 	; always finite. r5: r0-r4 are all live through the S assembly below.
-	rcp r5.x, r2.y                      ; 1/depth
+	rcp r5.x, r6.y                      ; 1/depth
 	mul r5.y, stereo.yyyy, r5.x         ; kC/depth
 	mul r5.y, negOne, r5.y              ; -kC/depth (no SUB opcode)
 	add r5.y, stereo.xxxx, r5.y         ; p = k - kC/depth
@@ -202,6 +219,14 @@
 	min r3.y, r3.y, r3.z                ; B/max(depth,64) per unit w
 	mul r3.x, pdFar, r1.z               ; w*pdFar
 	add r3.x, r3.x, r3.y                ; S.z = min(B/H, w*B/64) + w*pdFar
+
+	; Sky dome: S.z = w*skyFarZ, so the stored z is skyFarZ at every vertex.
+	; S.z + sel*(w*skyFarZ - S.z), so sel = 0 leaves S.z bit-identical.
+	mul r6.z, skyFarZ, r1.z             ; w*skyFarZ (const src1, temp src2)
+	mul r6.w, negOne, r3.x              ; -S.z
+	add r6.z, r6.z, r6.w                ; w*skyFarZ - S.z
+	mul r6.z, hParam.yyyy, r6.z         ; sel*(w*skyFarZ - S.z)
+	add r3.x, r3.x, r6.z                ; S.z, or w*skyFarZ for the sky dome
 
 	; S = (a, b, S.z, w). Assembled component-by-component: a single mov
 	; reads ONE source register, so gathering four components from three temps

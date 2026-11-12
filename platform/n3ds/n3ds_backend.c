@@ -886,6 +886,9 @@ static int s_modelBoundAtlas = -1;
  * s_trackDepthWriteState: -1 = not asserted in this bracket. */
 static int s_modelDepthWriteState = -1;
 static int s_modelDrawActive = 0;
+/* Set by N3DS_ModelDraw_InstanceSkyDome until the next instance or the bracket
+ * end: the sky dome's runs never write depth (see ctr_model.v.pica's skyConst). */
+static int s_modelSkyDome = 0;
 
 /*
  * Rung 3a step 2: the resident-mesh draw path's own program/attribute
@@ -1106,6 +1109,7 @@ typedef struct N3DS_StereoOp
 		struct
 		{
 			float qx[4], qy[4], qw[4], h;
+			u8 skyDome; /* MODEL_INSTANCE only */
 		} mtx; /* TRACK_BEGIN, MODEL_INSTANCE */
 		struct
 		{
@@ -3170,9 +3174,10 @@ void N3DS_ModelDraw_Begin(void)
 	s_modelBoundAtlas = -1;
 	s_modelDepthWriteState = -1;
 	s_modelDrawActive = 1;
+	s_modelSkyDome = 0;
 }
 
-void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, float h)
+static void N3DS_ModelDraw_InstanceImpl(const float *qx, const float *qy, const float *qw, float h, int skyDome)
 {
 	{
 		N3DS_StereoOp *op = N3DS_StereoRecord(N3DS_STEREO_OP_MODEL_INSTANCE);
@@ -3183,6 +3188,7 @@ void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, 
 			memcpy(op->u.mtx.qy, qy, sizeof(op->u.mtx.qy));
 			memcpy(op->u.mtx.qw, qw, sizeof(op->u.mtx.qw));
 			op->u.mtx.h = h;
+			op->u.mtx.skyDome = (u8)(skyDome != 0);
 		}
 	}
 
@@ -3191,16 +3197,26 @@ void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, 
 		return;
 	}
 
+	s_modelSkyDome = (skyDome != 0);
+
 	C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocQx, qx[0], qx[1], qx[2], qx[3]);
 	C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocQy, qy[0], qy[1], qy[2], qy[3]);
 	C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocQw, qw[0], qw[1], qw[2], qw[3]);
 
-	/* Only .x is read by the shader; the other three are written because
-	 * leaving uniform components unset means "whatever the last program that
-	 * used this register put there". */
-	/* .y/.z/.w unused (was the instance depth-bias lever, removed); written
-	 * every draw to avoid the stale-register issue noted above. */
-	C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocH, h, 0.0f, 0.0f, 0.0f);
+	/* x = H, y = sky-dome select; z/w are unused but written every draw,
+	 * because an unset uniform component holds whatever the last program that
+	 * used this register put there. */
+	C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocH, h, s_modelSkyDome ? 1.0f : 0.0f, 0.0f, 0.0f);
+}
+
+void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, float h)
+{
+	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 0);
+}
+
+void N3DS_ModelDraw_InstanceSkyDome(const float *qx, const float *qy, const float *qw, float h)
+{
+	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 1);
 }
 
 /*
@@ -3271,7 +3287,7 @@ void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int 
 	 * would otherwise pay a GPU state change per run without anyone noticing.
 	 */
 	{
-		const int wantDepthWrite = (blend == 0) ? 1 : 0;
+		const int wantDepthWrite = ((blend == 0) && !s_modelSkyDome) ? 1 : 0;
 
 		if (s_modelDepthWriteState != wantDepthWrite)
 		{
@@ -3329,6 +3345,7 @@ void N3DS_ModelDraw_End(void)
 	s_modelTexturedState = -1;
 	s_modelBoundAtlas = -1;
 	s_modelDepthWriteState = -1;
+	s_modelSkyDome = 0;
 }
 
 /*
@@ -3645,7 +3662,7 @@ void N3DS_StereoRenderRightEye(void)
 		}
 		case N3DS_STEREO_OP_MODEL_INSTANCE:
 		{
-			N3DS_ModelDraw_Instance(op->u.mtx.qx, op->u.mtx.qy, op->u.mtx.qw, op->u.mtx.h);
+			N3DS_ModelDraw_InstanceImpl(op->u.mtx.qx, op->u.mtx.qy, op->u.mtx.qw, op->u.mtx.h, op->u.mtx.skyDome);
 			break;
 		}
 		case N3DS_STEREO_OP_MODEL_RUN:
@@ -3825,6 +3842,9 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  2=both(diagnostic overlay). Bare token cycles 0->1->2->0;
 	 *                  'trackrender N' sets a specific state. The SELECT+START
 	 *                  master flips it with the rest of the renderer config.
+	 *   skygpu [N]  -- g_dbg_skyGpu: 1 (default) draws the sky dome on the
+	 *                  GPU from its level mesh; 0 is retail's CPU-projected
+	 *                  packets. Bare token toggles. Takes effect next frame.
 	 *   packetdepth -- toggle g_dbg_packetDepth (depth model): packets stamp
 	 *                  GTE sz3 and the track shader switches to the same
 	 *                  true-depth axis, both at once. Button: folded into the
@@ -4738,6 +4758,13 @@ unsigned int N3DS_ReadButtons(void)
 						g_tireReflectFix = !g_tireReflectFix;
 					}
 					N3DS_DebugLog(g_tireReflectFix ? "[CTR-3DS] tire reflection fix ON (wheels at corners)" : "[CTR-3DS] tire reflection fix OFF (retail centerline bug)");
+				}
+				else if (strncmp(word, "skygpu", 6) == 0)
+				{
+					extern int g_dbg_skyGpu;
+
+					g_dbg_skyGpu = (word[6] == ' ') ? (atoi(&word[7]) != 0) : !g_dbg_skyGpu;
+					N3DS_DebugLog(g_dbg_skyGpu ? "[CTR-3DS] sky dome: GPU" : "[CTR-3DS] sky dome: retail packets");
 				}
 				else if (strncmp(word, "packetdepth", 11) == 0)
 				{
