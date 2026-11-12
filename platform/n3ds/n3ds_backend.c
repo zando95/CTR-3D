@@ -3576,6 +3576,12 @@ void N3DS_BottomMapDraw_End(void)
  *     whichever program wrote it) and f5 (`stereoUi`). Both are exact sign
  *     rearrangements of the left eye's vector (N3DS_StereoEyeVec):
  *     f4 (x, y, z, w) -> (-x, -y, -w, -z), f5 (x, y, z, w) -> (-x, y, z, w).
+ * The copy is preceded by a framebuffer flush: the PICA caches colour and
+ * depth tiles, and citro3d flushes them only when it binds a new target after
+ * drawing. The span's own target write was emitted right after the previous
+ * frame's submit, with nothing drawn yet, so it carries no flush, and without
+ * one the switch to the right target drops the left eye's last cached pixels
+ * on hardware (emulators have no such cache).
  * The copy starts from the GPU state the left eye ended on, so the span must
  * not inherit state from before it: N3DS_StereoCopyOpenSpan flags every piece
  * of citro3d state the frame uses (target, viewport, effect block, program,
@@ -3592,6 +3598,8 @@ void N3DS_BottomMapDraw_End(void)
 /* Words left free after the copy for the bottom-screen pass and FrameEnd's
  * own commands; a full buffer drops commands silently. */
 #define N3DS_STEREO_COPY_SLACK_WORDS 16384u
+/* The colour/depth cache flush ahead of the copy: two single writes. */
+#define N3DS_STEREO_COPY_FLUSH_WORDS 4u
 
 static int s_stereoCopyLayoutOk = 0;
 static int s_stereoCopyOpen = 0;
@@ -3913,7 +3921,7 @@ static int N3DS_StereoCopyRightEye(void)
 		else
 		{
 			n = end - s_stereoCopyStart;
-			if ((u64)end + (u64)n + N3DS_STEREO_COPY_SLACK_WORDS > (u64)size)
+			if ((u64)end + N3DS_STEREO_COPY_FLUSH_WORDS + (u64)n + N3DS_STEREO_COPY_SLACK_WORDS > (u64)size)
 			{
 				outcome = 5;
 			}
@@ -3921,10 +3929,17 @@ static int N3DS_StereoCopyRightEye(void)
 	}
 	if (outcome == 0)
 	{
-		memcpy(buf + end, buf + s_stereoCopyStart, (size_t)n * sizeof(u32));
-		if (N3DS_StereoCopyRewrite(buf + end, n, &targetWords, &uniformVecs))
+		u32 *const dst = buf + end + N3DS_STEREO_COPY_FLUSH_WORDS;
+
+		memcpy(dst, buf + s_stereoCopyStart, (size_t)n * sizeof(u32));
+		if (N3DS_StereoCopyRewrite(dst, n, &targetWords, &uniformVecs))
 		{
-			GPUCMD_SetBufferOffset(end + n);
+			/* The two writes citro3d puts before a target switch after
+			 * drawing, ahead of the copy's own target write. */
+			GPUCMD_SetBufferOffset(end);
+			GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
+			GPUCMD_AddWrite(GPUREG_EARLYDEPTH_CLEAR, 1);
+			GPUCMD_SetBufferOffset(end + N3DS_STEREO_COPY_FLUSH_WORDS + n);
 		}
 		else
 		{
