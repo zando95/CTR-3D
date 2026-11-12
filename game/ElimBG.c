@@ -246,6 +246,7 @@ void ElimBG_HandleState(struct GameTracker *gGT)
 	u32 tpage;
 	u32 textureY;
 	int tileX;
+	int tileH;
 	RECT rect1;
 	RECT rect2;
 
@@ -314,12 +315,22 @@ void ElimBG_HandleState(struct GameTracker *gGT)
 
 				screenY = (s16)textureY;
 
+				tileH = ELIM_BG_TILE_H;
+#if defined(CTR_NATIVE)
+				// The capture covers rows 0..ELIM_BG_SCREEN_H-1; the last tile row stops at the display edge and its bottom V is the last
+				// captured row, because texel-centre sampling would otherwise read the uncaptured row below it
+				if ((int)textureY + ELIM_BG_TILE_H > ELIM_BG_SCREEN_H)
+				{
+					tileH = ELIM_BG_SCREEN_H - (int)textureY;
+				}
+#endif
+
 				// RGB
 				setRGB0(p, ELIM_BG_TILE_COLOR, ELIM_BG_TILE_COLOR, ELIM_BG_TILE_COLOR);
 
 				// four (x,y) positions
-				setXY4(p, screenX, screenY, screenX + ELIM_BG_TILE_W, screenY, screenX, screenY + ELIM_BG_TILE_H, screenX + ELIM_BG_TILE_W,
-				       screenY + ELIM_BG_TILE_H);
+				setXY4(p, screenX, screenY, screenX + ELIM_BG_TILE_W, screenY, screenX, screenY + tileH, screenX + ELIM_BG_TILE_W,
+				       screenY + tileH);
 
 				screenXForTpage = tileX;
 				if (tileX < 0)
@@ -375,8 +386,18 @@ void ElimBG_HandleState(struct GameTracker *gGT)
 
 				// v3 = v0 + 0x10
 				textureY += ELIM_BG_TILE_H;
-				p->v2 = (char)textureY;
-				p->v3 = (char)textureY;
+#if defined(CTR_NATIVE)
+				if (tileH < ELIM_BG_TILE_H)
+				{
+					p->v2 = (char)(textureY - ELIM_BG_TILE_H + tileH - 1);
+					p->v3 = p->v2;
+				}
+				else
+#endif
+				{
+					p->v2 = (char)textureY;
+					p->v3 = (char)textureY;
+				}
 
 				// pointer to OT mem, and pointer to primitive
 				AddPrim(&gGT->pushBuffer_UI.ptrOT[4], p);
