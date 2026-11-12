@@ -259,6 +259,11 @@ global_variable int s_mergeBlendSegCount = 0;
 #define N3DS_SKY_VERT_CAP 2048
 global_variable N3DS_Vertex s_skyVerts[N3DS_SKY_VERT_CAP];
 global_variable int s_skyVertUsed = 0;
+/* Where the GPU dome goes in s_skyVerts: the first triangle that is not
+ * horizon glow, -1 while there is none. Retail links the glow into the sky's
+ * OT slot after the sky, so the walk meets it first and the sky paints over
+ * it; everything else in the sky class (stars) comes after the sky. */
+global_variable int s_skyVertDomeAt = -1;
 
 /* s46 BACKDROP accumulator -- the layer UNDER the sky accumulator. Retail
  * clears the frame with GPU FILL packets (CAM_ClearScreen: flat clearColor
@@ -3061,6 +3066,7 @@ internal void N3DS_DrawSkyDomeGpu(void)
 internal void N3DS_DrawSkyPass(void)
 {
 	int baseVertex;
+	int split;
 	int lastDoubling = -1;
 	const int domePending = N3DS_SkyDomeGpuPending();
 
@@ -3077,21 +3083,25 @@ internal void N3DS_DrawSkyPass(void)
 	 * Close the run first, so it is recorded under the state it actually
 	 * accumulated with. */
 	N3DS_MergeCloseBlendRun(N3DS_BLEND_CLOSE_STATE);
-	/* The dome first: the walk's sky-class packets (stars, or a dome the GPU
-	 * path declined) layer over it. */
+	/* The dome takes the place retail's sky packets hold in walk order: over
+	 * the horizon glow, under the stars (see s_skyVertDomeAt). */
+	split = ((s_skyVertDomeAt >= 0) && (s_skyVertDomeAt < s_skyVertUsed)) ? s_skyVertDomeAt : s_skyVertUsed;
+	baseVertex = (s_skyVertUsed > 0) ? N3DS_TvboCheckedAppend(s_skyVerts, s_skyVertUsed) : -1;
+	if ((baseVertex >= 0) && (split > 0))
+	{
+		N3DS_MergeEmit(0, 0, N3DS_WHITE_ATLAS, baseVertex, split, &lastDoubling);
+	}
 	if (domePending)
 	{
 		N3DS_DrawSkyDomeGpu();
+		lastDoubling = -1;
 	}
-	if (s_skyVertUsed > 0)
+	if ((baseVertex >= 0) && (s_skyVertUsed > split))
 	{
-		baseVertex = N3DS_TvboCheckedAppend(s_skyVerts, s_skyVertUsed);
-		if (baseVertex >= 0)
-		{
-			N3DS_MergeEmit(0, 0, N3DS_WHITE_ATLAS, baseVertex, s_skyVertUsed, &lastDoubling);
-		}
+		N3DS_MergeEmit(0, 0, N3DS_WHITE_ATLAS, baseVertex + split, s_skyVertUsed - split, &lastDoubling);
 	}
 	s_skyVertUsed = 0;
+	s_skyVertDomeAt = -1;
 }
 
 /*
@@ -4462,6 +4472,7 @@ void NativeRenderer_BeginScene(void)
 		}
 	}
 	s_skyVertUsed = 0; /* sky accumulator shares the bins' frame lifecycle */
+	s_skyVertDomeAt = -1;
 	s_backdropVertUsed = 0; /* s46: backdrop accumulator, same lifecycle */
 	s_mergeOpaqueSegCount = 0;
 	s_mergeBlendSegCount = 0;

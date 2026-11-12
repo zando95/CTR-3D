@@ -365,6 +365,10 @@ internal int DirectEmit_WalkNode(const u32 *words, u32 len, int emit)
 						/* Advance whichever buffer this tri went to. */
 						if (s_skyNodeActive)
 						{
+							if (!s_glowNodeActive && (s_skyVertDomeAt < 0))
+							{
+								s_skyVertDomeAt = s_skyVertUsed;
+							}
 							s_skyVertUsed += 3;
 						}
 						else
