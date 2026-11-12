@@ -3775,6 +3775,33 @@ static int N3DS_StereoCopyRewrite(u32 *w, u32 n, u32 *outTargetWords, u32 *outUn
 		{
 			return 0;
 		}
+		{
+			const u32 last = consec ? (reg + extra) : reg;
+			const int touchesTarget = (reg <= GPUREG_COLORBUFFER_LOC) && (last >= GPUREG_DEPTHBUFFER_LOC);
+			const int touchesUniform = (reg <= GPUREG_VSH_FLOATUNIFORM_DATA + 7u) && (last >= GPUREG_VSH_FLOATUNIFORM_CONFIG);
+
+			if (!touchesTarget && !touchesUniform)
+			{
+				i += 2u + extra + (extra & 1u);
+				continue;
+			}
+			/* A plain data run (one register, every word data) that ends
+			 * before f4 or starts after f5 only advances the position. */
+			if (!consec && uniValid && (mask == 0xFu) && (reg >= GPUREG_VSH_FLOATUNIFORM_DATA) && (reg <= GPUREG_VSH_FLOATUNIFORM_DATA + 7u))
+			{
+				const u32 per = uniF32 ? 4u : 3u;
+				const u32 total = uniWord + extra + 1u;
+				const u32 lastReg = uniReg + (total - 1u) / per;
+
+				if ((lastReg < N3DS_STEREO_COPY_REG_STEREO) || (uniReg > N3DS_STEREO_COPY_REG_STEREOUI))
+				{
+					uniReg += total / per;
+					uniWord = total % per;
+					i += 2u + extra + (extra & 1u);
+					continue;
+				}
+			}
+		}
 		for (p = 0; p <= extra; p++)
 		{
 			u32 *word = (p == 0) ? &w[i] : &w[i + 1u + p];
@@ -3875,9 +3902,13 @@ static int N3DS_StereoCopyRightEye(void)
 	if (outcome == 0)
 	{
 		GPUCMD_GetBuffer(&buf, &size, &end);
-		if ((buf != s_stereoCopyBuf) || (end <= s_stereoCopyStart))
+		if ((buf != s_stereoCopyBuf) || (end < s_stereoCopyStart))
 		{
 			outcome = 4;
+		}
+		else if (end == s_stereoCopyStart)
+		{
+			outcome = 7;
 		}
 		else
 		{
@@ -3904,7 +3935,9 @@ static int N3DS_StereoCopyRightEye(void)
 	}
 	s_stereoCopyOpen = 0;
 
-	if (outcome != s_stereoCopyLastOutcome)
+	/* Logged on change, except the two that say nothing about the copy: the
+	 * dumpreq switch (it logs itself) and a frame that drew nothing. */
+	if ((outcome != s_stereoCopyLastOutcome) && (outcome != 2) && (outcome != 7))
 	{
 		static const char *const why[7] = {"copy",
 		                                   "replay (shader layout check failed)",
