@@ -1378,6 +1378,18 @@ void GTECapture_MarkOTNode(const void *node)
 	}
 }
 
+void GTECapture_MarkOTSlotRun(const void *start, const void *end)
+{
+	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
+
+	// Only the sticky band entry outlives a node; the per-node flags are
+	// recomputed by the MarkOTNode call of the next node the walk visits.
+	if ((start < buf->bandEnd) && (end > buf->bandStart))
+	{
+		s_gteCaptureSuppress = 1;
+	}
+}
+
 int GTECapture_LookupSuppressed(void)
 {
 	// Deliberately the RAW sticky flag. The flag-range exemption used to be

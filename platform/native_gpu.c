@@ -215,6 +215,15 @@ typedef struct
 	u32 walkOtCount;
 
 	/*
+	 * Link token of walkOtBase, valid while walkOtSkip is set: the walk's OT
+	 * lies in one link range, so slot i's ClearOTagR word is
+	 * walkOtToken + (i - 1) * 4 with length 0. See
+	 * NativeGpu_SkipUntouchedOTSlots.
+	 */
+	u32 walkOtToken;
+	int walkOtSkip;
+
+	/*
 	 * Whether the bucket->ordinal recorder is active for THIS walk, latched
 	 * once at the top of the walk (matching the clear below) rather than
 	 * re-evaluated per node: the walk can run on the worker thread while the
@@ -4795,6 +4804,97 @@ internal void OTProf_DryWalk(u8 *basePacket)
 }
 #endif /* CTR_NATIVE_OTWALK_PROFILE */
 
+/*
+ * Untouched OT slots. A slot of the walk's OT that no AddPrim touched still
+ * holds exactly the word ClearOTagR wrote: length 0, link to the slot below.
+ * It carries no content, and its only walk effects are the bucket->ordinal
+ * record, the slot counters and the UI band entry, so a run of them is
+ * consumed here in one loop instead of a full node visit each, with those
+ * effects applied for the whole run. A slot whose word differs in any bit
+ * (content linked in, a hand-edited link, a forward-linked ClearOTag OT) is
+ * returned for the full node path, as is slot 0, the terminator. Returns the
+ * first node not consumed.
+ */
+#ifdef CTR_INTERNAL
+/* [OTSKIP] totals since the last line: walks, slots consumed by the skip,
+ * nodes the full path visited. */
+global_variable u32 s_otSkipWalks;
+global_variable u32 s_otSkipSlots;
+global_variable u32 s_otSkipVisited;
+#endif
+
+internal u8 *NativeGpu_SkipUntouchedOTSlots(u8 *node)
+{
+	const uintptr_t base = s_gpu.walkOtBase;
+	const uintptr_t addr = (uintptr_t)node;
+	const u8 *slots = (const u8 *)base;
+	u32 first;
+	u32 idx;
+	u32 expect;
+	u32 run;
+
+	if ((addr < base) || (addr >= base + (uintptr_t)s_gpu.walkOtCount * 4u) || ((addr & 3u) != 0))
+	{
+		return node;
+	}
+
+	first = (u32)((addr - base) >> 2);
+	idx = first;
+	while (idx >= 1u)
+	{
+		expect = s_gpu.walkOtToken + (idx - 1u) * 4u;
+		if (CTR_GPU_ReadTagWord(slots + (uintptr_t)idx * 4u) != expect)
+		{
+			break;
+		}
+		idx--;
+	}
+
+	if (idx == first)
+	{
+		return node;
+	}
+
+	/* Slots first down to idx + 1 were consumed, in walk order. */
+	run = first - idx;
+	s_gpu.otSlotsCrossed += run;
+#ifdef CTR_INTERNAL
+	s_otSkipSlots += run;
+#endif
+
+	if (s_gpu.otRecorderActive)
+	{
+		const u32 lo = idx + 1u;
+		const u32 hi = (first < OTZ_TABLE_SLOTS) ? first : (OTZ_TABLE_SLOTS - 1u);
+
+		if (lo <= hi)
+		{
+			const u16 ordinal = (u16)(s_gpu.emitOrdinal < 0xFFFFu ? s_gpu.emitOrdinal : 0xFFFFu);
+
+			for (u32 slot = lo; slot <= hi; slot++)
+			{
+				s_gpu.otBucketOrdinal[slot] = ordinal;
+			}
+			s_gpu.otSlotsDetected += hi - lo + 1u;
+			s_gpu.otCurrentSlotIdx = lo;
+			if (hi > s_gpu.otMaxSlotIdx)
+			{
+				s_gpu.otMaxSlotIdx = hi;
+			}
+		}
+	}
+
+#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+	GTECapture_MarkOTSlotRun(slots + (uintptr_t)(idx + 1u) * 4u, slots + (uintptr_t)(first + 1u) * 4u);
+#endif
+
+#ifdef CTR_NATIVE_OTWALK_PROFILE
+	s_otprof.frameNodes += run;
+#endif
+
+	return (u8 *)(slots + (uintptr_t)idx * 4u);
+}
+
 void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 {
 	if (!p)
@@ -4898,6 +4998,18 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			}
 		}
 
+		s_gpu.walkOtSkip = 0;
+		if ((s_gpu.walkOtBase != 0) && ((s_gpu.walkOtBase & 3u) == 0) && (s_gpu.walkOtCount >= 2))
+		{
+			u32 token;
+
+			if (NativeGpuLinks_TokenForHostSpan((const void *)s_gpu.walkOtBase, (size_t)s_gpu.walkOtCount * 4u, &token))
+			{
+				s_gpu.walkOtToken = token;
+				s_gpu.walkOtSkip = 1;
+			}
+		}
+
 		/* Recording (not just the standalone 'otz' instrument) also runs when
 		 * the track renderer is active -- the depth compose (design 4.3)
 		 * consumes this same table. Latch the condition ONCE here, at the top
@@ -4937,6 +5049,11 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 
 		while (true)
 		{
+			if (s_gpu.walkOtSkip)
+			{
+				basePacket = NativeGpu_SkipUntouchedOTSlots(basePacket);
+			}
+
 			otWalkIterations++;
 			if (otWalkIterations > 65536)
 			{
@@ -5114,6 +5231,19 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 
 			basePacket = nextPacket;
 		}
+
+#ifdef CTR_INTERNAL
+		s_otSkipWalks++;
+		s_otSkipVisited += otWalkIterations;
+		if (s_otSkipWalks >= 1024u)
+		{
+			Platform_LogInstrument("[OTSKIP] walks=%u skipped/walk=%u visited/walk=%u\n", s_otSkipWalks, s_otSkipSlots / s_otSkipWalks,
+			                       s_otSkipVisited / s_otSkipWalks);
+			s_otSkipWalks = 0;
+			s_otSkipSlots = 0;
+			s_otSkipVisited = 0;
+		}
+#endif
 	}
 
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_DRAW_OTAG_PARSE);

@@ -176,6 +176,20 @@ uint32_t NativeGpuLinks_FromHostPointer(const void *hostPtr)
 	abort();
 }
 
+int NativeGpuLinks_TokenForHostSpan(const void *hostPtr, size_t size, uint32_t *tokenOut)
+{
+	uintptr_t host = (uintptr_t)hostPtr;
+	const struct NativeGpuLinkRange *range = NativeGpuLinks_FindHostRange(host);
+
+	if ((range == NULL) || (size > range->hostEnd - host))
+	{
+		return 0;
+	}
+
+	*tokenOut = range->tokenStart + (uint32_t)(host - range->hostStart);
+	return 1;
+}
+
 void *NativeGpuLinks_ToHostPointer(uint32_t token)
 {
 	const struct NativeGpuLinkRange *range;

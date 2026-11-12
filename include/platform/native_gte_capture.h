@@ -220,6 +220,9 @@ void GTECapture_PublishForWalk(void);
 void GTECapture_SetUIBand(const void *start, const void *end);
 void GTECapture_BeginOTWalk(void);
 void GTECapture_MarkOTNode(const void *node);
+// A run of untouched OT slots [start, end) the walk stepped over without a
+// MarkOTNode per slot. Enters the band if the run overlaps it.
+void GTECapture_MarkOTSlotRun(const void *start, const void *end);
 int GTECapture_LookupSuppressed(void);
 
 // DEPTHLESS-GEOMETRY suppression. Bracket any producer whose GTE

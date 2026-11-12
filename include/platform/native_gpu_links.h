@@ -14,6 +14,10 @@ void NativeGpuLinks_Reset(void);
 // reads. No-op when nothing moved; fences the render worker when it did.
 void NativeGpuLinks_Commit(void);
 uint32_t NativeGpuLinks_FromHostPointer(const void *hostPtr);
+// Token for hostPtr, as FromHostPointer gives it, when the range that pointer
+// resolves through also covers the next size bytes: tokens are then linear
+// across the span (token + offset). Returns 0 and writes nothing otherwise.
+int NativeGpuLinks_TokenForHostSpan(const void *hostPtr, size_t size, uint32_t *tokenOut);
 void *NativeGpuLinks_ToHostPointer(uint32_t token);
 int NativeGpuLinks_IsTerminator(uint32_t token);
 int NativeGpuLinks_IsRegisteredHostPointer(const void *hostPtr);
