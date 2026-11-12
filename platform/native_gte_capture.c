@@ -1383,8 +1383,21 @@ void GTECapture_MarkOTSlotRun(const void *start, const void *end)
 	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
 
 	// Only the sticky band entry outlives a node; the per-node flags are
-	// recomputed by the MarkOTNode call of the next node the walk visits.
+	// recomputed by the next MarkOTNode call, which every node that emits
+	// anything gets.
 	if ((start < buf->bandEnd) && (end > buf->bandStart))
+	{
+		s_gteCaptureSuppress = 1;
+	}
+}
+
+void GTECapture_MarkOTEmptyNode(const void *node)
+{
+	const GTECaptureBuffer *buf = &s_gteCaptureBuf[s_gteCaptureReadIdx];
+
+	// MarkOTNode's band test, without the per-node flags: a zero-length node
+	// emits nothing, and the next MarkOTNode call recomputes them.
+	if ((node >= buf->bandStart) && (node < buf->bandEnd))
 	{
 		s_gteCaptureSuppress = 1;
 	}

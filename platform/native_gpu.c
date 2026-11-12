@@ -5096,10 +5096,12 @@ internal void WalkCensus_EndWalk(void)
 
 #ifdef CTR_INTERNAL
 /* [OTSKIP] totals since the last line: walks, slots consumed by the skip,
- * nodes the full path visited. */
+ * nodes the walk loop visited, and how many of those were zero-length nodes
+ * passed without the full node path. */
 global_variable u32 s_otSkipWalks;
 global_variable u32 s_otSkipSlots;
 global_variable u32 s_otSkipVisited;
+global_variable u32 s_otSkipEmpty;
 #endif
 
 internal u8 *NativeGpu_SkipUntouchedOTSlots(u8 *node)
@@ -5172,6 +5174,55 @@ internal u8 *NativeGpu_SkipUntouchedOTSlots(u8 *node)
 #endif
 
 	return (u8 *)(slots + (uintptr_t)idx * 4u);
+}
+
+/*
+ * The walk effects of a zero-length node: an OT slot (one with content linked
+ * in, or the terminator) or a len-0 filler packet. v1 conflated the two;
+ * primMem sits contiguous with the OT arena, so only the game's own ClearOTag
+ * bounds discriminate (measured, [OTZ2]). slotIdx is the plain array index,
+ * the retail otIndex GetProjectedOtIndex computes from depth.
+ */
+internal void NativeGpu_RecordEmptyNode(const u8 *node)
+{
+	s_gpu.otSlotsCrossed++;
+
+	/* Read the SAME latched value the walk's clear used -- never re-evaluate
+	 * g_dbg_otzWiden / NATIVE_GPU_TRACK_RENDER_ACTIVE live here, see
+	 * otRecorderActive's field comment for why. */
+	if (s_gpu.otRecorderActive)
+	{
+		uintptr_t addr = (uintptr_t)node;
+
+		if ((s_gpu.walkOtBase != 0) && (addr >= s_gpu.walkOtBase) && (addr < s_gpu.walkOtBase + (uintptr_t)s_gpu.walkOtCount * 4u))
+		{
+			u32 slotIdx = (u32)((addr - s_gpu.walkOtBase) >> 2);
+
+			if (slotIdx < OTZ_TABLE_SLOTS)
+			{
+				s_gpu.otBucketOrdinal[slotIdx] = (u16)(s_gpu.emitOrdinal < 0xFFFFu ? s_gpu.emitOrdinal : 0xFFFFu);
+				s_gpu.otSlotsDetected++;
+
+				/* Depth-compose fix: remember which bucket the walk is
+				 * passing through right now, so a later content advance
+				 * (NativeGpu_RecordContentAdvance) knows which bucket to
+				 * attribute itself to. Slots are visited in descending
+				 * order, so whichever bucket was crossed most recently is
+				 * simply the current one -- no comparison needed here, only
+				 * at the point that reads it. */
+				s_gpu.otCurrentSlotIdx = slotIdx;
+
+				if (slotIdx > s_gpu.otMaxSlotIdx)
+				{
+					s_gpu.otMaxSlotIdx = slotIdx;
+				}
+			}
+		}
+		else
+		{
+			s_gpu.otSpuriousLen0++;
+		}
+	}
 }
 
 void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
@@ -5364,6 +5415,35 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			OTProf_RecordNodeShape(basePacket, (u32)tagLength);
 #endif
 
+			/* A zero-length node with a valid onward link emits nothing, so of
+			 * the full node path below it needs only the slot record, the UI
+			 * band entry and the link. The per-node packet flags and the split's
+			 * vertex count are skipped: every node that emits recomputes the
+			 * flags before it draws and stores the count after, and the walk
+			 * ends on the full path (terminator or bad link), which does both.
+			 * Cycle protection is unchanged: these nodes still count as
+			 * iterations. */
+			if ((tagLength == 0) && !isendprim(basePacket))
+			{
+				u8 *nextPacket = nextPrim(basePacket);
+
+				if (NativeGpu_IsValidOTLink((uintptr_t)nextPacket))
+				{
+#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+					GTECapture_MarkOTEmptyNode(basePacket);
+#endif
+					NativeGpu_RecordEmptyNode(basePacket);
+#ifdef CTR_INTERNAL
+					s_otSkipEmpty++;
+#endif
+#ifdef NATIVE_WALK_CENSUS
+					WalkCensus_RecordNode(basePacket, 0, 0, SDL_GetPerformanceCounter() - wcStart);
+#endif
+					basePacket = nextPacket;
+					continue;
+				}
+			}
+
 #if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
 			GTECapture_MarkOTNode(basePacket); /* gate widened with BeginOTWalk above */
 			/* Sky-class tag (backdrop union or star slice), and the menu-backdrop
@@ -5446,52 +5526,9 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			}
 			else
 			{
-				/* Zero-length node: either an OT slot or a len-0 filler
-				 * packet (v1 conflated them; primMem sits contiguous with
-				 * the OT arena, so only the game's own ClearOTag bounds
-				 * discriminate -- measured, [OTZ2]). slotIdx = plain
-				 * array index = the retail otIndex GetProjectedOtIndex
-				 * computes from depth. */
-				s_gpu.otSlotsCrossed++;
-
-				/* Read the SAME latched value the clear above used --
-				 * never re-evaluate g_dbg_otzWiden /
-				 * NATIVE_GPU_TRACK_RENDER_ACTIVE live here, see
-				 * otRecorderActive's field comment for why. */
-				if (s_gpu.otRecorderActive)
-				{
-					uintptr_t addr = (uintptr_t)basePacket;
-
-					if ((s_gpu.walkOtBase != 0) && (addr >= s_gpu.walkOtBase) && (addr < s_gpu.walkOtBase + (uintptr_t)s_gpu.walkOtCount * 4u))
-					{
-						u32 slotIdx = (u32)((addr - s_gpu.walkOtBase) >> 2);
-
-						if (slotIdx < OTZ_TABLE_SLOTS)
-						{
-							s_gpu.otBucketOrdinal[slotIdx] = (u16)(s_gpu.emitOrdinal < 0xFFFFu ? s_gpu.emitOrdinal : 0xFFFFu);
-							s_gpu.otSlotsDetected++;
-
-							/* Depth-compose fix: remember which bucket the
-							 * walk is passing through right now, so a later
-							 * content advance (NativeGpu_RecordContentAdvance)
-							 * knows which bucket to attribute itself to.
-							 * Slots are visited in descending order, so
-							 * whichever bucket was crossed most recently is
-							 * simply the current one -- no comparison needed
-							 * here, only at the point that reads it. */
-							s_gpu.otCurrentSlotIdx = slotIdx;
-
-							if (slotIdx > s_gpu.otMaxSlotIdx)
-							{
-								s_gpu.otMaxSlotIdx = slotIdx;
-							}
-						}
-					}
-					else
-					{
-						s_gpu.otSpuriousLen0++;
-					}
-				}
+				/* Zero-length node on the full path: the terminator, or one whose
+				 * link the check below rejects. */
+				NativeGpu_RecordEmptyNode(basePacket);
 			}
 
 			GPUDrawSplit *lastSplit = &s_gpu.splits[s_gpu.splitIndex];
@@ -5531,11 +5568,12 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 		s_otSkipVisited += otWalkIterations;
 		if (s_otSkipWalks >= 1024u)
 		{
-			Platform_LogInstrument("[OTSKIP] walks=%u skipped/walk=%u visited/walk=%u\n", s_otSkipWalks, s_otSkipSlots / s_otSkipWalks,
-			                       s_otSkipVisited / s_otSkipWalks);
+			Platform_LogInstrument("[OTSKIP] walks=%u skipped/walk=%u visited/walk=%u empty/walk=%u\n", s_otSkipWalks, s_otSkipSlots / s_otSkipWalks,
+			                       s_otSkipVisited / s_otSkipWalks, s_otSkipEmpty / s_otSkipWalks);
 			s_otSkipWalks = 0;
 			s_otSkipSlots = 0;
 			s_otSkipVisited = 0;
+			s_otSkipEmpty = 0;
 		}
 #endif
 	}

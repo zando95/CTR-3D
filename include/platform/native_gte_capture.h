@@ -263,6 +263,9 @@ void GTECapture_MarkOTNode(const void *node);
 // A run of untouched OT slots [start, end) the walk stepped over without a
 // MarkOTNode per slot. Enters the band if the run overlaps it.
 void GTECapture_MarkOTSlotRun(const void *start, const void *end);
+// A zero-length node the walk passed without a MarkOTNode. Enters the band if
+// the node lies in it.
+void GTECapture_MarkOTEmptyNode(const void *node);
 int GTECapture_LookupSuppressed(void);
 
 // DEPTHLESS-GEOMETRY suppression. Bracket any producer whose GTE
