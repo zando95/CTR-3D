@@ -38,10 +38,12 @@
 ; N3DS_StereoEyeVec): x = k (full shift at infinite depth, PSX px, signed
 ; per eye), y = k*convergence, z/w = clamp lo/hi for p. All zeros when the
 ; slider is down, the right target failed, or packet depth stamping is off.
-; f4 -- and BOTH sibling programs park other uniforms on f4 (ctr_model's qx,
-; ctr_track's projection row 1), so this must be re-uploaded on every return
-; to packet state: N3DS_BindPacketDrawState does, same discipline as the
-; projection rows above it (the s29 register-collision lesson).
+; f4, and stereoUi f5, in all three programs: the right eye's command-list
+; copy rewrites every float-uniform write to f4/f5 as the right eye's
+; parallax, so the three programs keep these two here and no other uniform
+; of any program may live on them. N3DS_BindPacketDrawState still re-uploads
+; both on every return to packet state, since the track and model programs
+; write their own world vector to f4.
 .fvec stereo
 ; s44 UI POP-OUT. x = this eye's parallax for UI-band vertices, in PSX px,
 ; already signed per eye and already scaled by the slider (N3DS_StereoEyeVec).
@@ -51,13 +53,11 @@
 ; Owner's target: UI should sit "just barely popping out of the screen", not at
 ; it -- flat-zero was never the goal, it was what the mask happened to give.
 ; Applying it here (rather than shifting X on the CPU) is forced: the right eye
-; is a journal REPLAY of the same vertex buffer, so anything per-eye has to be a
-; uniform the shader reads.
+; draws the same vertex buffer, so anything per-eye has to be a uniform the
+; shader reads.
 ;
-; Lands on f5, which is qy in ctr_model.v.pica -- the s29 shared-register class.
-; Safe because both sides re-upload on every bind: the model path writes qx/qy/qw
-; per instance, and N3DS_BindPacketDrawState re-uploads this beside `stereo`.
-; If you add another uniform here, verify that property again before trusting it.
+; f5: declared, unused, in the track and model programs to hold the register
+; (see `stereo` above).
 .fvec stereoUi
 
 ; Constants

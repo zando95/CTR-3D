@@ -79,17 +79,18 @@
 ; The fix was to re-upload the packet projection on every bind. This program
 ; avoids needing that fix by matching ctr.v.pica's layout instead.
 .fvec projection[4] ; f0-f3 -- SAME registers ctr.v.pica uses. Keep it first.
-.fvec qx            ; f4 -- composed instance row: dp4(qx, v) = w*screenX
-.fvec qy            ; f5 -- composed instance row: dp4(qy, v) = w*screenY
-.fvec qw            ; f6 -- composed instance row: dp4(qw, v) = w = view.z/H
-.fvec hParam        ; f7 -- x = H (distanceToScreen_PREV); y = sky-dome select
-                    ; (0 for model instances, 1 for the sky dome); z/w unused
 ; STEREO: per-eye parallax vector, same semantics as the other two programs'
 ; `stereo` (x = k, y = k*convergence, z/w = clamp lo/hi; zeros in mono).
-; Uploaded by N3DS_ModelDraw_Begin. f8 -- which is ctr_track's depthRange
-; register, so a track bracket clobbers it; ModelDraw_Begin always runs after
-; the track bracket has ended and re-uploads, same discipline as projection.
-.fvec stereo        ; f8
+; Uploaded by N3DS_ModelDraw_Begin. f4, and stereoUi f5, in all three
+; programs: the right eye's command-list copy rewrites every write to f4/f5
+; as the right eye's parallax, so no other uniform may live on them.
+.fvec stereo        ; f4
+.fvec stereoUi      ; f5 -- unused here; holds the register (see above)
+.fvec qx            ; f6 -- composed instance row: dp4(qx, v) = w*screenX
+.fvec qy            ; f7 -- composed instance row: dp4(qy, v) = w*screenY
+.fvec qw            ; f8 -- composed instance row: dp4(qw, v) = w = view.z/H
+.fvec hParam        ; f9 -- x = H (distanceToScreen_PREV); y = sky-dome select
+                    ; (0 for model instances, 1 for the sky dome); z/w unused
 
 ; Constants
 ; w = B/64 = 32735 -- S.z of a vertex pinned at the world near-band floor,

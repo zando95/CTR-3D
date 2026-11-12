@@ -94,10 +94,21 @@
 ; register file itself.
 
 ; Uniforms
+.fvec projection[4] ; f0-f3 -- SAME ortho matrix and registers as ctr.v.pica. Keep it first.
+; STEREO: per-eye parallax vector, same semantics as ctr.v.pica's `stereo`
+; (x = k, y = k*convergence, z/w = clamp lo/hi; all zeros in mono). Uploaded
+; by N3DS_TrackDraw_Begin from the backend's current-eye state. Unlike the
+; packet path this needs no UI-band mask -- everything here is world content
+; on the real view.z axis -- and no CPU gating on g_dbg_packetDepth, because
+; this depth is computed from the camera, not read from a stamp.
+; f4, and stereoUi f5, in all three programs: the right eye's command-list
+; copy rewrites every write to f4/f5 as the right eye's parallax, so no other
+; uniform may live on them.
+.fvec stereo       ; f4
+.fvec stereoUi     ; f5 -- unused here; holds the register (see above)
 .fvec qx           ; composed camera row: dp4(qx, v1) = w*screenX
 .fvec qy           ; composed camera row: dp4(qy, v1) = w*screenY
 .fvec qw           ; composed camera row: dp4(qw, v1) = w = view.z/H
-.fvec projection[4] ; SAME ortho matrix the packet path's ctr.v.pica uses
 .fvec hParam        ; x = H (distanceToScreen_PREV), y = selTrueDepth,
                      ; z = selOrdinal (= 1 - y), w = drawOrder tie-break weight
                      ; (s41, dumpreq `dorder N`; seeded from bucketToDepth's
@@ -131,13 +142,6 @@
 ; use that physical register left there, which is exactly the class of bug the
 ; s29 projection-register collision was.
 .fvec uvOffset
-; STEREO: per-eye parallax vector, same semantics as ctr.v.pica's `stereo`
-; (x = k, y = k*convergence, z/w = clamp lo/hi; all zeros in mono). Uploaded
-; by N3DS_TrackDraw_Begin from the backend's current-eye state. Unlike the
-; packet path this needs no UI-band mask -- everything here is world content
-; on the real view.z axis -- and no CPU gating on g_dbg_packetDepth, because
-; this depth is computed from the camera, not read from a stamp.
-.fvec stereo
 
 ; Constants
 ; w = -B/65535 = -31.968: the far end of the perspective-correct depth
