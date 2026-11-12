@@ -5808,52 +5808,10 @@ void NativeRenderer_Clear(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	s_backdropVertUsed += 6;
 }
 
-/*
- * Fill a mirror rect with one colour. The backdrop FILL covers the whole
- * display every frame, so this runs per frame: the first row is written two
- * texels per store, and every later row is a block copy of it.
- */
-internal void N3DS_FillVRAMRect(int x, int y, int w, int h, u16 colour)
-{
-	u16 *first = vram + x + (y * VRAM_WIDTH);
-	u16 *p = first;
-	int n = w;
-	int row;
-
-	if ((((uintptr_t)p) & 2u) != 0)
-	{
-		*p++ = colour;
-		n--;
-	}
-
-	{
-		const u32 pair = (u32)colour | ((u32)colour << 16);
-		u32 *q = (u32 *)p;
-		const int pairs = n >> 1;
-		int i;
-
-		for (i = 0; i < pairs; i++)
-		{
-			q[i] = pair;
-		}
-		p += pairs * 2;
-		n -= pairs * 2;
-	}
-
-	if (n > 0)
-	{
-		*p = colour;
-	}
-
-	for (row = 1; row < h; row++)
-	{
-		memcpy(first + (row * VRAM_WIDTH), first, (size_t)w * sizeof(u16));
-	}
-}
-
 void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 {
 	const u16 colour = NativeRenderer3DS_PackBGR555(r, g, b);
+	int row;
 
 	/* Called directly from game code (MM_Scrapbook) as well as from ClearImage
 	 * jobs on the worker; the fence no-ops on the worker and when the queue is
@@ -5872,7 +5830,17 @@ void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	}
 
 	N3DS_DirtyVRAMRect(x, y, w, h);
-	N3DS_FillVRAMRect(x, y, w, h, colour);
+
+	for (row = 0; row < h; row++)
+	{
+		u16 *dst = vram + x + ((y + row) * VRAM_WIDTH);
+		int col;
+
+		for (col = 0; col < w; col++)
+		{
+			dst[col] = colour;
+		}
+	}
 }
 
 void NativeRenderer_CopyVRAM(u16 *src, int x, int y, int w, int h, int dstX, int dstY)
