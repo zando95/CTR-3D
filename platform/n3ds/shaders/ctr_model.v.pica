@@ -79,17 +79,21 @@
 ; The fix was to re-upload the packet projection on every bind. This program
 ; avoids needing that fix by matching ctr.v.pica's layout instead.
 .fvec projection[4] ; f0-f3 -- SAME registers ctr.v.pica uses. Keep it first.
-; STEREO: per-eye parallax vector, same semantics as the other two programs'
-; `stereo` (x = k, y = k*convergence, z/w = clamp lo/hi; zeros in mono).
-; Uploaded by N3DS_ModelDraw_Begin. f4, and stereoUi f5, in all three
-; programs: the right eye's command-list copy rewrites every write to f4/f5
-; as the right eye's parallax, so no other uniform may live on them.
-.fvec stereo        ; f4
-.fvec stereoUi      ; f5 -- unused here; holds the register (see above)
-.fvec qx            ; f6 -- composed instance row: dp4(qx, v) = w*screenX
-.fvec qy            ; f7 -- composed instance row: dp4(qy, v) = w*screenY
-.fvec qw            ; f8 -- composed instance row: dp4(qw, v) = w = view.z/H
-.fvec hParam        ; f9 -- x = H (distanceToScreen_PREV); y = sky-dome select
+; Parallax vectors on fixed registers in all three programs: stereoPkt f4,
+; stereoUi f5, stereoWorld f6. Each program reads only its own, and no other
+; uniform or constant of any program may live on f4-f6. The backend writes
+; them once per eye, straight into the command buffer and never through
+; citro3d's uniform shadow, so the left eye's command list carries no
+; per-eye value and is submitted a second time for the right eye.
+; This program reads stereoWorld (x = k, y = k*convergence, z/w = clamp
+; lo/hi; zeros in mono).
+.fvec stereoPkt     ; f4 -- unused here; holds the register
+.fvec stereoUi      ; f5 -- unused here; holds the register
+.fvec stereoWorld   ; f6
+.fvec qx            ; f7 -- composed instance row: dp4(qx, v) = w*screenX
+.fvec qy            ; f8 -- composed instance row: dp4(qy, v) = w*screenY
+.fvec qw            ; f9 -- composed instance row: dp4(qw, v) = w = view.z/H
+.fvec hParam        ; f10 -- x = H (distanceToScreen_PREV); y = sky-dome select
                     ; (0 for model instances, 1 for the sky dome); z/w unused
 
 ; Constants
@@ -185,11 +189,11 @@
 	; r6.y is in [64, 65535] (the clamped depth, or 65535), so the rcp is
 	; always finite. r5: r0-r4 are all live through the S assembly below.
 	rcp r5.x, r6.y                      ; 1/depth
-	mul r5.y, stereo.yyyy, r5.x         ; kC/depth
+	mul r5.y, stereoWorld.yyyy, r5.x         ; kC/depth
 	mul r5.y, negOne, r5.y              ; -kC/depth (no SUB opcode)
-	add r5.y, stereo.xxxx, r5.y         ; p = k - kC/depth
-	max r5.y, stereo.zzzz, r5.y         ; p >= lo
-	min r5.y, stereo.wwww, r5.y         ; p <= hi
+	add r5.y, stereoWorld.xxxx, r5.y         ; p = k - kC/depth
+	max r5.y, stereoWorld.zzzz, r5.y         ; p >= lo
+	min r5.y, stereoWorld.wwww, r5.y         ; p <= hi
 	mul r5.z, r1.z, r5.y                ; w*p (both temps, order-free)
 	add r1.x, r1.x, r5.z                ; a += w*p
 

@@ -95,17 +95,20 @@
 
 ; Uniforms
 .fvec projection[4] ; f0-f3 -- SAME ortho matrix and registers as ctr.v.pica. Keep it first.
-; STEREO: per-eye parallax vector, same semantics as ctr.v.pica's `stereo`
-; (x = k, y = k*convergence, z/w = clamp lo/hi; all zeros in mono). Uploaded
-; by N3DS_TrackDraw_Begin from the backend's current-eye state. Unlike the
-; packet path this needs no UI-band mask -- everything here is world content
-; on the real view.z axis -- and no CPU gating on g_dbg_packetDepth, because
-; this depth is computed from the camera, not read from a stamp.
-; f4, and stereoUi f5, in all three programs: the right eye's command-list
-; copy rewrites every write to f4/f5 as the right eye's parallax, so no other
-; uniform may live on them.
-.fvec stereo       ; f4
-.fvec stereoUi     ; f5 -- unused here; holds the register (see above)
+; Parallax vectors on fixed registers in all three programs: stereoPkt f4,
+; stereoUi f5, stereoWorld f6. Each program reads only its own, and no other
+; uniform or constant of any program may live on f4-f6. The backend writes
+; them once per eye, straight into the command buffer and never through
+; citro3d's uniform shadow, so the left eye's command list carries no
+; per-eye value and is submitted a second time for the right eye.
+; This program reads stereoWorld (x = k, y = k*convergence, z/w = clamp
+; lo/hi; all zeros in mono). Unlike the packet path it needs no UI-band mask --
+; everything here is world content on the real view.z axis -- and no gating on
+; g_dbg_packetDepth, because this depth is computed from the camera, not read
+; from a stamp.
+.fvec stereoPkt    ; f4 -- unused here; holds the register
+.fvec stereoUi     ; f5 -- unused here; holds the register
+.fvec stereoWorld  ; f6
 .fvec qx           ; composed camera row: dp4(qx, v1) = w*screenX
 .fvec qy           ; composed camera row: dp4(qy, v1) = w*screenY
 .fvec qw           ; composed camera row: dp4(qw, v1) = w = view.z/H
@@ -418,11 +421,11 @@
 	max r7.x, depthMinWorld, r2.x       ; trueDepth = max(depthMinWorld, viewZ)
 	min r7.x, depthMax, r7.x            ; clamp to [depthMinWorld, depthMax]
 	rcp r9.x, r7.x                      ; 1/trueDepth (decoupled from dorder)
-	mul r9.y, stereo.yyyy, r9.x         ; kC/depth
+	mul r9.y, stereoWorld.yyyy, r9.x         ; kC/depth
 	mul r9.y, negOne, r9.y              ; -kC/depth (no SUB opcode)
-	add r9.y, stereo.xxxx, r9.y         ; p = k - kC/depth
-	max r9.y, stereo.zzzz, r9.y         ; p >= lo
-	min r9.y, stereo.wwww, r9.y         ; p <= hi
+	add r9.y, stereoWorld.xxxx, r9.y         ; p = k - kC/depth
+	max r9.y, stereoWorld.zzzz, r9.y         ; p >= lo
+	min r9.y, stereoWorld.wwww, r9.y         ; p <= hi
 	mul r9.z, r1.z, r9.y                ; w*p (both temps, order-free)
 	add r1.x, r1.x, r9.z                ; a += w*p
 

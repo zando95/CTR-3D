@@ -1074,11 +1074,12 @@ static int s_stereoEye = 0; /* 0 = left (and mono), 1 = right */
 static float s_stereoVecWorld[2][4]; /* [eye][k, k*conv, clampLo, clampHi] -- track/model programs */
 static float s_stereoVecPkt[2][4];   /* packet program: zeroed unless packet depth stamping is live */
 
-/* Right eye from the left eye's command list (see N3DS_StereoCopyRightEye).
- * dumpreq `stereocopy [N]`; 0 always replays the journal. */
-int g_dbg_stereoCopy = 1;
-static void N3DS_StereoCopyOpenSpan(void);
-static int N3DS_StereoCopyCheckLayout(void);
+/* Right eye from the left eye's command list, submitted twice (see
+ * N3DS_StereoReuseRightEye). dumpreq `stereoreuse [N]`; 0 always replays the
+ * journal. */
+int g_dbg_stereoReuse = 1;
+static void N3DS_StereoReuseOpenSpan(void);
+static int N3DS_StereoReuseCheckLayout(void);
 
 /*
  * The journal: one entry per draw-affecting call of the left-eye frame, in
@@ -1279,17 +1280,31 @@ static void N3DS_StereoLatchFrame(void)
 	}
 }
 
-/* Upload the current eye's parallax vector to one program's `stereo`
- * uniform. Guarded on the location like every other upload: -1 means the
- * lookup failed at init and writing would land on register 0. */
-static void N3DS_StereoUploadUniform(int uLoc, const float (*table)[4])
-{
-	if (uLoc >= 0)
-	{
-		const float *v = table[s_stereoEye];
+/* The parallax vectors' registers, the same in all three programs. */
+#define N3DS_STEREO_REG_PKT   4u
+#define N3DS_STEREO_REG_UI    5u
+#define N3DS_STEREO_REG_WORLD 6u
 
-		C3D_FVUnifSet(GPU_VERTEX_SHADER, uLoc, v[0], v[1], v[2], v[3]);
+/* One eye's three parallax vectors, written straight into the command buffer
+ * on f4-f6 and never through citro3d's uniform shadow, so no citro3d upload
+ * ever lands in the left eye's command list with a per-eye value (see
+ * N3DS_StereoReuseRightEye). Once per eye: nothing else writes f4-f6. Data
+ * words in C3D_FVec order: w, z, y, x. */
+static void N3DS_StereoWriteRegs(int eye)
+{
+	const float *const vecs[3] = {s_stereoVecPkt[eye], s_stereoVecUi[eye], s_stereoVecWorld[eye]};
+	u32 words[12];
+	int v;
+
+	for (v = 0; v < 3; v++)
+	{
+		memcpy(&words[v * 4 + 0], &vecs[v][3], sizeof(u32));
+		memcpy(&words[v * 4 + 1], &vecs[v][2], sizeof(u32));
+		memcpy(&words[v * 4 + 2], &vecs[v][1], sizeof(u32));
+		memcpy(&words[v * 4 + 3], &vecs[v][0], sizeof(u32));
 	}
+	GPUCMD_AddWrite(GPUREG_VSH_FLOATUNIFORM_CONFIG, 0x80000000u | N3DS_STEREO_REG_PKT);
+	GPUCMD_AddWrites(GPUREG_VSH_FLOATUNIFORM_DATA, words, 12);
 }
 
 void N3DS_StereoRecordPacket(int blendMode, int doubling, int depthWrite, int atlas, int baseVertex, int vertCount)
@@ -1464,10 +1479,9 @@ static void N3DS_BindPacketDrawState(void)
 	/*
 	 * PICA200 vertex-shader float uniforms are physical registers shared by
 	 * every bound program, not per-program handles. All three programs keep
-	 * projection on f0-f3, stereo on f4 and stereoUi on f5, but the track and
-	 * model programs write their own world vector to f4. Re-assert the packet
-	 * projection/stereo uniforms here on every return to packet drawing, or
-	 * the last bracket's values carry into the packet draws.
+	 * projection on f0-f3; the parallax vectors have registers of their own
+	 * (N3DS_StereoWriteRegs). Re-assert the projection here on every return
+	 * to packet drawing, so no bracket's values carry into the packet draws.
 	 *
 	 * Re-asserting it HERE rather than in N3DS_TrackDraw_End on purpose: this
 	 * function is the single definition of "packet draw state", it is already
@@ -1479,13 +1493,6 @@ static void N3DS_BindPacketDrawState(void)
 	{
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, s_uLocProjection, &s_projection);
 	}
-
-	/* The packet stereo vector shares f4 with the track and model programs'
-	 * world vector, so it is packet state exactly like the projection rows
-	 * above, re-asserted on every return to packet drawing. */
-	N3DS_StereoUploadUniform(s_uLocStereo, (const float(*)[4])s_stereoVecPkt);
-	/* UI pop-out rides the same re-upload, on f5. */
-	N3DS_StereoUploadUniform(s_uLocStereoUi, (const float(*)[4])s_stereoVecUi);
 }
 
 /* Pulsed by N3DS_GxPulseCallback whenever GSP reports a P3D (command list
@@ -1645,7 +1652,7 @@ int N3DS_C3DInit(void)
 	shaderProgramSetVsh(&s_shaderProgram, &s_shaderDvlb->DVLE[0]);
 	C3D_BindProgram(&s_shaderProgram);
 	s_uLocProjection = shaderInstanceGetUniformLocation(s_shaderProgram.vertexShader, "projection");
-	s_uLocStereo = shaderInstanceGetUniformLocation(s_shaderProgram.vertexShader, "stereo");
+	s_uLocStereo = shaderInstanceGetUniformLocation(s_shaderProgram.vertexShader, "stereoPkt");
 	s_uLocStereoUi = shaderInstanceGetUniformLocation(s_shaderProgram.vertexShader, "stereoUi");
 
 	/*
@@ -1785,7 +1792,7 @@ int N3DS_C3DInit(void)
 	s_trackULocH = shaderInstanceGetUniformLocation(s_trackShaderProgram.vertexShader, "hParam");
 	s_trackULocDepthRange = shaderInstanceGetUniformLocation(s_trackShaderProgram.vertexShader, "depthRange");
 	s_trackULocUvOffset = shaderInstanceGetUniformLocation(s_trackShaderProgram.vertexShader, "uvOffset");
-	s_trackULocStereo = shaderInstanceGetUniformLocation(s_trackShaderProgram.vertexShader, "stereo");
+	s_trackULocStereo = shaderInstanceGetUniformLocation(s_trackShaderProgram.vertexShader, "stereoWorld");
 
 	/* Fixed attribute layout for N3DS_TrackVertex -- does not depend on any
 	 * per-level allocation (unlike s_trackBufInfo, built in
@@ -1820,11 +1827,11 @@ int N3DS_C3DInit(void)
 	s_modelULocQy = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "qy");
 	s_modelULocQw = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "qw");
 	s_modelULocH = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "hParam");
-	s_modelULocStereo = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "stereo");
+	s_modelULocStereo = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "stereoWorld");
 
-	if (!N3DS_StereoCopyCheckLayout())
+	if (!N3DS_StereoReuseCheckLayout())
 	{
-		N3DS_DebugLog("[CTR-3DS] stereo copy: shader uniform layout check FAILED, right eye replays the journal");
+		N3DS_DebugLog("[CTR-3DS] stereo reuse: shader uniform layout check FAILED, right eye replays the journal");
 	}
 
 	return 1;
@@ -2063,20 +2070,16 @@ void N3DS_C3DBeginFrame(void)
 	C3D_SetViewport(0, g_dbg_widescreen ? 0 : N3DS_TOP_CONTENT_X, 240, g_dbg_widescreen ? 400 : N3DS_TOP_CONTENT_W);
 
 	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, s_uLocProjection, &s_projection);
-	/* Left eye's parallax (zero in mono) -- rides beside the projection for
-	 * the same reason it does in N3DS_BindPacketDrawState. */
-	N3DS_StereoUploadUniform(s_uLocStereo, (const float(*)[4])s_stereoVecPkt);
-	/* UI pop-out rides the same re-upload, on f5. */
-	N3DS_StereoUploadUniform(s_uLocStereoUi, (const float(*)[4])s_stereoVecUi);
+	/* Left eye's parallax (zero in mono), every frame. */
+	N3DS_StereoWriteRegs(0);
 
 	/* Every draw this frame appends into the SAME persistent buffer at a
 	 * fresh offset (see the header comment on N3DS_C3DAppendVertices) --
 	 * reset the write cursor once per frame, not per draw. */
 	s_vertexCursor = 0;
 
-	/* Last: the left eye's command span starts after this frame's state is
-	 * flagged, so its first draw re-emits all of it. */
-	N3DS_StereoCopyOpenSpan();
+	/* Last: on stereo frames, close list A and open the left eye's list. */
+	N3DS_StereoReuseOpenSpan();
 }
 
 /* GPU-time window accumulator (see n3ds_backend.h). Written on whichever
@@ -2847,10 +2850,6 @@ void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, flo
 	 * header comment for the row3/outpos.w reasoning this depends on). */
 	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, s_trackULocProjection, &s_projection);
 
-	/* Current eye's parallax (zero in mono). Per bracket, not per frame:
-	 * the right-eye replay re-enters this function with s_stereoEye = 1. */
-	N3DS_StereoUploadUniform(s_trackULocStereo, (const float(*)[4])s_stereoVecWorld);
-
 	/*
 	 * Vertex-color-only output: 3a is untextured (color_hi is already baked
 	 * per vertex -- the familiar "textureless mode" look). Deliberately NOT
@@ -3163,11 +3162,6 @@ void N3DS_ModelDraw_Begin(void)
 	 */
 	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, s_modelULocProjection, &s_projection);
 
-	/* Current eye's parallax (zero in mono). The model program's `stereo`
-	 * register (f8) is ctr_track's depthRange, clobbered every track leaf --
-	 * this bracket always opens after the track bracket closed, so this
-	 * per-bracket upload is exactly what makes that safe. */
-	N3DS_StereoUploadUniform(s_modelULocStereo, (const float(*)[4])s_stereoVecWorld);
 
 	/*
 	 * Assert opaque blending, for the reason spelled out at length in
@@ -3564,54 +3558,40 @@ void N3DS_BottomMapDraw_End(void)
  * track/model bracket.
  */
 /*
- * Right eye from the left eye's command list.
+ * Right eye: the left eye's command list, submitted twice.
  *
- * The left eye's draws, from the end of N3DS_C3DBeginFrame to the right-eye
- * point, are one span of the citro3d command buffer. The right eye's draws
- * differ from them only in the render target and the parallax uniforms, so
- * instead of replaying the journal (every draw issued again through citro3d)
- * the span is appended a second time with those words rewritten:
- *   - colour and depth buffer address writes: left target's -> right target's;
- *   - float-uniform data for f4 (`stereo`: the world or packet vector,
- *     whichever program wrote it) and f5 (`stereoUi`). Both are exact sign
- *     rearrangements of the left eye's vector (N3DS_StereoEyeVec):
- *     f4 (x, y, z, w) -> (-x, -y, -w, -z), f5 (x, y, z, w) -> (-x, y, z, w).
- * The copy is preceded by a framebuffer flush: the PICA caches colour and
- * depth tiles, and citro3d flushes them only when it binds a new target after
- * drawing. The span's own target write was emitted right after the previous
- * frame's submit, with nothing drawn yet, so it carries no flush, and without
- * one the switch to the right target drops the left eye's last cached pixels
- * on hardware (emulators have no such cache).
- * The copy starts from the GPU state the left eye ended on, so the span must
- * not inherit state from before it: N3DS_StereoCopyOpenSpan flags every piece
- * of citro3d state the frame uses (target, viewport, effect block, program,
- * attribute and buffer layout, combiner, packet uniforms) so the span's first
- * draw re-emits all of it, and every draw binds its own texture.
- * Requires all three programs to keep stereo on f4 and stereoUi on f5 with no
- * other uniform or constant there (N3DS_StereoCopyCheckLayout, once at init).
- * A command the scan cannot walk, a 24-bit write to f4/f5, a target write that
- * is not the left target's, no target write at all, too little buffer, or the
- * atlas view falls back to the journal replay, which is always recorded.
+ * The right eye's draws differ from the left eye's only in the render target
+ * and the parallax vectors. The vectors live on their own registers (f4-f6 in
+ * every program, written once per eye by N3DS_StereoWriteRegs), so the left
+ * eye's draws form one command list with no per-eye word in it, and the right
+ * eye submits that same list again. A stereo frame goes to the GPU as:
+ *   A  frame start: the left target and the frame state, emitted by a
+ *      zero-area draw, and the left eye's vectors;
+ *   L  the left eye's draws, opening with the frame state again (flagged
+ *      after A's draw, target excepted);
+ *   R  the right target, emitted by a zero-area draw, and the right eye's
+ *      vectors;
+ *   L  again, then citro3d's own list (the bottom screen) at frame end.
+ * L re-emits the frame state at its start, so it inherits nothing from the
+ * list before it, and it ends with citro3d's framebuffer flush and
+ * invalidate, so the switch after it loses no cached pixels. citro3d flushes
+ * the CPU cache over the linear heap only at frame end, so before A, L and R
+ * are handed over mid-frame the vertices they read are flushed here and the
+ * lists themselves by GX_CMDLIST_FLUSH. Requires stereoPkt f4, stereoUi f5 and
+ * stereoWorld f6 in all three programs with nothing else there
+ * (N3DS_StereoReuseCheckLayout, once at init). The atlas view (a left-eye-only
+ * takeover) and a span that cannot be closed fall back to the journal replay,
+ * which is always recorded.
  */
-#define N3DS_STEREO_COPY_REG_STEREO   4u
-#define N3DS_STEREO_COPY_REG_STEREOUI 5u
-/* Words left free after the copy for the bottom-screen pass and FrameEnd's
- * own commands; a full buffer drops commands silently. */
-#define N3DS_STEREO_COPY_SLACK_WORDS 16384u
-/* The colour/depth cache flush ahead of the copy: two single writes. */
-#define N3DS_STEREO_COPY_FLUSH_WORDS 4u
+static int s_stereoReuseLayoutOk = 0;
+static int s_stereoReuseOpen = 0;
+static u32 *s_stereoReuseSpanBuf = NULL;
+static int s_stereoReuseLastOutcome = -2; /* logged on change only */
 
-static int s_stereoCopyLayoutOk = 0;
-static int s_stereoCopyOpen = 0;
-static u32 *s_stereoCopyBuf = NULL;
-static u32 s_stereoCopyStart = 0;
-static int s_stereoCopyLastOutcome = -2; /* logged on change only */
-
-static int N3DS_StereoCopyCheckDvle(const DVLE_s *dvle, int needUi)
+static int N3DS_StereoReuseCheckDvle(const DVLE_s *dvle)
 {
+	static const char *const names[3] = {"stereoPkt", "stereoUi", "stereoWorld"};
 	u32 i;
-	int stereoSeen = 0;
-	int uiSeen = 0;
 
 	if ((dvle == NULL) || (dvle->symbolTableData == NULL))
 	{
@@ -3623,6 +3603,8 @@ static int N3DS_StereoCopyCheckDvle(const DVLE_s *dvle, int needUi)
 		const char *name = dvle->symbolTableData + u->symbolOffset;
 		int lo;
 		int hi;
+		int k;
+		int named = 0;
 
 		/* Float uniforms are registers 0x10-0x6F in the table. */
 		if ((u->startReg < 0x10) || (u->startReg > 0x6F))
@@ -3631,23 +3613,18 @@ static int N3DS_StereoCopyCheckDvle(const DVLE_s *dvle, int needUi)
 		}
 		lo = (int)u->startReg - 0x10;
 		hi = (int)u->endReg - 0x10;
-		if (strcmp(name, "stereo") == 0)
+		for (k = 0; k < 3; k++)
 		{
-			if ((lo != (int)N3DS_STEREO_COPY_REG_STEREO) || (hi != lo))
+			if (strcmp(name, names[k]) == 0)
 			{
-				return 0;
+				if ((lo != (int)N3DS_STEREO_REG_PKT + k) || (hi != lo))
+				{
+					return 0;
+				}
+				named = 1;
 			}
-			stereoSeen = 1;
 		}
-		else if (strcmp(name, "stereoUi") == 0)
-		{
-			if ((lo != (int)N3DS_STEREO_COPY_REG_STEREOUI) || (hi != lo))
-			{
-				return 0;
-			}
-			uiSeen = 1;
-		}
-		else if ((lo <= (int)N3DS_STEREO_COPY_REG_STEREOUI) && (hi >= (int)N3DS_STEREO_COPY_REG_STEREO))
+		if (!named && (lo <= (int)N3DS_STEREO_REG_WORLD) && (hi >= (int)N3DS_STEREO_REG_PKT))
 		{
 			return 0;
 		}
@@ -3656,318 +3633,183 @@ static int N3DS_StereoCopyCheckDvle(const DVLE_s *dvle, int needUi)
 	{
 		const DVLE_constEntry_s *c = &dvle->constTableData[i];
 
-		if ((c->type == DVLE_CONST_FLOAT24) && ((c->id == N3DS_STEREO_COPY_REG_STEREO) || (c->id == N3DS_STEREO_COPY_REG_STEREOUI)))
+		if ((c->type == DVLE_CONST_FLOAT24) && (c->id >= N3DS_STEREO_REG_PKT) && (c->id <= N3DS_STEREO_REG_WORLD))
 		{
 			return 0;
 		}
 	}
-	return stereoSeen && (uiSeen || !needUi);
+	return 1;
 }
 
-static int N3DS_StereoCopyCheckLayout(void)
+static int N3DS_StereoReuseCheckLayout(void)
 {
-	s_stereoCopyLayoutOk = 0;
+	s_stereoReuseLayoutOk = 0;
 	if ((s_shaderDvlb == NULL) || (s_trackShaderDvlb == NULL) || (s_modelShaderDvlb == NULL))
 	{
 		return 0;
 	}
-	if ((s_uLocStereo != (int)N3DS_STEREO_COPY_REG_STEREO) || (s_uLocStereoUi != (int)N3DS_STEREO_COPY_REG_STEREOUI) ||
-	    (s_trackULocStereo != (int)N3DS_STEREO_COPY_REG_STEREO) || (s_modelULocStereo != (int)N3DS_STEREO_COPY_REG_STEREO))
+	if ((s_uLocStereo != (int)N3DS_STEREO_REG_PKT) || (s_uLocStereoUi != (int)N3DS_STEREO_REG_UI) ||
+	    (s_trackULocStereo != (int)N3DS_STEREO_REG_WORLD) || (s_modelULocStereo != (int)N3DS_STEREO_REG_WORLD))
 	{
 		return 0;
 	}
-	if (!N3DS_StereoCopyCheckDvle(&s_shaderDvlb->DVLE[0], 1) || !N3DS_StereoCopyCheckDvle(&s_trackShaderDvlb->DVLE[0], 0) ||
-	    !N3DS_StereoCopyCheckDvle(&s_modelShaderDvlb->DVLE[0], 0))
+	if (!N3DS_StereoReuseCheckDvle(&s_shaderDvlb->DVLE[0]) || !N3DS_StereoReuseCheckDvle(&s_trackShaderDvlb->DVLE[0]) ||
+	    !N3DS_StereoReuseCheckDvle(&s_modelShaderDvlb->DVLE[0]))
 	{
 		return 0;
 	}
-	s_stereoCopyLayoutOk = 1;
+	s_stereoReuseLayoutOk = 1;
 	return 1;
 }
 
-/* End of N3DS_C3DBeginFrame, stereo frames only: the frame-start state is
- * already flagged (target and viewport by C3D_FrameDrawOn/C3D_SetViewport,
- * the effect block by C3D_DepthTest, the packet uniforms); this adds the
- * program, layout and combiner, then marks where the span begins. The program
- * goes through the model program first because citro3d does not re-emit a
- * rebind of the program already bound. */
-static void N3DS_StereoCopyOpenSpan(void)
+/* A zero-area triangle off screen, in the frame vertex buffer. Drawn with the
+ * bound program it makes citro3d emit every flagged piece of state, the target
+ * included, without touching a pixel. Returns its first vertex, or -1 when the
+ * vertex buffer is full. */
+static int N3DS_StereoReuseStateTri(void)
+{
+	N3DS_Vertex v[3];
+	int i;
+
+	memset(v, 0, sizeof(v));
+	for (i = 0; i < 3; i++)
+	{
+		v[i].x = -32000;
+		v[i].y = -32000;
+	}
+	return N3DS_C3DAppendVertices(v, 3);
+}
+
+/* End of N3DS_C3DBeginFrame, stereo frames only: closes list A and opens the
+ * left eye's span. */
+static void N3DS_StereoReuseOpenSpan(void)
 {
 	u32 *buf = NULL;
 	u32 size = 0;
 	u32 offset = 0;
+	int tri;
 
-	s_stereoCopyOpen = 0;
-	if (!s_stereoFrameActive || !s_stereoCopyLayoutOk || !g_dbg_stereoCopy)
+	s_stereoReuseOpen = 0;
+	if (!s_stereoFrameActive || !s_stereoReuseLayoutOk || !g_dbg_stereoReuse)
 	{
 		return;
 	}
+	tri = N3DS_StereoReuseStateTri();
+	if (tri < 0)
+	{
+		return;
+	}
+	GSPGPU_FlushDataCache((N3DS_Vertex *)s_vertexBufferMem + tri, 3u * sizeof(N3DS_Vertex));
+
+	/* The packet program through the model program: citro3d does not re-emit
+	 * a rebind of the program already bound. */
 	C3D_BindProgram(&s_modelShaderProgram);
 	N3DS_BindPacketDrawState();
+	C3D_DrawArrays(GPU_TRIANGLES, tri, 3);
+
+	/* The frame state again, as N3DS_C3DBeginFrame set it, minus the target,
+	 * so the span's first draw re-emits it. */
+	C3D_BindProgram(&s_modelShaderProgram);
+	N3DS_BindPacketDrawState();
+	if (g_dbg_depthTest == 1)
+	{
+		C3D_DepthTest(true, GPU_ALWAYS, GPU_WRITE_ALL);
+	}
+	else
+	{
+		C3D_DepthTest(true, GPU_LEQUAL, GPU_WRITE_ALL);
+	}
+	C3D_SetViewport(0, g_dbg_widescreen ? 0 : N3DS_TOP_CONTENT_X, 240, g_dbg_widescreen ? 400 : N3DS_TOP_CONTENT_W);
+
+	C3D_FrameSplit(GX_CMDLIST_FLUSH);
 	GPUCMD_GetBuffer(&buf, &size, &offset);
-	if (buf == NULL)
+	if ((buf == NULL) || (offset != 0))
 	{
 		return;
 	}
-	s_stereoCopyBuf = buf;
-	s_stereoCopyStart = offset;
-	s_stereoCopyOpen = 1;
-}
-
-static void N3DS_StereoCopyRewriteVec(u32 *const words[4], u32 reg)
-{
-	/* C3D_FVec order in memory, and so in the data words: w, z, y, x. */
-	float w;
-	float z;
-	float y;
-	float x;
-
-	memcpy(&w, words[0], sizeof(w));
-	memcpy(&z, words[1], sizeof(z));
-	memcpy(&y, words[2], sizeof(y));
-	memcpy(&x, words[3], sizeof(x));
-	if (reg == N3DS_STEREO_COPY_REG_STEREO)
-	{
-		const float nw = -z;
-		const float nz = -w;
-
-		w = nw;
-		z = nz;
-		y = -y;
-	}
-	x = -x;
-	memcpy(words[0], &w, sizeof(w));
-	memcpy(words[1], &z, sizeof(z));
-	memcpy(words[2], &y, sizeof(y));
-	memcpy(words[3], &x, sizeof(x));
-}
-
-/* Walks a span of complete PICA commands (param, header, extra params, pad
- * to 8 bytes) and rewrites the right eye's words in place. Returns 0 if the
- * span cannot be walked or holds a write this rewrite does not handle. */
-static int N3DS_StereoCopyRewrite(u32 *w, u32 n, u32 *outTargetWords, u32 *outUniformVecs)
-{
-	const u32 leftDepth = osConvertVirtToPhys(s_renderTarget->frameBuf.depthBuf) >> 3;
-	const u32 leftColor = osConvertVirtToPhys(s_renderTarget->frameBuf.colorBuf) >> 3;
-	const u32 rightDepth = osConvertVirtToPhys(s_renderTargetRight->frameBuf.depthBuf) >> 3;
-	const u32 rightColor = osConvertVirtToPhys(s_renderTargetRight->frameBuf.colorBuf) >> 3;
-	u32 *vec[4] = {NULL, NULL, NULL, NULL};
-	u32 uniReg = 0;
-	u32 uniWord = 0;
-	int uniF32 = 0;
-	int uniValid = 0;
-	u32 depthSeen = 0;
-	u32 colorSeen = 0;
-	u32 vecs = 0;
-	u32 i = 0;
-
-	while (i < n)
-	{
-		u32 header;
-		u32 reg;
-		u32 mask;
-		u32 extra;
-		u32 consec;
-		u32 p;
-
-		if (i + 1u >= n)
-		{
-			return 0;
-		}
-		header = w[i + 1u];
-		reg = header & 0xFFFFu;
-		mask = (header >> 16) & 0xFu;
-		extra = (header >> 20) & 0x7FFu;
-		consec = header >> 31;
-		if (i + 2u + extra > n)
-		{
-			return 0;
-		}
-		{
-			const u32 last = consec ? (reg + extra) : reg;
-			const int touchesTarget = (reg <= GPUREG_COLORBUFFER_LOC) && (last >= GPUREG_DEPTHBUFFER_LOC);
-			const int touchesUniform = (reg <= GPUREG_VSH_FLOATUNIFORM_DATA + 7u) && (last >= GPUREG_VSH_FLOATUNIFORM_CONFIG);
-
-			if (!touchesTarget && !touchesUniform)
-			{
-				i += 2u + extra + (extra & 1u);
-				continue;
-			}
-			/* A plain data run (one register, every word data) that ends
-			 * before f4 or starts after f5 only advances the position. */
-			if (!consec && uniValid && (mask == 0xFu) && (reg >= GPUREG_VSH_FLOATUNIFORM_DATA) && (reg <= GPUREG_VSH_FLOATUNIFORM_DATA + 7u))
-			{
-				const u32 per = uniF32 ? 4u : 3u;
-				const u32 total = uniWord + extra + 1u;
-				const u32 lastReg = uniReg + (total - 1u) / per;
-
-				if ((lastReg < N3DS_STEREO_COPY_REG_STEREO) || (uniReg > N3DS_STEREO_COPY_REG_STEREOUI))
-				{
-					uniReg += total / per;
-					uniWord = total % per;
-					i += 2u + extra + (extra & 1u);
-					continue;
-				}
-			}
-		}
-		for (p = 0; p <= extra; p++)
-		{
-			u32 *word = (p == 0) ? &w[i] : &w[i + 1u + p];
-			const u32 r = consec ? (reg + p) : reg;
-
-			if (r == GPUREG_VSH_FLOATUNIFORM_CONFIG)
-			{
-				if (mask != 0xFu)
-				{
-					return 0;
-				}
-				uniReg = *word & 0x7Fu;
-				uniF32 = (int)(*word >> 31);
-				uniWord = 0;
-				uniValid = 1;
-			}
-			else if ((r >= GPUREG_VSH_FLOATUNIFORM_DATA) && (r <= GPUREG_VSH_FLOATUNIFORM_DATA + 7u))
-			{
-				const u32 per = uniF32 ? 4u : 3u;
-				const int eyeReg = (uniReg == N3DS_STEREO_COPY_REG_STEREO) || (uniReg == N3DS_STEREO_COPY_REG_STEREOUI);
-
-				if (!uniValid || (mask != 0xFu) || (eyeReg && !uniF32))
-				{
-					return 0;
-				}
-				if (eyeReg)
-				{
-					vec[uniWord] = word;
-				}
-				uniWord++;
-				if (uniWord == per)
-				{
-					if (eyeReg)
-					{
-						N3DS_StereoCopyRewriteVec(vec, uniReg);
-						vecs++;
-					}
-					uniReg++;
-					uniWord = 0;
-				}
-			}
-			else if (r == GPUREG_DEPTHBUFFER_LOC)
-			{
-				if ((mask != 0xFu) || (*word != leftDepth))
-				{
-					return 0;
-				}
-				*word = rightDepth;
-				depthSeen++;
-			}
-			else if (r == GPUREG_COLORBUFFER_LOC)
-			{
-				if ((mask != 0xFu) || (*word != leftColor))
-				{
-					return 0;
-				}
-				*word = rightColor;
-				colorSeen++;
-			}
-		}
-		i += 2u + extra + (extra & 1u);
-	}
-	if ((i != n) || (depthSeen == 0) || (colorSeen == 0))
-	{
-		return 0;
-	}
-	*outTargetWords = depthSeen + colorSeen;
-	*outUniformVecs = vecs;
-	return 1;
+	s_stereoReuseSpanBuf = buf;
+	s_stereoReuseOpen = 1;
 }
 
 #ifdef CTR_INTERNAL
 extern int g_dbg_atlasView;
 #endif
 
-/* Returns 1 when the right eye was drawn by the copy; 0 means replay it. */
-static int N3DS_StereoCopyRightEye(void)
+/* Returns 1 when the right eye was handled (drawn by resubmitting the left
+ * eye's list, or nothing to draw); 0 means replay it. */
+static int N3DS_StereoReuseRightEye(void)
 {
 	u32 *buf = NULL;
 	u32 size = 0;
-	u32 end = 0;
-	u32 n = 0;
-	u32 targetWords = 0;
-	u32 uniformVecs = 0;
-	int outcome = 0; /* 0 = copied; >0 = why it replayed */
+	u32 offset = 0;
+	u32 *listBuf = NULL;
+	u32 listWords = 0;
+	int tri = -1;
+	int outcome = 0; /* 0 = resubmitted; 7 = nothing drawn; others replay */
 
-	if (!s_stereoCopyOpen)
+	if (!s_stereoReuseOpen)
 	{
-		outcome = (s_stereoCopyLayoutOk && g_dbg_stereoCopy) ? 4 : (s_stereoCopyLayoutOk ? 2 : 1);
+		outcome = !s_stereoReuseLayoutOk ? 1 : (!g_dbg_stereoReuse ? 2 : 4);
 	}
 #ifdef CTR_INTERNAL
 	else if (g_dbg_atlasView > 0)
 	{
-		/* The atlas view is a left-eye-only takeover the journal omits. */
 		outcome = 3;
 	}
 #endif
 	if (outcome == 0)
 	{
-		GPUCMD_GetBuffer(&buf, &size, &end);
-		if ((buf != s_stereoCopyBuf) || (end < s_stereoCopyStart))
+		GPUCMD_GetBuffer(&buf, &size, &offset);
+		if (buf != s_stereoReuseSpanBuf)
 		{
 			outcome = 4;
 		}
-		else if (end == s_stereoCopyStart)
+		else if (offset == 0)
 		{
 			outcome = 7;
-		}
-		else
-		{
-			n = end - s_stereoCopyStart;
-			if ((u64)end + N3DS_STEREO_COPY_FLUSH_WORDS + (u64)n + N3DS_STEREO_COPY_SLACK_WORDS > (u64)size)
-			{
-				outcome = 5;
-			}
 		}
 	}
 	if (outcome == 0)
 	{
-		u32 *const dst = buf + end + N3DS_STEREO_COPY_FLUSH_WORDS;
-
-		memcpy(dst, buf + s_stereoCopyStart, (size_t)n * sizeof(u32));
-		if (N3DS_StereoCopyRewrite(dst, n, &targetWords, &uniformVecs))
+		tri = N3DS_StereoReuseStateTri();
+		if (tri < 0)
 		{
-			/* The two writes citro3d puts before a target switch after
-			 * drawing, ahead of the copy's own target write. */
-			GPUCMD_SetBufferOffset(end);
-			GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
-			GPUCMD_AddWrite(GPUREG_EARLYDEPTH_CLEAR, 1);
-			GPUCMD_SetBufferOffset(end + N3DS_STEREO_COPY_FLUSH_WORDS + n);
+			outcome = 5;
+		}
+	}
+	if (outcome == 0)
+	{
+		/* One flush covers every vertex L and R read, R's triangle included. */
+		GSPGPU_FlushDataCache(s_vertexBufferMem, (u32)s_vertexCursor * sizeof(N3DS_Vertex));
+		listBuf = buf;
+		C3D_FrameSplit(GX_CMDLIST_FLUSH);
+		GPUCMD_GetBuffer(&buf, &size, &offset);
+		if ((buf <= listBuf) || (offset != 0))
+		{
+			outcome = 6;
 		}
 		else
 		{
-			/* The offset never moved, so the partial copy is not part of the
-			 * command list. */
-			outcome = 6;
+			listWords = (u32)(buf - listBuf);
 		}
 	}
-	s_stereoCopyOpen = 0;
+	s_stereoReuseOpen = 0;
 
-	/* Logged on change, except the two that say nothing about the copy: the
-	 * dumpreq switch (it logs itself) and a frame that drew nothing. */
-	if ((outcome != s_stereoCopyLastOutcome) && (outcome != 2) && (outcome != 7))
+	if ((outcome != s_stereoReuseLastOutcome) && (outcome != 2) && (outcome != 7))
 	{
-		static const char *const why[7] = {"copy",
+		static const char *const why[7] = {"resubmit",
 		                                   "replay (shader layout check failed)",
-		                                   "replay (stereocopy 0)",
+		                                   "replay (stereoreuse 0)",
 		                                   "replay (atlas view)",
 		                                   "replay (command span missing or moved)",
-		                                   "replay (command buffer too full)",
-		                                   "replay (span not rewritable)"};
-		char msg[128];
+		                                   "replay (vertex buffer full)",
+		                                   "replay (left list did not close)"};
+		char msg[96];
 
-		s_stereoCopyLastOutcome = outcome;
+		s_stereoReuseLastOutcome = outcome;
 		if (outcome == 0)
 		{
-			snprintf(msg, sizeof(msg), "[CTR-3DS] stereo right eye: copy (span %u words, %u target words, %u parallax vectors rewritten)", (unsigned)n,
-			         (unsigned)targetWords, (unsigned)uniformVecs);
+			snprintf(msg, sizeof(msg), "[CTR-3DS] stereo right eye: resubmit (left list %u words)", (unsigned)listWords);
 		}
 		else
 		{
@@ -3975,19 +3817,23 @@ static int N3DS_StereoCopyRightEye(void)
 		}
 		N3DS_DebugLog(msg);
 	}
-	if (outcome != 0)
+	if ((outcome != 0) && (outcome != 7))
 	{
 		return 0;
 	}
 
-	/* The GPU now holds the left eye's end state with the right target and
-	 * the right eye's parallax. Match citro3d's view of the target (and mark
-	 * it used, so FrameEnd transfers it), and leave later uploads on the right
-	 * eye, as the replay does. */
 	s_stereoRecording = 0;
 	s_stereoEye = 1;
 	C3D_FrameDrawOn(s_renderTargetRight);
 	C3D_SetViewport(0, g_dbg_widescreen ? 0 : N3DS_TOP_CONTENT_X, 240, g_dbg_widescreen ? 400 : N3DS_TOP_CONTENT_W);
+	N3DS_StereoWriteRegs(1);
+	if (outcome == 7)
+	{
+		return 1;
+	}
+	C3D_DrawArrays(GPU_TRIANGLES, tri, 3);
+	C3D_FrameSplit(GX_CMDLIST_FLUSH);
+	GX_ProcessCommandList(listBuf, listWords * sizeof(u32), 0);
 	return 1;
 }
 
@@ -4002,13 +3848,14 @@ void N3DS_StereoRenderRightEye(void)
 		return;
 	}
 
-	if (N3DS_StereoCopyRightEye())
+	if (N3DS_StereoReuseRightEye())
 	{
 		return;
 	}
 
 	s_stereoRecording = 0;
 	s_stereoEye = 1;
+	N3DS_StereoWriteRegs(1);
 
 	C3D_FrameDrawOn(s_renderTargetRight);
 	/* Same pillarbox crop (or widescreen lift) as N3DS_C3DBeginFrame --
@@ -4285,10 +4132,10 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  2=both(diagnostic overlay). Bare token cycles 0->1->2->0;
 	 *                  'trackrender N' sets a specific state. The SELECT+START
 	 *                  master flips it with the rest of the renderer config.
-	 *   stereocopy [N] -- g_dbg_stereoCopy: 1 (default) draws the right eye
-	 *                  from a rewritten copy of the left eye's command list;
-	 *                  0 replays the journal. Bare token toggles. Takes effect
-	 *                  next frame.
+	 *   stereoreuse [N] -- g_dbg_stereoReuse: 1 (default) draws the right eye
+	 *                  by submitting the left eye's command list a second
+	 *                  time; 0 replays the journal. Bare token toggles. Takes
+	 *                  effect next frame.
 	 *   skygpu [N]  -- g_dbg_skyGpu: 1 (default) draws the sky dome on the
 	 *                  GPU from its level mesh; 0 is retail's CPU-projected
 	 *                  packets. Bare token toggles. Takes effect next frame.
@@ -4934,10 +4781,10 @@ unsigned int N3DS_ReadButtons(void)
 				 * a prefix of all the others, so the longer tokens must be
 				 * tested first or `stereosep 8` would just flip the master
 				 * toggle. */
-				else if (strncmp(word, "stereocopy", 10) == 0)
+				else if (strncmp(word, "stereoreuse", 11) == 0)
 				{
-					g_dbg_stereoCopy = (word[10] == ' ') ? (atoi(&word[11]) != 0) : !g_dbg_stereoCopy;
-					N3DS_DebugLog(g_dbg_stereoCopy ? "[CTR-3DS] stereo right eye: copy of the left eye's command list" : "[CTR-3DS] stereo right eye: journal replay");
+					g_dbg_stereoReuse = (word[11] == ' ') ? (atoi(&word[12]) != 0) : !g_dbg_stereoReuse;
+					N3DS_DebugLog(g_dbg_stereoReuse ? "[CTR-3DS] stereo right eye: left eye's command list, submitted twice" : "[CTR-3DS] stereo right eye: journal replay");
 				}
 				else if (strncmp(word, "stereowindow", 12) == 0)
 				{

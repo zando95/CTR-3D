@@ -38,13 +38,13 @@
 ; N3DS_StereoEyeVec): x = k (full shift at infinite depth, PSX px, signed
 ; per eye), y = k*convergence, z/w = clamp lo/hi for p. All zeros when the
 ; slider is down, the right target failed, or packet depth stamping is off.
-; f4, and stereoUi f5, in all three programs: the right eye's command-list
-; copy rewrites every float-uniform write to f4/f5 as the right eye's
-; parallax, so the three programs keep these two here and no other uniform
-; of any program may live on them. N3DS_BindPacketDrawState still re-uploads
-; both on every return to packet state, since the track and model programs
-; write their own world vector to f4.
-.fvec stereo
+; Parallax vectors on fixed registers in all three programs: stereoPkt f4,
+; stereoUi f5, stereoWorld f6. Each program reads only its own, and no other
+; uniform or constant of any program may live on f4-f6. The backend writes
+; them once per eye, straight into the command buffer and never through
+; citro3d's uniform shadow, so the left eye's command list carries no
+; per-eye value and is submitted a second time for the right eye.
+.fvec stereoPkt
 ; s44 UI POP-OUT. x = this eye's parallax for UI-band vertices, in PSX px,
 ; already signed per eye and already scaled by the slider (N3DS_StereoEyeVec).
 ; y/z = mirror mode's world flip: y = left + right of the ortho window, z = -2
@@ -56,9 +56,10 @@
 ; draws the same vertex buffer, so anything per-eye has to be a uniform the
 ; shader reads.
 ;
-; f5: declared, unused, in the track and model programs to hold the register
-; (see `stereo` above).
 .fvec stereoUi
+; The track and model programs' world vector (N3DS_StereoEyeVec, slider and
+; parallax only). Unused here; declared to hold f6.
+.fvec stereoWorld
 
 ; Constants
 .constf constants(0.0, 1.0, -1.0, 0.0)
@@ -157,11 +158,11 @@
 
 	max r1.x, ones, r1.x                ; d >= 1, rcp stays finite
 	rcp r1.z, r1.x                      ; 1/d
-	mul r1.w, stereo.yyyy, r1.z         ; kC/d
+	mul r1.w, stereoPkt.yyyy, r1.z         ; kC/d
 	mul r1.w, negOnes, r1.w             ; -kC/d (no SUB opcode)
-	add r1.w, stereo.xxxx, r1.w         ; p = k - kC/d
-	max r1.w, stereo.zzzz, r1.w         ; p >= lo (pop-out clamp)
-	min r1.w, stereo.wwww, r1.w         ; p <= hi
+	add r1.w, stereoPkt.xxxx, r1.w         ; p = k - kC/d
+	max r1.w, stereoPkt.zzzz, r1.w         ; p >= lo (pop-out clamp)
+	min r1.w, stereoPkt.wwww, r1.w         ; p <= hi
 	mul r1.w, r1.y, r1.w                ; world keeps p; UI -> 0
 	; s44: UI no longer stays at 0 -- it takes a small fixed pop-out instead.
 	; invMask is 1 for UI and 0 for world, so world is untouched bit-for-bit and
