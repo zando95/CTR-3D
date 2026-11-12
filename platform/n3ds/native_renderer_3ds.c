@@ -843,6 +843,193 @@ internal void N3DS_DirtyVRAMRect(int x, int y, int w, int h)
 }
 
 /*
+ * Deferred mirror fills. NativeRenderer_ClearVRAM records a fill here and
+ * writes it into the mirror only when something reads that region or writes
+ * part of it. CAM_ClearScreen's backdrop FILL covers the display every frame
+ * and nothing reads the display region back during a race, so writing it each
+ * frame cost about 1.4 ms at Old 3DS speed for pixels nothing reads. The fill
+ * still bumps the cell generations when it is recorded, so the decode cache
+ * sees the change at the same moment as before.
+ *
+ * Rules that keep this exact:
+ *  - Pending fills are pairwise disjoint: a new fill trims the parts of older
+ *    ones it covers (the overwritten pixels are dead), so settling order
+ *    never matters.
+ *  - Every mirror READ settles its footprint first (N3DS_VramSettle):
+ *    CLUT hash, page decode, display presentation, ReadVRAM, CopyVRAM's
+ *    source, state capture.
+ *  - Every mirror WRITE other than a fill settles its footprint first, so it
+ *    lands on top of the older fill: CopyVRAM's destination, the framebuffer
+ *    refresh. Whole-mirror overwrites (init, state restore) drop the list.
+ *  - The debug VRAM dump reads the mirror without settling, so it can show a
+ *    pending region's previous content.
+ */
+#define N3DS_VRAM_PENDING_MAX 8
+
+typedef struct
+{
+	s16 x, y, w, h;
+	u16 colour;
+} N3DS_PendingFill;
+
+global_variable N3DS_PendingFill s_vramPending[N3DS_VRAM_PENDING_MAX];
+global_variable int s_vramPendingCount;
+
+internal void N3DS_FillVRAMRectNow(int x, int y, int w, int h, u16 colour)
+{
+	int row;
+
+	for (row = 0; row < h; row++)
+	{
+		u16 *dst = vram + x + ((y + row) * VRAM_WIDTH);
+		int col;
+
+		for (col = 0; col < w; col++)
+		{
+			dst[col] = colour;
+		}
+	}
+}
+
+internal int N3DS_PendingOverlaps(const N3DS_PendingFill *e, int x, int y, int w, int h)
+{
+	return (e->x < (x + w)) && (x < (e->x + e->w)) && (e->y < (y + h)) && (y < (e->y + e->h));
+}
+
+/* Write and drop every pending fill overlapping [x, x+w) x [y, y+h). */
+internal void N3DS_VramSettle(int x, int y, int w, int h)
+{
+	int i = 0;
+
+	while (i < s_vramPendingCount)
+	{
+		const N3DS_PendingFill *e = &s_vramPending[i];
+
+		if (N3DS_PendingOverlaps(e, x, y, w, h))
+		{
+			N3DS_FillVRAMRectNow(e->x, e->y, e->w, e->h, e->colour);
+			s_vramPending[i] = s_vramPending[s_vramPendingCount - 1];
+			s_vramPendingCount--;
+		}
+		else
+		{
+			i++;
+		}
+	}
+}
+
+/* Same, for a footprint whose columns wrap at the 1024-wide VRAM row. */
+internal void N3DS_VramSettleWrapped(int x, int y, int w, int h)
+{
+	if (s_vramPendingCount == 0)
+	{
+		return;
+	}
+	x &= (VRAM_WIDTH - 1);
+	if (w >= VRAM_WIDTH)
+	{
+		N3DS_VramSettle(0, y, VRAM_WIDTH, h);
+	}
+	else if ((x + w) > VRAM_WIDTH)
+	{
+		N3DS_VramSettle(x, y, VRAM_WIDTH - x, h);
+		N3DS_VramSettle(0, y, (x + w) - VRAM_WIDTH, h);
+	}
+	else
+	{
+		N3DS_VramSettle(x, y, w, h);
+	}
+}
+
+internal void N3DS_VramSettleAll(void)
+{
+	int i;
+
+	for (i = 0; i < s_vramPendingCount; i++)
+	{
+		const N3DS_PendingFill *e = &s_vramPending[i];
+
+		N3DS_FillVRAMRectNow(e->x, e->y, e->w, e->h, e->colour);
+	}
+	s_vramPendingCount = 0;
+}
+
+/*
+ * Record a fill. Each older pending fill it overlaps keeps only the part
+ * outside the new rect when that part is one or two full bands (the new rect
+ * spans the old one's whole width, or whole height); otherwise the old fill is
+ * written now. A list that would overflow writes its oldest kept entries.
+ */
+internal void N3DS_VramDeferFill(int x, int y, int w, int h, u16 colour)
+{
+	N3DS_PendingFill kept[N3DS_VRAM_PENDING_MAX * 2];
+	int keptCount = 0;
+	int i;
+
+	for (i = 0; i < s_vramPendingCount; i++)
+	{
+		const N3DS_PendingFill e = s_vramPending[i];
+
+		if (!N3DS_PendingOverlaps(&e, x, y, w, h))
+		{
+			kept[keptCount++] = e;
+		}
+		else if ((x <= e.x) && ((x + w) >= (e.x + e.w)))
+		{
+			if (y > e.y)
+			{
+				kept[keptCount] = e;
+				kept[keptCount].h = (s16)(y - e.y);
+				keptCount++;
+			}
+			if ((y + h) < (e.y + e.h))
+			{
+				kept[keptCount] = e;
+				kept[keptCount].y = (s16)(y + h);
+				kept[keptCount].h = (s16)((e.y + e.h) - (y + h));
+				keptCount++;
+			}
+		}
+		else if ((y <= e.y) && ((y + h) >= (e.y + e.h)))
+		{
+			if (x > e.x)
+			{
+				kept[keptCount] = e;
+				kept[keptCount].w = (s16)(x - e.x);
+				keptCount++;
+			}
+			if ((x + w) < (e.x + e.w))
+			{
+				kept[keptCount] = e;
+				kept[keptCount].x = (s16)(x + w);
+				kept[keptCount].w = (s16)((e.x + e.w) - (x + w));
+				keptCount++;
+			}
+		}
+		else
+		{
+			N3DS_FillVRAMRectNow(e.x, e.y, e.w, e.h, e.colour);
+		}
+	}
+
+	i = 0;
+	while ((keptCount - i) > (N3DS_VRAM_PENDING_MAX - 1))
+	{
+		N3DS_FillVRAMRectNow(kept[i].x, kept[i].y, kept[i].w, kept[i].h, kept[i].colour);
+		i++;
+	}
+	s_vramPendingCount = keptCount - i;
+	memcpy(s_vramPending, &kept[i], (size_t)s_vramPendingCount * sizeof(kept[0]));
+
+	s_vramPending[s_vramPendingCount].x = (s16)x;
+	s_vramPending[s_vramPendingCount].y = (s16)y;
+	s_vramPending[s_vramPendingCount].w = (s16)w;
+	s_vramPending[s_vramPendingCount].h = (s16)h;
+	s_vramPending[s_vramPendingCount].colour = colour;
+	s_vramPendingCount++;
+}
+
+/*
  * Lazy framebuffer-region mirror refresh.
  *
  * PC refreshes the mirror's framebuffer region from the rendered frame every
@@ -926,6 +1113,8 @@ internal void N3DS_RefreshFramebufferMirrorSlot(N3DS_FBStoreSlot *slot)
 	{
 		return;
 	}
+
+	N3DS_VramSettle(x, y, w, h);
 
 	/*
 	 * Change-detecting write: only cells whose content actually moved get
@@ -1298,6 +1487,11 @@ internal u32 N3DS_HashClutContent(s16 clut, TexFormat format)
 	u32 h = 0x811C9DC5u;
 	int i;
 
+	if (entries > 0)
+	{
+		N3DS_VramSettleWrapped(clutOriginX, clutOriginY, entries, 1);
+	}
+
 	for (i = 0; i < entries; i++)
 	{
 		const u16 c = vram[clutOriginY * VRAM_WIDTH + ((clutOriginX + i) & (VRAM_WIDTH - 1))];
@@ -1660,6 +1854,17 @@ internal void N3DS_DecodeAndTilePage(s16 texPage, s16 clut, TexFormat format, N3
 	 * constant per row and hoisted below. */
 	static const u8 uMort[8] = {0, 1, 4, 5, 16, 17, 20, 21};
 	int v;
+
+	if (s_vramPendingCount != 0)
+	{
+		const int pageWords = (format == TF_4_BIT) ? 64 : ((format == TF_8_BIT) ? 128 : 256);
+
+		if ((format == TF_4_BIT) || (format == TF_8_BIT))
+		{
+			N3DS_VramSettleWrapped(clutOriginX, clutOriginY, (format == TF_4_BIT) ? 16 : 256, 1);
+		}
+		N3DS_VramSettleWrapped(pageOriginX, pageOriginY + originV, pageWords, height);
+	}
 
 	if ((format == TF_4_BIT) || (format == TF_8_BIT))
 	{
@@ -3983,6 +4188,7 @@ int NativeRenderer_InitialisePSX(void)
 	int i;
 
 	memset(vram, 0, sizeof(vram));
+	s_vramPendingCount = 0;
 
 	for (i = 0; i < (N3DS_VRAM_CELL_ROWS * N3DS_VRAM_CELL_COLS); i++)
 	{
@@ -5487,6 +5693,8 @@ internal void N3DS_TileVRAMDisplayChunk(int srcX, int srcY, int w, int h, u16 *o
 {
 	int v;
 
+	N3DS_VramSettle(srcX, srcY, (w < N3DS_VRAM_DISPLAY_TEX_DIM) ? w : N3DS_VRAM_DISPLAY_TEX_DIM, (h < N3DS_VRAM_DISPLAY_TEX_DIM) ? h : N3DS_VRAM_DISPLAY_TEX_DIM);
+
 	for (v = 0; v < N3DS_VRAM_DISPLAY_TEX_DIM; v++)
 	{
 		int u;
@@ -5811,7 +6019,6 @@ void NativeRenderer_Clear(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 {
 	const u16 colour = NativeRenderer3DS_PackBGR555(r, g, b);
-	int row;
 
 	/* Called directly from game code (MM_Scrapbook) as well as from ClearImage
 	 * jobs on the worker; the fence no-ops on the worker and when the queue is
@@ -5830,17 +6037,7 @@ void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	}
 
 	N3DS_DirtyVRAMRect(x, y, w, h);
-
-	for (row = 0; row < h; row++)
-	{
-		u16 *dst = vram + x + ((y + row) * VRAM_WIDTH);
-		int col;
-
-		for (col = 0; col < w; col++)
-		{
-			dst[col] = colour;
-		}
-	}
+	N3DS_VramDeferFill(x, y, w, h, colour);
 }
 
 void NativeRenderer_CopyVRAM(u16 *src, int x, int y, int w, int h, int dstX, int dstY)
@@ -5860,9 +6057,12 @@ void NativeRenderer_CopyVRAM(u16 *src, int x, int y, int w, int h, int dstX, int
 		 * rect, pull the last presented frame into the mirror first --
 		 * screen-copy effects MoveImage the display area. */
 		N3DS_FBRefreshIfOverlaps(x, y, w, h);
+		N3DS_VramSettle(x, y, w, h);
 		src = vram;
 		stride = VRAM_WIDTH;
 	}
+
+	N3DS_VramSettle(dstX, dstY, w, h);
 
 	src += x + (y * stride);
 	dst = vram + dstX + (dstY * VRAM_WIDTH);
@@ -5885,6 +6085,7 @@ void NativeRenderer_ReadVRAM(u16 *dst, int x, int y, int dstW, int dstH)
 	/* StoreImage reading the display area (screenshot-style effects): same
 	 * freeze-frame pull as the decode-path trigger. */
 	N3DS_FBRefreshIfOverlaps(x, y, dstW, dstH);
+	N3DS_VramSettle(x, y, dstW, dstH);
 
 	src = vram + x + (VRAM_WIDTH * y);
 
@@ -5929,6 +6130,7 @@ int NativeRenderer_CaptureVRAMState(void *dst, int dstSize)
 		return 0;
 	}
 
+	N3DS_VramSettleAll();
 	memcpy(dst, vram, sizeof(vram));
 	return 1;
 }
@@ -5941,6 +6143,7 @@ int NativeRenderer_RestoreVRAMState(const void *src, int srcSize)
 	}
 
 	memcpy(vram, src, sizeof(vram));
+	s_vramPendingCount = 0;
 	return 1;
 }
 
