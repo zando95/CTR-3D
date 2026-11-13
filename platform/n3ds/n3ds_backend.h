@@ -556,6 +556,9 @@ void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, flo
  * allocated unit count means no placed texture -- drawn untextured. */
 void N3DS_TrackDraw_Leaf(int firstIndex, int indexCount, float otIndexLo, float ordinalLo, float ordinalSpan, float invIndexSpan, int atlasBin, int blend, int uvDx, int uvDy);
 void N3DS_TrackDraw_End(void);
+/* Track leaves issued directly and through citro3d since the last call
+ * (see g_dbg_trackDirect); clears both. */
+void N3DS_TrackDraw_TakeIssueCounts(unsigned *direct, unsigned *viaC3d);
 
 /* The top-screen CONTENT region: N3DS_C3DBeginFrame pillarboxes every
  * presented frame to a centred 4:3 (320-wide) viewport, so screen columns

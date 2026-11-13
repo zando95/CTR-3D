@@ -1245,9 +1245,14 @@ void NativeTrackDraw_IssueForWalk(void)
 		 * zero on Crash Cove or N. Gin Labs means the feature is not reaching the
 		 * screen, and separates "the blend pass never ran" from "it ran and looks
 		 * wrong" without a hardware capture. */
-		Platform_Log("[TRKDRAW] toggle=%d draws=%u blendDraws=%u leaves=%u skippedOrdinal=%u skippedOrdinalTotal=%u idx=%u degraded=%d\n",
+		/* direct=/citro3d= count leaf issues since the previous line (see
+		 * g_dbg_trackDirect). */
+		unsigned direct = 0, viaC3d = 0;
+
+		N3DS_TrackDraw_TakeIssueCounts(&direct, &viaC3d);
+		Platform_Log("[TRKDRAW] toggle=%d draws=%u blendDraws=%u leaves=%u skippedOrdinal=%u skippedOrdinalTotal=%u idx=%u degraded=%d direct=%u citro3d=%u\n",
 		             g_dbg_trackRender, drawsIssued, blendDrawsIssued, snap->leafCount, leavesSkippedOrdinal, s_totalSkippedOrdinal, indicesDrawn,
-		             snap->degraded);
+		             snap->degraded, direct, viaC3d);
 
 	}
 }
