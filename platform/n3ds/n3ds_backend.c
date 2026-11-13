@@ -946,23 +946,28 @@ static int s_trackGeomReady = 0;
 static u32 s_trackIndexPa = 0;
 
 /*
- * Direct leaf issue. An opaque leaf whose texture state (atlas bin, cutout
- * split) matches the leaf drawn just before it in the same pass goes to the GPU
- * as its depth-range uniform plus citro3d's own draw-elements register sequence,
- * written straight into the command buffer. citro3d's per-draw context update
- * is skipped: with the program, buffers, textures, combiner, blend and depth
- * state unchanged since the previous leaf it would re-emit both texture units
- * and scan every uniform register for nothing. Blended leaves and any leaf that
- * changes state go through citro3d and become the reference for the next one.
- * The depth-range register's citro3d shadow is kept equal to what the GPU holds,
- * so a later citro3d upload of that register sends the same value.
- * dumpreq `trackdirect [N]`; 0 sends every leaf through citro3d.
+ * Direct leaf issue. An opaque leaf drawn right after another opaque leaf of
+ * the same pass, with the same cutout split, goes to the GPU as its depth-range
+ * uniform plus citro3d's own draw-elements register sequence, written straight
+ * into the command buffer. citro3d's per-draw context update is skipped: with
+ * the program, buffers, combiner, blend and depth state unchanged since the
+ * previous leaf it would re-emit both texture units and scan every uniform
+ * register for nothing. When the leaf's atlas bin differs from the previous
+ * leaf's (both textured), the texture units it uses are rewritten first, as
+ * citro3d's texture bind writes them, followed by a texture-cache clear, and
+ * citro3d is told of the bind so its own next update re-emits the same
+ * textures. Blended leaves and any leaf that changes the split or the textured
+ * mode go through citro3d and become the reference for the next one. The
+ * depth-range register's citro3d shadow is kept equal to what the GPU holds, so
+ * a later citro3d upload of that register sends the same value.
+ * dumpreq `trackdirect [N]`: 0 sends every leaf through citro3d, 1 issues only
+ * same-bin leaves directly, 2 (default) also atlas switches.
  */
-int g_dbg_trackDirect = 1;
+int g_dbg_trackDirect = 2;
 static int s_trackDirectValid = 0;
 static int s_trackDirectBin = -1;
 static int s_trackDirectSplit = 0;
-static u32 s_trackLeavesDirect = 0, s_trackLeavesC3d = 0;
+static u32 s_trackLeavesDirect = 0, s_trackLeavesC3d = 0, s_trackAtlasSwitchesDirect = 0;
 /* Recorded by the upload so N3DS_TrackGeom_PatchUV can bound-check a vertex
  * index against the block it is actually writing into, rather than against a
  * count the caller believes is current. The staging array the upload copied
@@ -2999,12 +3004,46 @@ static void N3DS_TrackDraw_LeafDirect(u32 indexOffset, int indexCount, float x, 
 	GPUCMD_AddMaskedWrite(GPUREG_PRIMITIVE_CONFIG, 0x8, 0);
 }
 
-void N3DS_TrackDraw_TakeIssueCounts(unsigned *direct, unsigned *viaC3d)
+/* One texture unit's registers as C3Di_SetTex writes them for a 2D texture:
+ * border colour, dimensions, parameters, LOD and address as one incremental
+ * write from the unit's border-colour register, then its format. */
+static void N3DS_TrackDraw_DirectTexUnit(u32 regBorder, u32 regType, const C3D_Tex *tex)
+{
+	u32 words[5];
+
+	words[0] = tex->border;
+	words[1] = tex->dim;
+	words[2] = tex->param;
+	words[3] = tex->lodParam;
+	words[4] = osConvertVirtToPhys(tex->data) >> 3;
+	GPUCMD_AddIncrementalWrites(regBorder, words, 5);
+	GPUCMD_AddWrite(regType, (u32)tex->fmt & 0xFu);
+}
+
+/* The atlas switch of a direct leaf: the units the textured combiner reads
+ * (unit 0, and unit 1 for the cutout split), then the texture-cache clear
+ * citro3d writes after any texture bind. The enabled-unit set is unchanged, so
+ * the unit-enable bytes are not rewritten. */
+static void N3DS_TrackDraw_DirectAtlasSwitch(int bin, int split)
+{
+	N3DS_TrackDraw_DirectTexUnit(GPUREG_TEXUNIT0_BORDER_COLOR, GPUREG_TEXUNIT0_TYPE, &s_trackAtlasTextures[bin]);
+	C3D_TexBind(0, &s_trackAtlasTextures[bin]);
+	if (split)
+	{
+		N3DS_TrackDraw_DirectTexUnit(GPUREG_TEXUNIT1_BORDER_COLOR, GPUREG_TEXUNIT1_TYPE, &s_trackAtlasTexturesNearest[bin]);
+		C3D_TexBind(1, &s_trackAtlasTexturesNearest[bin]);
+	}
+	GPUCMD_AddMaskedWrite(GPUREG_TEXUNIT_CONFIG, 0x4, 0x10000);
+}
+
+void N3DS_TrackDraw_TakeIssueCounts(unsigned *direct, unsigned *viaC3d, unsigned *atlasSwitches)
 {
 	*direct = s_trackLeavesDirect;
 	*viaC3d = s_trackLeavesC3d;
+	*atlasSwitches = s_trackAtlasSwitchesDirect;
 	s_trackLeavesDirect = 0;
 	s_trackLeavesC3d = 0;
+	s_trackAtlasSwitchesDirect = 0;
 }
 
 void N3DS_TrackDraw_Leaf(int firstIndex, int indexCount, float otIndexLo, float ordinalLo, float ordinalSpan, float invIndexSpan, int atlasBin, int blend, int uvDx, int uvDy)
@@ -3039,12 +3078,19 @@ void N3DS_TrackDraw_Leaf(int firstIndex, int indexCount, float otIndexLo, float 
 	split = textured && g_dbg_trackBilinear && (blend == 3);
 	stateBin = textured ? atlasBin : -1;
 
-	if (g_dbg_trackDirect && s_trackDirectValid && (blend == 3) && (stateBin == s_trackDirectBin) && (split == s_trackDirectSplit))
+	if (g_dbg_trackDirect && s_trackDirectValid && (blend == 3) && (split == s_trackDirectSplit) &&
+	    ((stateBin == s_trackDirectBin) || ((g_dbg_trackDirect >= 2) && (stateBin >= 0) && (s_trackDirectBin >= 0))))
 	{
 		const u32 indexPa = s_trackIndexPa + ((u32)firstIndex * (u32)sizeof(u16));
 
 		if ((s_trackIndexPa != 0) && (indexPa >= s_trackBufInfo.base_paddr))
 		{
+			if (stateBin != s_trackDirectBin)
+			{
+				N3DS_TrackDraw_DirectAtlasSwitch(stateBin, split);
+				s_trackDirectBin = stateBin;
+				s_trackAtlasSwitchesDirect++;
+			}
 			N3DS_TrackDraw_LeafDirect(indexPa - s_trackBufInfo.base_paddr, indexCount, -otIndexLo, ordinalLo, ordinalSpan, invIndexSpan);
 			s_trackLeavesDirect++;
 			return;
@@ -4238,10 +4284,11 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  2=both(diagnostic overlay). Bare token cycles 0->1->2->0;
 	 *                  'trackrender N' sets a specific state. The SELECT+START
 	 *                  master flips it with the rest of the renderer config.
-	 *   trackdirect [N] -- g_dbg_trackDirect: 1 (default) issues an opaque
-	 *                  track leaf whose texture state matches the previous
-	 *                  leaf as raw GPU commands; 0 sends every leaf through
-	 *                  citro3d. Bare token toggles. Takes effect next leaf.
+	 *   trackdirect [N] -- g_dbg_trackDirect: 2 (default) issues an opaque
+	 *                  track leaf after another opaque leaf as raw GPU
+	 *                  commands, switching atlas directly; 1 only when the
+	 *                  atlas is unchanged; 0 sends every leaf through citro3d.
+	 *                  Bare token flips between 0 and 2. Takes effect next leaf.
 	 *   stereoreuse [N] -- g_dbg_stereoReuse: 1 (default) draws the right eye
 	 *                  by submitting the left eye's command list a second
 	 *                  time; 0 replays the journal. Bare token toggles. Takes
@@ -4895,8 +4942,19 @@ unsigned int N3DS_ReadButtons(void)
 				{
 					extern int g_dbg_trackDirect;
 
-					g_dbg_trackDirect = (word[11] == ' ') ? (atoi(&word[12]) != 0) : !g_dbg_trackDirect;
-					N3DS_DebugLog(g_dbg_trackDirect ? "[CTR-3DS] track leaves: direct issue for same-state leaves" : "[CTR-3DS] track leaves: all through citro3d");
+					if (word[11] == ' ')
+					{
+						const int v = atoi(&word[12]);
+
+						g_dbg_trackDirect = (v < 0) ? 0 : ((v > 2) ? 2 : v);
+					}
+					else
+					{
+						g_dbg_trackDirect = g_dbg_trackDirect ? 0 : 2;
+					}
+					N3DS_DebugLog((g_dbg_trackDirect == 2)   ? "[CTR-3DS] track leaves: direct issue, atlas switches included"
+					              : (g_dbg_trackDirect == 1) ? "[CTR-3DS] track leaves: direct issue for same-atlas leaves only"
+					                                         : "[CTR-3DS] track leaves: all through citro3d");
 				}
 				else if (strncmp(word, "stereoreuse", 11) == 0)
 				{
