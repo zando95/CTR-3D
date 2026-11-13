@@ -4343,11 +4343,15 @@ internal int NativeAudio_XAStreamCountAudioSectors(struct NativeAudioXaSource *s
  */
 /* Blob size, fixed before the blob is allocated. A New 3DS has the heap for
  * every GAME and EXTRA line. An original 3DS has about 14 MiB of heap for the
- * whole game and about 3.7 MiB of it in use during a race besides this blob,
- * so it caches what fits 8 MiB (the race stings first, then voice lines) and
- * the rest stream from the SD card. */
-#define NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES (32u * 1024u * 1024u)
-#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES (8u * 1024u * 1024u)
+ * whole game, about 3.7 MiB of which the rest of the game needs at its peak in
+ * a race, so it caches up to 8 MiB (the race stings first, then voice lines)
+ * while leaving NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE free, and the rest
+ * stream from the SD card. A build with less heap (a larger executable) gets a
+ * smaller cache, not a level that fails to load. */
+#define NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES  (32u * 1024u * 1024u)
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES  (8u * 1024u * 1024u)
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE (5u * 1024u * 1024u)
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP   (512u * 1024u)
 internal u32 s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES;
 #define NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES (s_xaVoiceCacheMaxBytes)
 #define NATIVE_AUDIO_XA_TRACK_INDEX_MAX       512
@@ -4542,6 +4546,26 @@ internal u32 NativeAudio_XAVoiceCachePlannedSectors(int categoryID)
 		total += (u32)fileMax[f];
 	}
 	return total;
+}
+
+/* The largest blob up to NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES that leaves
+ * the reserve free, found by allocating blob and reserve together (the heap's
+ * size is not visible from this file). 0 when not even one step fits. */
+internal u32 NativeAudio_XAVoiceCacheOld3DSBytes(void)
+{
+	u32 bytes;
+
+	for (bytes = NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES; bytes >= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP; bytes -= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP)
+	{
+		void *probe = malloc((size_t)bytes + NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE);
+
+		if (probe != NULL)
+		{
+			free(probe);
+			return bytes;
+		}
+	}
+	return 0;
 }
 
 internal void NativeAudio_XAVoiceCacheBuildCategoryBegin(int categoryID)
@@ -5036,11 +5060,11 @@ void NativeAudio_VoiceCacheEnsureBegin(void)
 
 	if (!N3DS_IsNew3DS())
 	{
-		s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES;
+		s_xaVoiceCacheMaxBytes = NativeAudio_XAVoiceCacheOld3DSBytes();
 		s_xaCacheRaceStings = 1;
 	}
 	N3DS_LogMemory("before voice cache");
-	s_xaVoiceCache.blob = (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES);
+	s_xaVoiceCache.blob = (NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES > 0) ? (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES) : NULL;
 	if (s_xaVoiceCache.blob == NULL)
 	{
 		NativeAudio_XAVoiceCacheLog("[XAPRELOAD] no %u KiB for the voice cache -- voice lines stay on the SD path",
@@ -5238,7 +5262,7 @@ int NativeAudio_VoiceCacheRebuildBegin(void)
 
 	if (s_xaVoiceCache.blob == NULL)
 	{
-		s_xaVoiceCache.blob = (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES);
+		s_xaVoiceCache.blob = (NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES > 0) ? (u8 *)malloc(NATIVE_AUDIO_XA_VOICE_CACHE_MAX_BYTES) : NULL;
 		if (s_xaVoiceCache.blob == NULL)
 		{
 			NativeAudio_XAVoiceCacheLog("[XAPRELOAD] no %u KiB to rebuild the voice cache -- voice lines stay on the SD path",
