@@ -2040,35 +2040,58 @@ int NativeGpu_SkyGpuSubmit(struct Skybox *sky, struct PushBuffer *pb)
 		}
 	}
 
+	/* Faces go to the GPU in the order retail's walk paints them, because the
+	 * sky's layers overlap (Coco Park's clouds lie over its gradient) and the
+	 * dome writes no depth. DrawSky_Full links every face head-first into one
+	 * OT slot, so the walk paints them in reverse of emission: the first face
+	 * emitted lands on top. Emission runs over the yaw sectors base, +1, -1,
+	 * -2 (then +2, -3 with the wide window); the sectors retail never emits go
+	 * first, under all of them. A face with a nonzero OT offset would need a
+	 * sort, so such a sky stays on the packet path. */
 	vertBase = (const char *)sky->ptrVertex;
 	vertLimit = (u32)numVertex * (u32)sizeof(struct ShortVertex);
-	for (seg = 0; seg < NUM_SKYBOX_SEGMENTS; seg++)
 	{
-		const struct SkyboxFace *face = sky->ptrFaces[seg];
-		const int numFaces = (u16)sky->numFaces[seg];
-		int f;
+		static const s8 skyEmitStep[NUM_SKYBOX_SEGMENTS] = {0, 1, -1, -2, 2, -3, 3, 4};
+		const int baseSeg = (int)((((u32)(u16)pb->rot.y + 0x500u) >> 9) & (NUM_SKYBOX_SEGMENTS - 1));
+		int k;
 
-		if (face == NULL)
+		for (k = NUM_SKYBOX_SEGMENTS - 1; k >= 0; k--)
 		{
-			continue;
-		}
-		for (f = 0; f < numFaces; f++, face++)
-		{
-			const u32 a = face->A, b = face->B, c = face->C;
+			const struct SkyboxFace *face;
+			int f;
 
-			if ((a >= vertLimit) || (b >= vertLimit) || (c >= vertLimit))
+			seg = (baseSeg + skyEmitStep[k]) & (NUM_SKYBOX_SEGMENTS - 1);
+			if (sky->ptrFaces[seg] == NULL)
 			{
 				continue;
 			}
-			if (!s_skyGpuVertOk[a / sizeof(struct ShortVertex)] || !s_skyGpuVertOk[b / sizeof(struct ShortVertex)] ||
-			    !s_skyGpuVertOk[c / sizeof(struct ShortVertex)])
+			face = &sky->ptrFaces[seg][(u16)sky->numFaces[seg]];
+			for (f = (u16)sky->numFaces[seg] - 1; f >= 0; f--)
 			{
-				continue;
+				u32 a, b, c;
+
+				face--;
+				if (face->D != 0)
+				{
+					return 0;
+				}
+				a = face->A;
+				b = face->B;
+				c = face->C;
+				if ((a >= vertLimit) || (b >= vertLimit) || (c >= vertLimit))
+				{
+					continue;
+				}
+				if (!s_skyGpuVertOk[a / sizeof(struct ShortVertex)] || !s_skyGpuVertOk[b / sizeof(struct ShortVertex)] ||
+				    !s_skyGpuVertOk[c / sizeof(struct ShortVertex)])
+				{
+					continue;
+				}
+				NativeGpu_SkyGpuPutVertex(&slot->verts[count + 0], (const struct ShortVertex *)(const void *)(vertBase + a));
+				NativeGpu_SkyGpuPutVertex(&slot->verts[count + 1], (const struct ShortVertex *)(const void *)(vertBase + b));
+				NativeGpu_SkyGpuPutVertex(&slot->verts[count + 2], (const struct ShortVertex *)(const void *)(vertBase + c));
+				count += 3;
 			}
-			NativeGpu_SkyGpuPutVertex(&slot->verts[count + 0], (const struct ShortVertex *)(const void *)(vertBase + a));
-			NativeGpu_SkyGpuPutVertex(&slot->verts[count + 1], (const struct ShortVertex *)(const void *)(vertBase + b));
-			NativeGpu_SkyGpuPutVertex(&slot->verts[count + 2], (const struct ShortVertex *)(const void *)(vertBase + c));
-			count += 3;
 		}
 	}
 
