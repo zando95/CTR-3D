@@ -287,12 +287,14 @@ global_variable struct
 #define NATIVE_AUDIO_XA_SPAN_SECTORS       64
 /*
  * With no audio thread the read and the decode run on the game thread, so a
- * stall is a visible frame, and an SD read costs about 0.7 ms a sector on the
- * Old 3DS. The span buffer becomes a ring the pump reads ahead into a few
- * sectors per vblank (NativeAudio_XASpanRingAppend); playback needs about 2.5
- * a vblank (one sector in 16 for a mono voice line, one in 8 for a stereo
- * sting), so 4 keeps ahead. A sector the ring does not hold yet is read
- * synchronously, NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE at a time.
+ * stall is a visible frame. An SD read on the Old 3DS costs about 4.2 ms per
+ * call plus 0.64 ms a sector, so reads stay 16 sectors: smaller ones pay the
+ * per-call cost more often for the same bytes. The span buffer is a ring
+ * (NativeAudio_XASpanRingAppend) the pump tops up with one 16-sector read when
+ * fewer than 16 sectors are left ahead of the decode, about once every 6
+ * vblanks of playback (one sector in 16 for a mono voice line, one in 8 for a
+ * stereo sting). A sector the ring does not hold yet is read synchronously,
+ * the same 16 at a time.
  *
  * A stream starts with one decoded sector instead of the prime depth: the
  * parcel top-up waits for decoded data instead of playing past it
@@ -300,8 +302,8 @@ global_variable struct
  * one sector per vblank from what the ring already holds, reading
  * synchronously only when the music channel is about to run dry.
  */
-#define NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE      4
-#define NATIVE_AUDIO_XA_READAHEAD_SECTORS_INLINE 4
+#define NATIVE_AUDIO_XA_SPAN_SECTORS_INLINE      16
+#define NATIVE_AUDIO_XA_READAHEAD_SECTORS_INLINE 16
 #define NATIVE_AUDIO_XA_AHEAD_TARGET_INLINE      NATIVE_AUDIO_XA_PRIME_TARGET
 #define NATIVE_AUDIO_XA_PRIME_TARGET_INLINE      1
 /* Parcels left in the music channel below which the pump may block on the SD card. */
@@ -5570,15 +5572,23 @@ internal void NativeAudio_XAStreamPump(void)
 		}
 		if (!N3DS_AudioThreadIsRunning())
 		{
-			/* Game thread: no burst. Read a few SD sectors ahead, then decode
-			 * at most one sector (3.2 vblanks of audio at the least) from what
-			 * is read; block on the SD card only when the music channel is
-			 * about to run dry. */
+			/* Game thread: no burst. Keep one 16-sector read ahead of the
+			 * decode, then decode at most one sector (3.2 vblanks of audio at
+			 * the least) from what is read; block on the SD card only when the
+			 * music channel is about to run dry. */
 			struct NativeAudioXaStream *stream = &s_audio.xaStream;
 
 			if (stream->open && !stream->endOfStream && (stream->source.ramSectors == NULL) && (stream->spanBuf != NULL))
 			{
-				NativeAudio_XASpanRingAppend(stream, NATIVE_AUDIO_XA_READAHEAD_SECTORS_INLINE);
+				int ringEnd = stream->spanStartSector + stream->spanSectorCount;
+				int readAhead = ((stream->nextPhysicalSector >= stream->spanStartSector) && (stream->nextPhysicalSector < ringEnd))
+				                    ? (ringEnd - stream->nextPhysicalSector)
+				                    : 0;
+
+				if (readAhead < NATIVE_AUDIO_XA_READAHEAD_SECTORS_INLINE)
+				{
+					NativeAudio_XASpanRingAppend(stream, NATIVE_AUDIO_XA_READAHEAD_SECTORS_INLINE);
+				}
 			}
 			if (ahead < NATIVE_AUDIO_XA_AHEAD_TARGET_INLINE)
 			{
