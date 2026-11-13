@@ -1212,9 +1212,12 @@ static void N3DS_AudioXaTopUp(void)
 
 	while ((N3DS_NdspGetQueuedBlocks() < N3DS_NdspCushionTarget()) && (guard < 8))
 	{
-		if (!NativeAudio_RenderXAParcelForAudioThread())
+		/* 0: XA idle, or the track just ended. -1 (no worker only): the next
+		 * parcel is not decoded yet. Either way the DSP gets what is pending
+		 * rather than leaving it in the aggregate slot. */
+		if (NativeAudio_RenderXAParcelForAudioThread() <= 0)
 		{
-			xaIdle = 1; /* XA idle, or the track just ended */
+			xaIdle = 1;
 			break;
 		}
 		guard++;
