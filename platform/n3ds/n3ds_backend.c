@@ -3568,7 +3568,8 @@ void N3DS_BottomMapDraw_End(void)
  *   A  frame start: the left target and the frame state, emitted by a
  *      zero-area draw, and the left eye's vectors;
  *   L  the left eye's draws, opening with the frame state again (flagged
- *      after A's draw, target excepted);
+ *      after A's draw, target excepted) and closing with a zero-area draw
+ *      that emits whatever was set after the last one;
  *   R  the right target, emitted by a zero-area draw, and the right eye's
  *      vectors;
  *   L  again, then citro3d's own list (the bottom screen) at frame end.
@@ -3744,6 +3745,7 @@ static int N3DS_StereoReuseRightEye(void)
 	u32 offset = 0;
 	u32 *listBuf = NULL;
 	u32 listWords = 0;
+	int closeTri = -1;
 	int tri = -1;
 	int outcome = 0; /* 0 = resubmitted; 7 = nothing drawn; others replay */
 
@@ -3771,16 +3773,29 @@ static int N3DS_StereoReuseRightEye(void)
 	}
 	if (outcome == 0)
 	{
+		closeTri = N3DS_StereoReuseStateTri();
 		tri = N3DS_StereoReuseStateTri();
-		if (tri < 0)
+		if ((closeTri < 0) || (tri < 0))
 		{
 			outcome = 5;
 		}
 	}
 	if (outcome == 0)
 	{
-		/* One flush covers every vertex L and R read, R's triangle included. */
+		/* One flush covers every vertex L and R read, their triangles
+		 * included. */
 		GSPGPU_FlushDataCache(s_vertexBufferMem, (u32)s_vertexCursor * sizeof(N3DS_Vertex));
+		/* Close L on citro3d's current state: everything set after the left
+		 * eye's last draw is emitted inside L by a zero-area draw, so after L
+		 * runs the second time the GPU matches citro3d's view of it again.
+		 * Emitted in R instead, L's second run would overwrite it, and the
+		 * next pass (the bottom screen, then the next frame's left eye) would
+		 * draw on settings citro3d believes are current but the GPU no longer
+		 * has. Packet state first, so the triangle reads the frame vertex
+		 * buffer. */
+		C3D_BindProgram(&s_modelShaderProgram);
+		N3DS_BindPacketDrawState();
+		C3D_DrawArrays(GPU_TRIANGLES, closeTri, 3);
 		listBuf = buf;
 		C3D_FrameSplit(GX_CMDLIST_FLUSH);
 		GPUCMD_GetBuffer(&buf, &size, &offset);
