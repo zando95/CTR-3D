@@ -257,6 +257,12 @@ int N3DS_StereoSkyPadX(void);
  * N3DS_C3DDrawTriangles), or -1 if the frame buffer is full -- caller must
  * skip drawing in that case, not draw from a stale/wrong offset. */
 int N3DS_C3DAppendVertices(const N3DS_Vertex *vertices, int count);
+/* In-place form of N3DS_C3DAppendVertices for a caller that writes vertices
+ * directly: room for up to maxCount at the frame cursor (first index in
+ * *outBase), or NULL when the frame buffer cannot hold maxCount. The caller
+ * then commits how many it wrote, and nothing else may append in between. */
+N3DS_Vertex *N3DS_C3DReserveVertices(int maxCount, int *outBase);
+void N3DS_C3DCommitVertices(int count);
 void N3DS_C3DDrawTriangles(int startVertex, int triangleCount);
 /* Highest vertex count reached in any single frame so far. Reported in the
  * stats block: if this ever approaches N3DS_MAX_FRAME_VERTICES the budget

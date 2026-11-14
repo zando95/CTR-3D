@@ -2036,6 +2036,20 @@ internal int NativeModelDraw_FaceBlend(const struct NativeModelEmitFace *face, c
 	}
 }
 
+/*
+ * How the draw turns a face into vertices. 0: N3DS_ResolveTriangleTexture per
+ * textured face, each face appended through N3DS_C3DAppendVertices. 1: the
+ * texture through N3DS_ModelTex_Resolve's per-key table, appended the same way.
+ * 2 (default): the table, with each instance's faces written straight into the
+ * frame vertex buffer, and pass 1 skipping instances with no blended face.
+ * dumpreq `modelfast [N]`.
+ */
+int g_dbg_modelFast = 2;
+
+/* Pass 0 records which instances have a blended face; pass 1 visits only those
+ * (and ghosts, whose mask pass 1 draws). */
+global_variable u8 s_mdHasBlend[MODELEMIT_MAX_INSTANCES];
+
 void NativeModelDraw_IssueForWalk(void)
 {
 	const struct NativeModelEmitSnapshot *snap = &s_modelEmitBuf[s_modelEmitReadIdx];
@@ -2043,6 +2057,7 @@ void NativeModelDraw_IssueForWalk(void)
 	static u32 s_totalAppendFail = 0;
 	u32 drawsIssued = 0, trisDrawn = 0, instDrawn = 0, appendFailed = 0, blendTrisDrawn = 0, maskTrisDrawn = 0;
 	u32 i;
+	const int fast = g_dbg_modelFast;
 
 	if (g_dbg_modelRender == 0)
 	{
@@ -2058,6 +2073,10 @@ void NativeModelDraw_IssueForWalk(void)
 	}
 
 	N3DS_ModelDraw_Begin();
+	if (fast)
+	{
+		N3DS_ModelTex_BeginDraw();
+	}
 
 	/*
 	 * TWO PASSES, opaque then blended -- the same shape as the resident track's
@@ -2094,6 +2113,21 @@ void NativeModelDraw_IssueForWalk(void)
 		float qx[4], qy[4], qw[4], h;
 		int instanceBound = 0;
 		u32 t;
+		/* fast 2: this instance-pass's faces go straight into the frame vertex
+		 * buffer, reserved at the first face drawn. Nothing else appends until
+		 * the commit below. */
+		N3DS_Vertex *direct = NULL;
+		int directBase = 0, directRefused = 0;
+		u32 directTris = 0;
+
+		if (pass == 0)
+		{
+			s_mdHasBlend[i] = 0;
+		}
+		else if ((fast >= 2) && !s_mdHasBlend[i] && !inst->ghostComposite)
+		{
+			continue;
+		}
 
 		NativeModelDraw_ComposeRows(inst, qx, qy, qw, &h);
 
@@ -2176,12 +2210,17 @@ void NativeModelDraw_IssueForWalk(void)
 			const int faceBlendMode = NativeModelDraw_FaceBlend(face, inst);
 			const int faceIsBlended = (faceBlendMode != 0);
 			N3DS_Vertex out[3];
-			int atlasIdx = -1, pixelBaseU = 0, pixelBaseV = 0, originU = 0, originV = 0;
+			int atlasIdx = -1, offU = 0, offV = 0;
 			int textured = face->textured;
 			int offset;
 			int v;
 			N3DS_TexView view;
 			int runBlend;
+
+			if (faceIsBlended)
+			{
+				s_mdHasBlend[i] = 1;
+			}
 
 			/*
 			 * Pass 0 draws EVERY face -- opaque ones whole, semi-transparent ones
@@ -2235,7 +2274,14 @@ void NativeModelDraw_IssueForWalk(void)
 				instDrawn++;
 			}
 
-			if (textured)
+			if (textured && fast)
+			{
+				/* Same answer as the per-face resolve below, from a table
+				 * keyed on the texture; see N3DS_ModelTex_Resolve. */
+				N3DS_ModelTex_Resolve((s16)face->tpage, (s16)face->clut, view, (u8)src[0].u, (u8)src[0].v, (u8)src[1].u, (u8)src[1].v, (u8)src[2].u,
+				                      (u8)src[2].v, &atlasIdx, &offU, &offV);
+			}
+			else if (textured)
 			{
 				/*
 				 * Resolve through the packet path's own decode cache -- same
@@ -2251,6 +2297,7 @@ void NativeModelDraw_IssueForWalk(void)
 				 * path's GPU state and means nothing here.
 				 */
 				GrVertex uvOnly[3];
+				int pixelBaseU = 0, pixelBaseV = 0, originU = 0, originV = 0;
 
 				for (v = 0; v < 3; v++)
 				{
@@ -2261,6 +2308,8 @@ void NativeModelDraw_IssueForWalk(void)
 
 				N3DS_ResolveTriangleTexture(&uvOnly[0], &uvOnly[1], &uvOnly[2], (s16)face->tpage, (s16)face->clut, GetTPageFormat((int)(s16)face->tpage),
 				                            view, &atlasIdx, &pixelBaseU, &pixelBaseV, &originU, &originV);
+				offU = pixelBaseU - originU;
+				offV = pixelBaseV - originV;
 			}
 
 			for (v = 0; v < 3; v++)
@@ -2278,8 +2327,8 @@ void NativeModelDraw_IssueForWalk(void)
 					 * (2a+1) against a 1/2048 shader scale, with V flipped as 2047-2a because the
 					 * PICA samples the atlas bottom-up. See that function's comments for the
 					 * derivation. */
-					out[v].u = (s16)(((pixelBaseU + ((int)src[v].u - originU)) << 1) + 1);
-					out[v].v = (s16)(2047 - ((pixelBaseV + ((int)src[v].v - originV)) << 1));
+					out[v].u = (s16)(((offU + (int)src[v].u) << 1) + 1);
+					out[v].v = (s16)(2047 - ((offV + (int)src[v].v) << 1));
 				}
 				else
 				{
@@ -2297,7 +2346,22 @@ void NativeModelDraw_IssueForWalk(void)
 				out[v]._pad = 0;
 			}
 
-			offset = N3DS_C3DAppendVertices(out, 3);
+			if ((fast >= 2) && (direct == NULL) && !directRefused)
+			{
+				direct = N3DS_C3DReserveVertices((int)inst->triCount * 3, &directBase);
+				directRefused = (direct == NULL);
+			}
+
+			if (direct != NULL)
+			{
+				memcpy(&direct[directTris * 3], out, sizeof(out));
+				offset = directBase + (int)(directTris * 3);
+				directTris++;
+			}
+			else
+			{
+				offset = N3DS_C3DAppendVertices(out, 3);
+			}
 
 			if (offset < 0)
 			{
@@ -2305,8 +2369,10 @@ void NativeModelDraw_IssueForWalk(void)
 				 * silent -- a silent version of this is what once deleted
 				 * geometry with no log line at all (n3ds_backend.h's SIZING
 				 * comment). Stop this instance; later instances would fail the
-				 * same way. */
+				 * same way. Pass 1 then visits it, since its faces were not all
+				 * classified. */
 				appendFailed++;
+				s_mdHasBlend[i] = 1;
 				break;
 			}
 
@@ -2338,6 +2404,11 @@ void NativeModelDraw_IssueForWalk(void)
 			}
 		}
 
+		if (direct != NULL)
+		{
+			N3DS_C3DCommitVertices((int)directTris * 3);
+		}
+
 		NativeModelDraw_FlushRun(&run, &drawsIssued);
 	}
 	}
@@ -2359,6 +2430,13 @@ void NativeModelDraw_IssueForWalk(void)
 		Platform_LogInstrument("[MDLDRAW] toggle=%d inst=%lu draws=%lu tris=%lu blendTris=%lu ghostMask=%lu appendFail=%lu appendFailTotal=%lu\n", g_dbg_modelRender,
 		                       (unsigned long)instDrawn, (unsigned long)drawsIssued, (unsigned long)trisDrawn, (unsigned long)blendTrisDrawn,
 		                       (unsigned long)maskTrisDrawn, (unsigned long)appendFailed, (unsigned long)s_totalAppendFail);
+		/* Texture table lookups since the last line: hits, misses (each one a
+		 * full resolve), and misses whose key the table may not hold. */
+		Platform_LogInstrument("[MDLTEX] fast=%d hits=%lu misses=%lu unstored=%lu\n", fast, (unsigned long)s_mtcHits, (unsigned long)s_mtcMisses,
+		                       (unsigned long)s_mtcUnstored);
+		s_mtcHits = 0;
+		s_mtcMisses = 0;
+		s_mtcUnstored = 0;
 	}
 }
 #endif /* __3DS__ */

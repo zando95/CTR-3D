@@ -2176,6 +2176,31 @@ int N3DS_C3DAppendVertices(const N3DS_Vertex *vertices, int count)
 	return base;
 }
 
+N3DS_Vertex *N3DS_C3DReserveVertices(int maxCount, int *outBase)
+{
+	if ((maxCount <= 0) || ((s_vertexCursor + maxCount) > N3DS_MAX_FRAME_VERTICES))
+	{
+		return NULL;
+	}
+
+	*outBase = s_vertexCursor;
+	return (N3DS_Vertex *)s_vertexBufferMem + s_vertexCursor;
+}
+
+void N3DS_C3DCommitVertices(int count)
+{
+	if ((count <= 0) || ((s_vertexCursor + count) > N3DS_MAX_FRAME_VERTICES))
+	{
+		return;
+	}
+
+	s_vertexCursor += count;
+	if (s_vertexHighWater < s_vertexCursor)
+	{
+		s_vertexHighWater = s_vertexCursor;
+	}
+}
+
 int N3DS_C3DFrameVertexHighWater(void)
 {
 	return s_vertexHighWater;
@@ -4289,6 +4314,11 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  commands, switching atlas directly; 1 only when the
 	 *                  atlas is unchanged; 0 sends every leaf through citro3d.
 	 *                  Bare token flips between 0 and 2. Takes effect next leaf.
+	 *   modelfast [N] -- g_dbg_modelFast: 2 (default) resolves model face
+	 *                  textures through the per-key table and writes the
+	 *                  vertices in place; 1 the table with appends; 0 the
+	 *                  per-face resolve. Bare token flips between 0 and 2.
+	 *                  Takes effect next frame.
 	 *   stereoreuse [N] -- g_dbg_stereoReuse: 1 (default) draws the right eye
 	 *                  by submitting the left eye's command list a second
 	 *                  time; 0 replays the journal. Bare token toggles. Takes
@@ -4955,6 +4985,24 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog((g_dbg_trackDirect == 2)   ? "[CTR-3DS] track leaves: direct issue, atlas switches included"
 					              : (g_dbg_trackDirect == 1) ? "[CTR-3DS] track leaves: direct issue for same-atlas leaves only"
 					                                         : "[CTR-3DS] track leaves: all through citro3d");
+				}
+				else if (strncmp(word, "modelfast", 9) == 0)
+				{
+					extern int g_dbg_modelFast;
+
+					if (word[9] == ' ')
+					{
+						const int v = atoi(&word[10]);
+
+						g_dbg_modelFast = (v < 0) ? 0 : ((v > 2) ? 2 : v);
+					}
+					else
+					{
+						g_dbg_modelFast = g_dbg_modelFast ? 0 : 2;
+					}
+					N3DS_DebugLog((g_dbg_modelFast == 2)   ? "[CTR-3DS] model faces: texture table, direct vertex writes"
+					              : (g_dbg_modelFast == 1) ? "[CTR-3DS] model faces: texture table, appended"
+					                                       : "[CTR-3DS] model faces: per-face resolve, appended");
 				}
 				else if (strncmp(word, "stereoreuse", 11) == 0)
 				{

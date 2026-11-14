@@ -735,7 +735,12 @@ global_variable s16 s_rmemoPage, s_rmemoClut;
 global_variable u8 s_rmemoFormat, s_rmemoView;
 global_variable s16 s_rmemoTileX, s_rmemoTileY;
 global_variable int s_rmemoAtlas, s_rmemoPbU, s_rmemoPbV;
+global_variable int s_rmemoCell;
 global_variable u32 s_rmemoStamp;
+/* The decode cell the last N3DS_ResolveTriangleTexture answered from: tier 1
+ * = sub-page, 2 = full-page, 0 = the framebuffer-capture route (no cell). */
+global_variable int s_resolveLastTier;
+global_variable int s_resolveLastCell;
 global_variable u32 s_resolveMemoHits = 0;
 
 /* ABLATION A: boot-splash present submits clear +
@@ -1243,6 +1248,9 @@ typedef struct
 	                    * CLUT-less formats) -- the variant-retarget key, see
 	                    * N3DS_HashClutContent */
 	u32 lastUsedFrame;
+	u32 serial;        /* s_cellDecodeSerial at the cell's last decode: changes
+	                    * whenever its pixels or key do (the model texture
+	                    * table keys on it) */
 } N3DS_DecodeCacheEntry;
 
 /*
@@ -1355,7 +1363,11 @@ typedef struct
 	u32 clutGenA, clutGenB;
 	u32 clutHash;     /* same variant-retarget role as the full-page tier's field */
 	u32 lastUsedFrame;
+	u32 serial;       /* same role as the full-page tier's field */
 } N3DS_SubPageCacheEntry;
+
+/* Bumped by every decode into a cell of either tier. */
+global_variable u32 s_cellDecodeSerial = 0;
 
 global_variable N3DS_SubPageCacheEntry s_subPageCache[N3DS_SUBPAGE_TOTAL_CELLS];
 /* Mirrors s_lastCellHit. -1 = no memo yet -- unlike the full-page array, index
@@ -2409,6 +2421,7 @@ decodeIntoSlot:
 	}
 	s_decodeCache[oldestSlot].clutHash = curClutHash;
 	s_decodeCache[oldestSlot].lastUsedFrame = s_frameCounter;
+	s_decodeCache[oldestSlot].serial = ++s_cellDecodeSerial;
 	s_fullPageHashIdx[hashBucket] = (s16)oldestSlot;
 
 	return oldestSlot;
@@ -2727,6 +2740,7 @@ decodeIntoSubSlot:
 	}
 	s_subPageCache[oldestSlot].clutHash = curClutHash;
 	s_subPageCache[oldestSlot].lastUsedFrame = s_frameCounter;
+	s_subPageCache[oldestSlot].serial = ++s_cellDecodeSerial;
 	s_subPageHashIdx[hashBucket] = (s16)oldestSlot;
 
 	return oldestSlot;
@@ -4119,6 +4133,7 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 					*outOriginV = 0;
 					s_fbCapRoutedTris++;
 					s_fbCapLastRoutedFrame = s_frameCounter;
+					s_resolveLastTier = 0;
 					return 0;
 				}
 				break;
@@ -4168,11 +4183,19 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 			*outOriginV = tileY0 * N3DS_SUBPAGE_DIM;
 			s_resolveMemoHits++;
 			s_trianglesRoutedSubPage++;
+			s_resolveLastTier = 1;
+			s_resolveLastCell = s_rmemoCell;
 			return 1;
 		}
 
-		N3DS_SubCellIndexToAtlasCoord(N3DS_FindOrDecodeSubPageTexture(texPage, clut, format, view, tileX0, tileY0, minV),
-		                               &atlasIdx, &physCellX, &physCellY, &subX, &subY);
+		{
+			const int subCell = N3DS_FindOrDecodeSubPageTexture(texPage, clut, format, view, tileX0, tileY0, minV);
+
+			N3DS_SubCellIndexToAtlasCoord(subCell, &atlasIdx, &physCellX, &physCellY, &subX, &subY);
+			s_resolveLastTier = 1;
+			s_resolveLastCell = subCell;
+			s_rmemoCell = subCell;
+		}
 		*outAtlasIdx = atlasIdx;
 		*outPixelBaseU = (physCellX * N3DS_DECODE_TEXTURE_DIM) + (subX * N3DS_SUBPAGE_DIM);
 		*outPixelBaseV = (physCellY * N3DS_DECODE_TEXTURE_DIM) + (subY * N3DS_SUBPAGE_DIM);
@@ -4212,10 +4235,19 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 			*outOriginV = 0;
 			s_resolveMemoHits++;
 			s_trianglesRoutedFullPage++;
+			s_resolveLastTier = 2;
+			s_resolveLastCell = s_rmemoCell;
 			return 0;
 		}
 
-		N3DS_CellIndexToAtlasCoord(N3DS_FindOrDecodeTexture(texPage, clut, format, view, minV), &atlasIdx, &cellX, &cellY);
+		{
+			const int fullCell = N3DS_FindOrDecodeTexture(texPage, clut, format, view, minV);
+
+			N3DS_CellIndexToAtlasCoord(fullCell, &atlasIdx, &cellX, &cellY);
+			s_resolveLastTier = 2;
+			s_resolveLastCell = fullCell;
+			s_rmemoCell = fullCell;
+		}
 		*outAtlasIdx = atlasIdx;
 		*outPixelBaseU = cellX * N3DS_DECODE_TEXTURE_DIM;
 		*outPixelBaseV = cellY * N3DS_DECODE_TEXTURE_DIM;
@@ -4234,6 +4266,215 @@ internal int N3DS_ResolveTriangleTexture(const GrVertex *v0, const GrVertex *v1,
 		s_rmemoPbV = *outPixelBaseV;
 		s_rmemoStamp = s_decodeCacheEvictions + s_subPageCacheEvictions + s_vramDirtyBumps;
 		return 0;
+	}
+}
+
+/*
+ * Model draw texture table: one entry per texture key (tpage, clut, view,
+ * tier, sub-page tile), holding the decode cell N3DS_ResolveTriangleTexture
+ * answered that key from and the cell's atlas placement.
+ *
+ * An entry is trusted for a triangle only while the cell holds the pixels it
+ * held when the entry was filled (same decode serial) and those pixels are
+ * fresh for THIS triangle: the cell's page generation equals the generation of
+ * the VRAM cell under the triangle's own sampled row, and its CLUT generations
+ * equal the CLUT's current ones. That is the test the decode tiers apply on a
+ * hit, so a trusted entry names a cell the full resolve could have returned. A
+ * hit stamps the cell's lastUsedFrame as a decode-tier hit does, which keeps the
+ * eviction-hazard rule protecting it for the rest of the frame.
+ *
+ * Validity is per cell, not a global stamp: the backdrop fill moves VRAM
+ * generations every frame.
+ *
+ * Keys whose page area could reach a display rect are never stored: their
+ * triangles may need the framebuffer-capture route or the mirror refresh, which
+ * only the full resolve performs. The table is emptied whenever the display
+ * rects change.
+ */
+#define N3DS_MTC_BITS    9
+#define N3DS_MTC_SIZE    (1 << N3DS_MTC_BITS)
+#define N3DS_MTC_NO_CLUT 0xFFFFu
+
+typedef struct
+{
+	u32 keyA; /* tpage | clut << 16 */
+	u32 keyB; /* 0x80000000 | view | tier << 2 | tileX << 4 | tileY << 6; 0 = empty */
+	u32 cellSerial;
+	s16 cell;
+	s16 atlas;
+	s16 offU, offV; /* pixel base minus the tile origin */
+	u16 clutCellA, clutCellB; /* s_vramCellGen indices, N3DS_MTC_NO_CLUT without a CLUT */
+} N3DS_ModelTexEntry;
+
+global_variable N3DS_ModelTexEntry s_mtcTable[N3DS_MTC_SIZE];
+global_variable int s_mtcFbRect[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+global_variable u32 s_mtcHits, s_mtcMisses, s_mtcUnstored;
+
+/* Once per model draw: empties the table when either display rect moved. */
+internal void N3DS_ModelTex_BeginDraw(void)
+{
+	int i, changed = 0;
+
+	for (i = 0; i < 2; i++)
+	{
+		const N3DS_FBStoreSlot *slot = &s_fbStore[i];
+
+		if ((s_mtcFbRect[i * 4 + 0] != slot->x) || (s_mtcFbRect[i * 4 + 1] != slot->y) || (s_mtcFbRect[i * 4 + 2] != slot->w) ||
+		    (s_mtcFbRect[i * 4 + 3] != slot->h))
+		{
+			s_mtcFbRect[i * 4 + 0] = slot->x;
+			s_mtcFbRect[i * 4 + 1] = slot->y;
+			s_mtcFbRect[i * 4 + 2] = slot->w;
+			s_mtcFbRect[i * 4 + 3] = slot->h;
+			changed = 1;
+		}
+	}
+	if (changed)
+	{
+		memset(s_mtcTable, 0, sizeof(s_mtcTable));
+	}
+}
+
+/* Could a triangle of this key reach either display rect? Covers both
+ * footprints the full resolve tests, texels read as halfwords (the capture
+ * route) and texels shifted to halfwords (the mirror refresh), over the whole
+ * tile or page, with the refresh test's own overlap form. */
+internal int N3DS_ModelTex_KeyReachesDisplay(s16 tpage, TexFormat format, int tier, int tileX, int tileY)
+{
+	const int pageX = (tpage & 0xF) * 64;
+	const int pageY = (tpage & 0x10) ? 256 : 0;
+	const int shift = (format == TF_16_BIT) ? 0 : ((format == TF_8_BIT) ? 1 : 2);
+	const int u0 = (tier == 1) ? (tileX * N3DS_SUBPAGE_DIM) : 0;
+	const int u1 = (tier == 1) ? (u0 + N3DS_SUBPAGE_DIM - 1) : 255;
+	const int v0 = (tier == 1) ? (tileY * N3DS_SUBPAGE_DIM) : 0;
+	const int v1 = (tier == 1) ? (v0 + N3DS_SUBPAGE_DIM - 1) : 255;
+	const int x = pageX + (u0 >> shift), w = (u1 - (u0 >> shift)) + 1;
+	const int y = pageY + v0, h = (v1 - v0) + 1;
+	int i;
+
+	for (i = 0; i < 2; i++)
+	{
+		const N3DS_FBStoreSlot *slot = &s_fbStore[i];
+
+		if ((x < (slot->x + slot->w)) && ((x + w) > slot->x) && (y < (slot->y + slot->h)) && ((y + h) > slot->y))
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*
+ * The model draw's texture lookup: the atlas and the offsets that turn a page
+ * texel (u, v) into the vertex encoding, u' = ((offU + u) << 1) + 1 and
+ * v' = 2047 - ((offV + v) << 1). Same answer as N3DS_ResolveTriangleTexture,
+ * which it calls on a table miss.
+ */
+internal void N3DS_ModelTex_Resolve(s16 tpage, s16 clut, N3DS_TexView view, int u0, int v0, int u1, int v1, int u2, int v2, int *outAtlas, int *outOffU,
+                                    int *outOffV)
+{
+	const int minU = MIN3(u0, u1, u2), maxU = MAX3(u0, u1, u2);
+	const int minV = MIN3(v0, v1, v2), maxV = MAX3(v0, v1, v2);
+	const int tileX0 = minU / N3DS_SUBPAGE_DIM, tileY0 = minV / N3DS_SUBPAGE_DIM;
+	const int tier = (!g_dbg_disableSubPage && (tileX0 == (maxU / N3DS_SUBPAGE_DIM)) && (tileY0 == (maxV / N3DS_SUBPAGE_DIM))) ? 1 : 2;
+	const int tx = (tier == 1) ? tileX0 : 0, ty = (tier == 1) ? tileY0 : 0;
+	const u32 keyA = (u32)(u16)tpage | ((u32)(u16)clut << 16);
+	const u32 keyB = 0x80000000u | (u32)view | ((u32)tier << 2) | ((u32)tx << 4) | ((u32)ty << 6);
+	N3DS_ModelTexEntry *e = &s_mtcTable[((keyA ^ (keyB * 0x9E3779B1u)) * 0x85EBCA6Bu) >> (32 - N3DS_MTC_BITS)];
+
+	if ((e->keyA == keyA) && (e->keyB == keyB))
+	{
+		/* The decode tiers' own pageCell: the page column plus the tile, the
+		 * row under the triangle's lowest sampled V. */
+		const u32 pageGen = s_vramCellGen[N3DS_VRAMCellIndex(((tpage & 0xF) * 64) + (tx * N3DS_SUBPAGE_DIM), ((tpage & 0x10) ? 256 : 0) + minV)];
+		const u32 genA = (e->clutCellA != N3DS_MTC_NO_CLUT) ? s_vramCellGen[e->clutCellA] : 0;
+		const u32 genB = (e->clutCellB != N3DS_MTC_NO_CLUT) ? s_vramCellGen[e->clutCellB] : 0;
+
+		if (tier == 1)
+		{
+			N3DS_SubPageCacheEntry *c = &s_subPageCache[e->cell];
+
+			if (c->used && (c->serial == e->cellSerial) && (c->pageGen == pageGen) && (c->clutGenA == genA) && (c->clutGenB == genB))
+			{
+				if (c->lastUsedFrame != s_frameCounter)
+				{
+					s_subPageFrameTouchedCells++;
+				}
+				c->lastUsedFrame = s_frameCounter;
+				s_trianglesRoutedSubPage++;
+				s_mtcHits++;
+				*outAtlas = e->atlas;
+				*outOffU = e->offU;
+				*outOffV = e->offV;
+				return;
+			}
+		}
+		else
+		{
+			N3DS_DecodeCacheEntry *c = &s_decodeCache[e->cell];
+
+			if (c->used && (c->serial == e->cellSerial) && (c->pageGen == pageGen) && (c->clutGenA == genA) && (c->clutGenB == genB))
+			{
+				if (c->lastUsedFrame != s_frameCounter)
+				{
+					s_frameTouchedCells++;
+				}
+				c->lastUsedFrame = s_frameCounter;
+				s_trianglesRoutedFullPage++;
+				s_mtcHits++;
+				*outAtlas = e->atlas;
+				*outOffU = e->offU;
+				*outOffV = e->offV;
+				return;
+			}
+		}
+	}
+
+	{
+		const TexFormat format = GetTPageFormat((int)tpage);
+		GrVertex uvOnly[3];
+		int atlas = -1, pbU = 0, pbV = 0, oU = 0, oV = 0;
+
+		/* N3DS_ResolveTriangleTexture reads only .u/.v. */
+		memset(uvOnly, 0, sizeof(uvOnly));
+		uvOnly[0].u = (u8)u0;
+		uvOnly[0].v = (u8)v0;
+		uvOnly[1].u = (u8)u1;
+		uvOnly[1].v = (u8)v1;
+		uvOnly[2].u = (u8)u2;
+		uvOnly[2].v = (u8)v2;
+		N3DS_ResolveTriangleTexture(&uvOnly[0], &uvOnly[1], &uvOnly[2], tpage, clut, format, view, &atlas, &pbU, &pbV, &oU, &oV);
+		*outAtlas = atlas;
+		*outOffU = pbU - oU;
+		*outOffV = pbV - oV;
+		s_mtcMisses++;
+
+		if ((s_resolveLastTier != tier) || N3DS_ModelTex_KeyReachesDisplay(tpage, format, tier, tx, ty))
+		{
+			s_mtcUnstored++;
+			return;
+		}
+
+		e->keyA = keyA;
+		e->keyB = keyB;
+		e->cell = (s16)s_resolveLastCell;
+		e->cellSerial = (tier == 1) ? s_subPageCache[s_resolveLastCell].serial : s_decodeCache[s_resolveLastCell].serial;
+		e->atlas = (s16)atlas;
+		e->offU = (s16)(pbU - oU);
+		e->offV = (s16)(pbV - oV);
+		if ((format == TF_4_BIT) || (format == TF_8_BIT))
+		{
+			const int clutOriginX = (clut & 0x3F) * 16;
+			const int clutOriginY = clut >> 6;
+
+			e->clutCellA = (u16)N3DS_VRAMCellIndex(clutOriginX, clutOriginY);
+			e->clutCellB = (u16)N3DS_VRAMCellIndex(clutOriginX + 255, clutOriginY);
+		}
+		else
+		{
+			e->clutCellA = N3DS_MTC_NO_CLUT;
+			e->clutCellB = N3DS_MTC_NO_CLUT;
+		}
 	}
 }
 
