@@ -4319,6 +4319,10 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  vertices in place; 1 the table with appends; 0 the
 	 *                  per-face resolve. Bare token flips between 0 and 2.
 	 *                  Takes effect next frame.
+	 *   modelcache [N] -- g_dbg_modelCache: 1 (default) a 3 MiB model frame
+	 *                  cache whose eviction keeps entries drawn since their
+	 *                  placement; 0 1.5 MiB, oldest first. Bare token
+	 *                  toggles. A change empties the cache.
 	 *   stereoreuse [N] -- g_dbg_stereoReuse: 1 (default) draws the right eye
 	 *                  by submitting the left eye's command list a second
 	 *                  time; 0 replays the journal. Bare token toggles. Takes
@@ -5003,6 +5007,13 @@ unsigned int N3DS_ReadButtons(void)
 					N3DS_DebugLog((g_dbg_modelFast == 2)   ? "[CTR-3DS] model faces: texture table, direct vertex writes"
 					              : (g_dbg_modelFast == 1) ? "[CTR-3DS] model faces: texture table, appended"
 					                                       : "[CTR-3DS] model faces: per-face resolve, appended");
+				}
+				else if (strncmp(word, "modelcache", 10) == 0)
+				{
+					extern int g_dbg_modelCache;
+
+					g_dbg_modelCache = (word[10] == ' ') ? (atoi(&word[11]) != 0) : !g_dbg_modelCache;
+					N3DS_DebugLog(g_dbg_modelCache ? "[CTR-3DS] model cache: 3 MiB, second chance" : "[CTR-3DS] model cache: 1.5 MiB, oldest first");
 				}
 				else if (strncmp(word, "stereoreuse", 11) == 0)
 				{

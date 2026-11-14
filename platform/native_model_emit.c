@@ -934,8 +934,18 @@ void NativeModelEmit_EndInstance(void)
  * since a setup callback can rewrite the table between instances; each colour
  * variant is its own entry. Every entry is dropped when the level changes:
  * frame and command pointers are MEMPACK addresses that a later load reuses.
+ *
+ * A race's live keys outgrow 1.5 MiB, and a refill costs a full retail walk
+ * of the instance, so the arena is 3 MiB and eviction gives a second chance:
+ * an oldest entry drawn since it was last placed slides to the ring head
+ * (a memmove of its record) instead of being dropped. dumpreq `modelcache
+ * [N]`: 1 (default) 3 MiB with second chance, 0 1.5 MiB oldest-first.
  */
-#define MODELCACHE_ARENA_BYTES (1536u * 1024u)
+#define MODELCACHE_ARENA_BYTES      (3072u * 1024u)
+#define MODELCACHE_ARENA_BYTES_FIFO (1536u * 1024u)
+/* Record bytes one Alloc may slide forward before it drops drawn entries
+ * too: a memmove per recycle, bounded well under the cost of one refill. */
+#define MODELCACHE_RECYCLE_BYTES_PER_ALLOC (32u * 1024u)
 #define MODELCACHE_MAX_ENTRIES 1024
 #define MODELCACHE_BUCKETS     512
 /* Largest instance the fill records; larger ones keep the walk. */
@@ -972,6 +982,7 @@ struct NativeModelCacheEntry
 	u16 triCount;
 	s16 nextInBucket;
 	u8 live;
+	u8 ref; /* drawn since it was placed at the head */
 };
 
 global_variable u8 *s_mcArena;
@@ -984,6 +995,10 @@ global_variable u32 s_mcTailIdx;  /* oldest live metadata slot */
 global_variable u32 s_mcLiveCount;
 global_variable int s_mcLevel = -1;
 global_variable const void *s_mcLevelPtr;
+global_variable u32 s_mcArenaBytes = MODELCACHE_ARENA_BYTES;
+global_variable int s_mcMode = -1;
+global_variable u32 s_mcWinRecycles;
+int g_dbg_modelCache = 1;
 
 global_variable struct NativeModelCacheTri s_mcFillTris[MODELCACHE_FILL_MAX_TRIS];
 global_variable u32 s_mcFillCount;
@@ -1154,20 +1169,72 @@ internal void NativeModelCache_CheckLevel(void)
 	const int lvl = (gGT != NULL) ? gGT->levelID : -1;
 	const void *lp = (gGT != NULL) ? (const void *)gGT->level1 : NULL;
 
-	if ((lvl != s_mcLevel) || (lp != s_mcLevelPtr))
+	if ((lvl != s_mcLevel) || (lp != s_mcLevelPtr) || (g_dbg_modelCache != s_mcMode))
 	{
 		s_mcLevel = lvl;
 		s_mcLevelPtr = lp;
+		s_mcMode = g_dbg_modelCache;
+		s_mcArenaBytes = s_mcMode ? MODELCACHE_ARENA_BYTES : MODELCACHE_ARENA_BYTES_FIFO;
 		NativeModelCache_Reset();
 	}
 }
 
-/* Contiguous arena bytes for a new entry, evicting oldest-first. The arena is
- * a ring: live data runs from the oldest entry's offset to s_mcArenaHead,
- * wrapping once. Returns the offset, or -1 when the request can never fit. */
+/* Moves the oldest entry to the newest position. Its record slides to the
+ * ring head: with the oldest entry's bytes counted free, the head always has
+ * room for them, at the head itself or, when the ring has not wrapped and the
+ * arena's end is too short, at offset 0. Both destinations lie in space that
+ * is free once the record leaves, so an overlapping memmove is safe. */
+internal void NativeModelCache_RecycleOldest(void)
+{
+	const u32 tail = s_mcTailIdx;
+	struct NativeModelCacheEntry moved = s_mcEntries[tail];
+	const u32 tailOff = moved.offset;
+	u32 dst = s_mcArenaHead;
+	u32 idx;
+	u32 b;
+
+	if ((s_mcArenaHead > tailOff) && ((s_mcArenaBytes - s_mcArenaHead) < moved.bytes))
+	{
+		dst = 0;
+	}
+	if (dst != tailOff)
+	{
+		memmove(s_mcArena + dst, s_mcArena + tailOff, moved.bytes);
+	}
+
+	s_mcTailIdx = (tail + 1) % MODELCACHE_MAX_ENTRIES;
+	idx = s_mcHeadIdx;
+	s_mcHeadIdx = (idx + 1) % MODELCACHE_MAX_ENTRIES;
+	s_mcArenaHead = dst + moved.bytes;
+	s_mcWinRecycles++;
+
+	if (idx == tail)
+	{
+		s_mcEntries[tail].offset = dst;
+		s_mcEntries[tail].ref = 0;
+		return;
+	}
+	NativeModelCache_Unlink(tail);
+	moved.offset = dst;
+	moved.ref = 0;
+	moved.live = 1;
+	s_mcEntries[idx] = moved;
+	b = NativeModelCache_HashKey(&moved.key);
+	s_mcEntries[idx].nextInBucket = s_mcBuckets[b];
+	s_mcBuckets[b] = (s16)idx;
+}
+
+/* Contiguous arena bytes for a new entry. The arena is a ring: live data runs
+ * from the oldest entry's offset to s_mcArenaHead, wrapping once. The oldest
+ * entry is dropped, or in second-chance mode recycled when it was drawn since
+ * its placement; recycling stops at MODELCACHE_RECYCLE_BYTES_PER_ALLOC, so a
+ * ring full of drawn entries still frees space. Returns the offset, or -1 when
+ * the request can never fit. */
 internal s32 NativeModelCache_Alloc(u32 bytes)
 {
-	if ((s_mcArena == NULL) || (bytes > MODELCACHE_ARENA_BYTES))
+	u32 recycleBytes = 0;
+
+	if ((s_mcArena == NULL) || (bytes > s_mcArenaBytes))
 	{
 		return -1;
 	}
@@ -1190,7 +1257,7 @@ internal s32 NativeModelCache_Alloc(u32 bytes)
 		tailOff = s_mcEntries[s_mcTailIdx].offset;
 		if (s_mcArenaHead > tailOff)
 		{
-			if ((MODELCACHE_ARENA_BYTES - s_mcArenaHead) >= bytes)
+			if ((s_mcArenaBytes - s_mcArenaHead) >= bytes)
 			{
 				return (s32)s_mcArenaHead;
 			}
@@ -1202,6 +1269,13 @@ internal s32 NativeModelCache_Alloc(u32 bytes)
 		else if ((s_mcArenaHead < tailOff) && ((tailOff - s_mcArenaHead) >= bytes))
 		{
 			return (s32)s_mcArenaHead;
+		}
+		if (s_mcMode && (s_mcLiveCount >= 2) && s_mcEntries[s_mcTailIdx].live && s_mcEntries[s_mcTailIdx].ref &&
+		    ((recycleBytes + s_mcEntries[s_mcTailIdx].bytes) <= MODELCACHE_RECYCLE_BYTES_PER_ALLOC))
+		{
+			recycleBytes += s_mcEntries[s_mcTailIdx].bytes;
+			NativeModelCache_RecycleOldest();
+			continue;
 		}
 		NativeModelCache_EvictOldest();
 	}
@@ -1383,6 +1457,7 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 		mi->triCount++;
 	}
 
+	e->ref = 1;
 	s_mcWinHits++;
 	s_mcWinTrisIn += e->triCount;
 	s_mcWinTrisOut += mi->triCount;
@@ -1540,6 +1615,7 @@ void NativeModelCache_EndFill(void)
 	e->bytes = bytes;
 	e->triCount = (u16)s_mcFillCount;
 	e->live = 1;
+	e->ref = 0;
 	memcpy(s_mcArena + off, s_mcFillTris, bytes);
 	s_mcArenaHead = (u32)off + bytes;
 
@@ -1720,10 +1796,12 @@ void NativeModelEmit_EndFrame(void)
 		 * what survived the model-space cull. cull= compares that cull with
 		 * retail's NCLIP on the triangles of each fill: weCull (a face retail
 		 * drew and this cull would drop) is the number that must stay 0. */
+		Platform_LogInstrument("[MDLCACHE] mode=%d recycles=%lu\n", s_mcMode, (unsigned long)s_mcWinRecycles);
+		s_mcWinRecycles = 0;
 		Platform_LogInstrument("[MDLCACHE] hits=%lu misses=%lu fills=%lu noRoom=%lu evicts=%lu live=%lu arenaKiB=%lu trisIn=%lu trisOut=%lu cull agree=%lu weDraw=%lu weCull=%lu\n",
 		                       (unsigned long)s_mcWinHits, (unsigned long)s_mcWinMisses, (unsigned long)s_mcWinFills,
 		                       (unsigned long)s_mcWinNoRoom, (unsigned long)s_mcWinEvicts, (unsigned long)s_mcLiveCount,
-		                       (unsigned long)(s_mcArena ? (MODELCACHE_ARENA_BYTES / 1024u) : 0u), (unsigned long)s_mcWinTrisIn, (unsigned long)s_mcWinTrisOut,
+		                       (unsigned long)(s_mcArena ? (s_mcArenaBytes / 1024u) : 0u), (unsigned long)s_mcWinTrisIn, (unsigned long)s_mcWinTrisOut,
 		                       (unsigned long)s_mcWinCullAgree, (unsigned long)s_mcWinCullWeDrawRetailCulled, (unsigned long)s_mcWinCullWeCullRetailDrew);
 		Platform_LogInstrument("[MDLCACHE] skipped: noCapture=%lu specular=%lu blendWriter=%lu split=%lu | funcs normal=%lu alt=%lu split=%lu special=%lu other=%lu\n",
 		                       (unsigned long)s_mcWinSkipNoCapture, (unsigned long)s_mcWinSkipSpecular, (unsigned long)s_mcWinSkipBlend,
