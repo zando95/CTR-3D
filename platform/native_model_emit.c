@@ -2073,10 +2073,6 @@ void NativeModelDraw_IssueForWalk(void)
 	}
 
 	N3DS_ModelDraw_Begin();
-	if (fast)
-	{
-		N3DS_ModelTex_BeginDraw();
-	}
 
 	/*
 	 * TWO PASSES, opaque then blended -- the same shape as the resident track's
@@ -2431,12 +2427,22 @@ void NativeModelDraw_IssueForWalk(void)
 		                       (unsigned long)instDrawn, (unsigned long)drawsIssued, (unsigned long)trisDrawn, (unsigned long)blendTrisDrawn,
 		                       (unsigned long)maskTrisDrawn, (unsigned long)appendFailed, (unsigned long)s_totalAppendFail);
 		/* Texture table lookups since the last line: hits, misses (each one a
-		 * full resolve), and misses whose key the table may not hold. */
-		Platform_LogInstrument("[MDLTEX] fast=%d hits=%lu misses=%lu unstored=%lu\n", fast, (unsigned long)s_mtcHits, (unsigned long)s_mtcMisses,
-		                       (unsigned long)s_mtcUnstored);
+		 * full resolve) split by cause, misses whose key the table may not
+		 * hold, and CLUT generation moves served by palette adoption. */
+		Platform_LogInstrument("[MDLTEX] fast=%d hits=%lu misses=%lu (key=%lu cell=%lu page=%lu clut=%lu display=%lu) unstored=%lu evict=%lu adopt=%lu\n", fast,
+		                       (unsigned long)s_mtcHits, (unsigned long)s_mtcMisses, (unsigned long)s_mtcMissKey, (unsigned long)s_mtcMissCell,
+		                       (unsigned long)s_mtcMissPage, (unsigned long)s_mtcMissClut, (unsigned long)s_mtcDisplay, (unsigned long)s_mtcUnstored,
+		                       (unsigned long)s_mtcEvicts, (unsigned long)s_mtcClutAdopts);
 		s_mtcHits = 0;
 		s_mtcMisses = 0;
 		s_mtcUnstored = 0;
+		s_mtcMissKey = 0;
+		s_mtcMissCell = 0;
+		s_mtcMissPage = 0;
+		s_mtcMissClut = 0;
+		s_mtcClutAdopts = 0;
+		s_mtcDisplay = 0;
+		s_mtcEvicts = 0;
 	}
 }
 #endif /* __3DS__ */
