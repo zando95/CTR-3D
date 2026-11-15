@@ -94,6 +94,12 @@
 .fvec qy            ; f8 -- composed instance row: dp4(qy, v) = w*screenY
 .fvec qw            ; f9 -- composed instance row: dp4(qw, v) = w = view.z/H
 .fvec hParam        ; f10 -- x = H (distanceToScreen_PREV); y = sky-dome select
+.fvec fade          ; f11 -- instance fade: rgb = far colour / 255, w = amount
+                    ; (alphaScale / 4096). Retail's per-instance gte_dpct,
+                    ; colour + w * (far - colour); w = 0 leaves the vertex
+                    ; colour as it is (packet-path instances arrive faded).
+                    ; The track program's depthRange shares f11 and is set
+                    ; before every leaf draw.
                     ; (0 for model instances, 1 for the sky dome); z/w unused
 
 ; Constants
@@ -255,7 +261,11 @@
 	mul outtc0.xy, texcoordScale, intc.xy
 	mov outtc0.zw, zeros
 
-	mul outclr.xyz, colorScale, inclr.xyz
+	mul r7.xyz, colorScale, inclr.xyz   ; vertex colour 0..1
+	mul r8.xyz, negOne, r7.xyz          ; -colour (const src1, temp src2)
+	add r8.xyz, fade.xyz, r8.xyz        ; far - colour
+	mul r8.xyz, fade.wwww, r8.xyz       ; amount * (far - colour)
+	add outclr.xyz, r7.xyz, r8.xyz
 	mov outclr.w, ones
 
 	end

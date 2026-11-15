@@ -169,7 +169,7 @@ struct NativeModelResSlotRef
 	u16 count;
 };
 
-#define MODELEMIT_MAX_RESSLOTS 2048
+#define MODELEMIT_MAX_RESSLOTS 4096
 
 struct NativeModelEmitSnapshot
 {
@@ -1056,11 +1056,12 @@ struct NativeModelCacheSlot
  * s_mrRes to decide whether a copy is safe to reference: it must have been
  * drawn within the last 2 draw frames, and a copy is reclaimed only after 4
  * frames unused, so a referenced copy outlives the frame that draws it.
- * Records with a blended texture and fading instances (alphaScale != 0) keep
- * the per-triangle path. dumpreq `modelres [N]`, 1 (default) resident.
+ * Records with a blended texture keep the per-triangle path. A fading
+ * instance (alphaScale != 0) draws its copy's unfaded colours through the
+ * shader's per-instance fade. dumpreq `modelres [N]`, 1 (default) resident.
  */
 #define MODELRES_MAX_ENTRIES 1024
-#define MODELRES_MAX_SLOTS   64
+#define MODELRES_MAX_SLOTS   255
 #define MODELRES_MAX_STAMPS  16384
 
 struct NativeModelResEntry
@@ -1095,9 +1096,9 @@ global_variable struct NativeModelResEntry s_mrRes[MODELRES_MAX_ENTRIES];
 global_variable struct NativeModelResStamp s_mrStamps[MODELRES_MAX_STAMPS];
 global_variable struct NativeModelEntryRes s_mrEntryRes[MODELCACHE_MAX_ENTRIES];
 global_variable volatile u32 s_mrFrame = 8;
-global_variable u32 s_mrHead, s_mrTail, s_mrLive, s_mrVertHead, s_mrStampHead;
+global_variable u32 s_mrLive;
 global_variable u32 s_mcUidNext;
-global_variable u32 s_mrWinRes, s_mrWinReq, s_mrWinBuilt, s_mrWinBuildFail, s_mrWinLost, s_mrWinPatches, s_mrWinSlots, s_mrWinDraws, s_mrWinIneligible;
+global_variable u32 s_mrWinRes, s_mrWinReq, s_mrWinBuilt, s_mrWinBuildFail, s_mrWinLost, s_mrWinPatches, s_mrWinSlots, s_mrWinDraws, s_mrWinIneligible, s_mrWinFade;
 int g_dbg_modelResident = 1;
 int g_dbg_modelResFlip = 0;
 
@@ -1700,6 +1701,10 @@ internal int NativeModelCache_EmitResident(struct NativeModelEmitSnapshot *dst, 
 	mi->entryIdx = (u16)idx;
 	mi->instNeg = (u8)(instNeg != 0);
 	mi->resMode = hot ? 1 : 2;
+	if (mi->alphaScale != 0)
+	{
+		s_mrWinFade++;
+	}
 	if (hot)
 	{
 		s_mrWinRes++;
@@ -1787,7 +1792,11 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 	instNeg = ((s16)(u16)idpp->instFlags < 0);
 	tris = (const struct NativeModelCacheTri *)(s_mcArena + e->offset);
 
-	if (g_dbg_modelResident && (mi->alphaScale == 0) && (e->slotCount <= MODELRES_MAX_SLOTS) &&
+	if (g_dbg_modelResident && (e->slotCount > MODELRES_MAX_SLOTS))
+	{
+		s_mrWinIneligible++;
+	}
+	if (g_dbg_modelResident && (e->slotCount <= MODELRES_MAX_SLOTS) &&
 	    ((dst->resSlotCount + e->slotCount) <= MODELEMIT_MAX_RESSLOTS) && NativeModelCache_EmitResident(dst, mi, e, instNeg))
 	{
 		e->ref = 1;
@@ -2863,99 +2872,130 @@ global_variable u8 s_mdHasBlend[MODELEMIT_MAX_INSTANCES];
 
 /*
  * Resident copies, draw side (see the model frame cache's resident section).
- * Copies sit in allocation order in three rings: entries (s_mrRes), vertices
- * (the video-memory region) and slot stamps. The oldest copy is reclaimed only
- * when it has not been drawn for 4 frames; a copy the game thread may still
- * reference is never reclaimed, so an allocation that would need one fails and
- * the instance draws from the frame buffer instead.
+ * Each copy holds a span of the video-memory region and a span of slot stamps;
+ * live copies are kept sorted by each span's start, and an allocation takes the
+ * first gap that fits both. When none does, the least recently drawn copy not
+ * drawn for 4 frames is evicted, and the search repeats. A copy the game thread
+ * may still reference is never evicted, so an allocation that would need one
+ * fails and the instance draws from the frame buffer instead.
  */
-internal int NativeModelRes_RingFit(u32 head, u32 tailBase, u32 live, u32 cap, u32 n, u32 *out)
+global_variable u16 s_mrByVert[MODELRES_MAX_ENTRIES];
+global_variable u16 s_mrByStamp[MODELRES_MAX_ENTRIES];
+global_variable u32 s_mrNextId;
+global_variable u32 s_mrVertsUsed;
+
+internal u32 NativeModelRes_SpanBase(u16 id, int stamp)
 {
-	if (n > cap)
+	return stamp ? s_mrRes[id].stampBase : s_mrRes[id].vertBase;
+}
+
+internal u32 NativeModelRes_SpanEnd(u16 id, int stamp)
+{
+	return stamp ? (s_mrRes[id].stampBase + s_mrRes[id].stampCount) : (s_mrRes[id].vertBase + s_mrRes[id].vertCount);
+}
+
+/* First gap of at least need in [0, cap) between the spans of order[]. */
+internal int NativeModelRes_FindGap(const u16 *order, int stamp, u32 cap, u32 need, u32 *at, u32 *pos)
+{
+	u32 prevEnd = 0;
+	u32 i;
+
+	for (i = 0; i <= s_mrLive; i++)
 	{
-		return 0;
-	}
-	if (live == 0)
-	{
-		*out = 0;
-		return 1;
-	}
-	if (head > tailBase)
-	{
-		if ((head + n) <= cap)
+		const u32 next = (i < s_mrLive) ? NativeModelRes_SpanBase(order[i], stamp) : cap;
+
+		if ((next >= prevEnd) && ((next - prevEnd) >= need))
 		{
-			*out = head;
+			*at = prevEnd;
+			*pos = i;
 			return 1;
 		}
-		if (n <= tailBase)
+		if (i < s_mrLive)
 		{
-			*out = 0;
-			return 1;
-		}
-		return 0;
-	}
-	if (head < tailBase)
-	{
-		if ((head + n) <= tailBase)
-		{
-			*out = head;
-			return 1;
+			prevEnd = NativeModelRes_SpanEnd(order[i], stamp);
 		}
 	}
 	return 0;
 }
 
+internal void NativeModelRes_OrderRemove(u16 *order, u16 id)
+{
+	u32 i;
+
+	for (i = 0; i < s_mrLive; i++)
+	{
+		if (order[i] == id)
+		{
+			memmove(&order[i], &order[i + 1], (size_t)(s_mrLive - i - 1u) * sizeof(order[0]));
+			return;
+		}
+	}
+}
+
+internal void NativeModelRes_Evict(u16 id)
+{
+	NativeModelRes_OrderRemove(s_mrByVert, id);
+	NativeModelRes_OrderRemove(s_mrByStamp, id);
+	s_mrVertsUsed -= s_mrRes[id].vertCount;
+	s_mrRes[id].live = 0;
+	s_mrRes[id].uid = 0;
+	s_mrLive--;
+}
+
 internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts)
 {
+	if ((verts > capVerts) || (stamps > MODELRES_MAX_STAMPS))
+	{
+		return -1;
+	}
 	for (;;)
 	{
-		if (s_mrLive == 0)
-		{
-			s_mrVertHead = 0;
-			s_mrStampHead = 0;
-		}
-		if (s_mrLive < MODELRES_MAX_ENTRIES)
-		{
-			const u32 vTail = s_mrLive ? s_mrRes[s_mrTail].vertBase : 0u;
-			const u32 sTail = s_mrLive ? s_mrRes[s_mrTail].stampBase : 0u;
-			u32 vAt, sAt;
+		u32 vAt, vPos, sAt, sPos;
+		int victim = -1;
+		u32 i;
 
-			if (NativeModelRes_RingFit(s_mrVertHead, vTail, s_mrLive, capVerts, verts, &vAt) &&
-			    NativeModelRes_RingFit(s_mrStampHead, sTail, s_mrLive, MODELRES_MAX_STAMPS, stamps, &sAt))
+		if ((s_mrLive < MODELRES_MAX_ENTRIES) && NativeModelRes_FindGap(s_mrByVert, 0, capVerts, verts, &vAt, &vPos) &&
+		    NativeModelRes_FindGap(s_mrByStamp, 1, MODELRES_MAX_STAMPS, stamps, &sAt, &sPos))
+		{
+			struct NativeModelResEntry *r;
+			u16 id;
+
+			while (s_mrRes[s_mrNextId].live)
 			{
-				const int id = (int)s_mrHead;
-				struct NativeModelResEntry *r = &s_mrRes[id];
+				s_mrNextId = (s_mrNextId + 1u) % MODELRES_MAX_ENTRIES;
+			}
+			id = (u16)s_mrNextId;
+			s_mrNextId = (s_mrNextId + 1u) % MODELRES_MAX_ENTRIES;
+			r = &s_mrRes[id];
+			r->uid = uid;
+			r->vertBase = vAt;
+			r->vertCount = verts;
+			r->stampBase = sAt;
+			r->stampCount = stamps;
+			r->lastUsed = s_mrFrame;
+			r->live = 1;
+			memmove(&s_mrByVert[vPos + 1u], &s_mrByVert[vPos], (size_t)(s_mrLive - vPos) * sizeof(s_mrByVert[0]));
+			s_mrByVert[vPos] = id;
+			memmove(&s_mrByStamp[sPos + 1u], &s_mrByStamp[sPos], (size_t)(s_mrLive - sPos) * sizeof(s_mrByStamp[0]));
+			s_mrByStamp[sPos] = id;
+			s_mrLive++;
+			s_mrVertsUsed += verts;
+			return (int)id;
+		}
+		for (i = 0; i < s_mrLive; i++)
+		{
+			const u16 id = s_mrByVert[i];
 
-				r->uid = uid;
-				r->vertBase = vAt;
-				r->vertCount = verts;
-				r->stampBase = sAt;
-				r->stampCount = stamps;
-				r->lastUsed = s_mrFrame;
-				r->live = 1;
-				s_mrHead = (s_mrHead + 1u) % MODELRES_MAX_ENTRIES;
-				s_mrLive++;
-				s_mrVertHead = vAt + verts;
-				s_mrStampHead = sAt + stamps;
-				return id;
+			if (((s_mrRes[id].lastUsed + 4u) < s_mrFrame) && ((victim < 0) || (s_mrRes[id].lastUsed < s_mrRes[victim].lastUsed)))
+			{
+				victim = (int)id;
 			}
 		}
-		if (s_mrLive == 0)
+		if (victim < 0)
 		{
 			return -1;
 		}
-		{
-			struct NativeModelResEntry *t = &s_mrRes[s_mrTail];
-
-			if ((t->lastUsed + 4u) >= s_mrFrame)
-			{
-				return -1;
-			}
-			t->live = 0;
-			t->uid = 0;
-			s_mrTail = (s_mrTail + 1u) % MODELRES_MAX_ENTRIES;
-			s_mrLive--;
-		}
+		NativeModelRes_Evict((u16)victim);
 	}
 }
 
@@ -3142,7 +3182,16 @@ internal void NativeModelRes_DrawInstance(const struct NativeModelEmitSnapshot *
 		return;
 	}
 
-	N3DS_ModelDraw_Instance(qx, qy, qw, h);
+	if (inst->alphaScale != 0)
+	{
+		const float amount = (inst->alphaScale >= 4096) ? 1.0f : (inst->alphaScale <= 0) ? 0.0f : ((float)inst->alphaScale / 4096.0f);
+
+		N3DS_ModelDraw_InstanceFade(qx, qy, qw, h, (float)inst->fcR / 4080.0f, (float)inst->fcG / 4080.0f, (float)inst->fcB / 4080.0f, amount);
+	}
+	else
+	{
+		N3DS_ModelDraw_Instance(qx, qy, qw, h);
+	}
 	(*instOut)++;
 
 	if (id < 0)
@@ -3612,12 +3661,12 @@ void NativeModelDraw_IssueForWalk(void)
 			int cap = 0;
 
 			(void)N3DS_ModelRes_Base(&cap);
-			Platform_LogInstrument("[MDLRES] mode=%d flip=%d res=%lu req=%lu built=%lu fail=%lu lost=%lu ineligible=%lu slots=%lu patches=%lu draws=%lu live=%lu "
+			Platform_LogInstrument("[MDLRES] mode=%d flip=%d res=%lu req=%lu built=%lu fail=%lu lost=%lu ineligible=%lu fade=%lu slots=%lu patches=%lu draws=%lu live=%lu "
 			                       "vertsUsed~%lu/%d\n",
 			                       g_dbg_modelResident, g_dbg_modelResFlip, (unsigned long)s_mrWinRes, (unsigned long)s_mrWinReq, (unsigned long)s_mrWinBuilt,
-			                       (unsigned long)s_mrWinBuildFail, (unsigned long)s_mrWinLost, (unsigned long)s_mrWinIneligible, (unsigned long)s_mrWinSlots,
-			                       (unsigned long)s_mrWinPatches, (unsigned long)s_mrWinDraws, (unsigned long)s_mrLive, (unsigned long)s_mrVertHead, cap);
-			s_mrWinRes = s_mrWinReq = s_mrWinBuilt = s_mrWinBuildFail = s_mrWinLost = s_mrWinIneligible = 0;
+			                       (unsigned long)s_mrWinBuildFail, (unsigned long)s_mrWinLost, (unsigned long)s_mrWinIneligible, (unsigned long)s_mrWinFade, (unsigned long)s_mrWinSlots,
+			                       (unsigned long)s_mrWinPatches, (unsigned long)s_mrWinDraws, (unsigned long)s_mrLive, (unsigned long)s_mrVertsUsed, cap);
+			s_mrWinRes = s_mrWinReq = s_mrWinBuilt = s_mrWinBuildFail = s_mrWinLost = s_mrWinIneligible = s_mrWinFade = 0;
 			s_mrWinSlots = s_mrWinPatches = s_mrWinDraws = 0;
 		}
 		s_mtcHits = 0;
