@@ -1050,7 +1050,7 @@ struct NativeModelCacheSlot
 /*
  * Resident copies. An instance whose record has a resident copy hands the draw
  * side only its matrix and texture slots: the copy holds every triangle of the
- * record in the GPU vertex layout in video memory, the GPU culls back faces
+ * record in the GPU vertex layout in linear memory, the GPU culls back faces
  * per cull class, and the draw checks each slot's atlas placement once,
  * rewriting that slot's UVs only when it moved. The draw side (the render
  * worker on New 3DS) owns the copies. The game thread pins a copy before
@@ -2881,7 +2881,7 @@ global_variable u8 s_mdHasBlend[MODELEMIT_MAX_INSTANCES];
 
 /*
  * Resident copies, draw side (see the model frame cache's resident section).
- * Each copy holds a span of the video-memory region and a span of slot stamps;
+ * Each copy holds a span of the resident region and a span of slot stamps;
  * live copies are kept sorted by each span's start, and an allocation takes the
  * first gap that fits both. When none does, the least recently drawn copy not
  * drawn for 4 frames is evicted, and the search repeats. A copy the game thread

@@ -38,9 +38,10 @@
  * application memory between the two heaps and caps the linear half at 32 MiB:
  * a New 3DS reaches the cap, an original 3DS gets about 23 MiB, short of the
  * decode-cache atlases. Fixed here, the linear heap is the same on both and
- * the application heap takes whatever is left.
+ * the application heap takes whatever is left. The last MiB is the resident
+ * model region (N3DS_ModelRes_Base).
  */
-u32 __ctru_linear_heap_size = 32u * 1024u * 1024u;
+u32 __ctru_linear_heap_size = 33u * 1024u * 1024u;
 
 static FILE *s_logFile = NULL;
 
@@ -889,7 +890,7 @@ static int s_modelDrawActive = 0;
 /* Set by N3DS_ModelDraw_InstanceSkyDome until the next instance or the bracket
  * end: the sky dome's runs never write depth (see ctr_model.v.pica's skyConst). */
 static int s_modelSkyDome = 0;
-/* Resident model region (video memory) and the run state that switches to it:
+/* Resident model region (linear memory) and the run state that switches to it:
  * the bound vertex buffer (0 frame, 1 resident) and the GPU cull mode. */
 static N3DS_Vertex *s_modelResMem = NULL;
 static int s_modelResCapacity = 0;
@@ -3482,28 +3483,26 @@ N3DS_Vertex *N3DS_ModelRes_Base(int *outCapacity)
 {
 	if (!s_modelResTried)
 	{
-		/* One allocation cannot span the two VRAM banks, and the render
-		 * target sits in one of them. */
-		static const int kKiB[5] = {2816, 2560, 2048, 1536, 1024};
+		/* Linear memory: the CPU writes the copies, and an application may
+		 * not write VRAM from the CPU on hardware (a permission fault;
+		 * emulators allow it). The linear heap carries this MiB on top of
+		 * what the rest of the game uses (__ctru_linear_heap_size). */
+		const int kKiB = 1024;
 		char msg[128];
-		int i;
 
 		s_modelResTried = 1;
-		for (i = 0; (i < 5) && (s_modelResMem == NULL); i++)
+		s_modelResMem = (N3DS_Vertex *)linearAlloc((size_t)kKiB * 1024u);
+		if (s_modelResMem != NULL)
 		{
-			s_modelResMem = (N3DS_Vertex *)vramAlloc((size_t)kKiB[i] * 1024u);
-			if (s_modelResMem != NULL)
-			{
-				s_modelResCapacity = (kKiB[i] * 1024) / (int)sizeof(N3DS_Vertex);
-			}
+			s_modelResCapacity = (kKiB * 1024) / (int)sizeof(N3DS_Vertex);
 		}
 		if (s_modelResMem != NULL)
 		{
 			BufInfo_Init(&s_modelResBufInfo);
 			BufInfo_Add(&s_modelResBufInfo, s_modelResMem, sizeof(N3DS_Vertex), 3, 0x210);
 		}
-		snprintf(msg, sizeof(msg), "[CTR-3DS] resident model region: %d KiB of video memory (%lu KiB free after)",
-		         (s_modelResCapacity * (int)sizeof(N3DS_Vertex)) / 1024, (unsigned long)(vramSpaceFree() / 1024));
+		snprintf(msg, sizeof(msg), "[CTR-3DS] resident model region: %d KiB of linear memory (%lu KiB free after)",
+		         (s_modelResCapacity * (int)sizeof(N3DS_Vertex)) / 1024, (unsigned long)(linearSpaceFree() / 1024));
 		N3DS_DebugLog(msg);
 	}
 	*outCapacity = s_modelResCapacity;
@@ -4502,7 +4501,7 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  one ([MDLPOSE] match/mismatch). Bare token toggles.
 	 *   modelres [N] -- g_dbg_modelResident: 1 (default) a cached model with
 	 *                  no blended texture and no fade draws from a resident
-	 *                  copy in video memory, GPU-culled; 0 copies and culls
+	 *                  copy in linear memory, GPU-culled; 0 copies and culls
 	 *                  every triangle each frame. Bare token toggles.
 	 *   resflip [N] -- g_dbg_modelResFlip: inverts the resident path's GPU
 	 *                  cull winding. Bare token toggles.
