@@ -555,19 +555,7 @@ void N3DS_ModelDraw_InstanceSkyDome(const float *qx, const float *qy, const floa
  * is a third of a real frame (measured, design section 7) and not an edge
  * case. */
 void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int textured, int blend);
-/* An opaque run that may come from the resident model region and may be
- * culled by the GPU. resident 1: startVertex indexes N3DS_ModelRes_Base's
- * region; 0: the frame buffer, as N3DS_ModelDraw_Run. cull: 0 none, 1
- * GPU_CULL_FRONT_CCW, 2 GPU_CULL_BACK_CCW. */
-void N3DS_ModelDraw_ClassRun(int resident, int startVertex, int triangleCount, int atlasIndex, int textured, int cull);
 void N3DS_ModelDraw_End(void);
-
-/* Resident model vertices: a region of video memory, allocated on first call
- * (the largest of 2.75 MiB down to 1 MiB that fits), in the N3DS_Vertex layout. Returns
- * NULL with *outCapacity 0 when none could be had. Writes become visible to
- * the GPU through N3DS_ModelRes_Flush. */
-N3DS_Vertex *N3DS_ModelRes_Base(int *outCapacity);
-void N3DS_ModelRes_Flush(const void *ptr, int bytes);
 
 void N3DS_TrackDraw_Begin(const float *qx, const float *qy, const float *qw, float h);
 /* atlasBin: which atlas unit these indices sample. At or past the

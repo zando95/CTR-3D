@@ -889,14 +889,6 @@ static int s_modelDrawActive = 0;
 /* Set by N3DS_ModelDraw_InstanceSkyDome until the next instance or the bracket
  * end: the sky dome's runs never write depth (see ctr_model.v.pica's skyConst). */
 static int s_modelSkyDome = 0;
-/* Resident model region (video memory) and the run state that switches to it:
- * the bound vertex buffer (0 frame, 1 resident) and the GPU cull mode. */
-static N3DS_Vertex *s_modelResMem = NULL;
-static int s_modelResCapacity = 0;
-static int s_modelResTried = 0;
-static C3D_BufInfo s_modelResBufInfo;
-static int s_modelResBound = 0;
-static int s_modelCullState = 0;
 
 /*
  * Rung 3a step 2: the resident-mesh draw path's own program/attribute
@@ -1162,7 +1154,6 @@ typedef struct N3DS_StereoOp
 		struct
 		{
 			s32 startVertex, triCount, atlas, textured, blend;
-			u8 resident, cull;
 		} mrun; /* MODEL_RUN */
 	} u;
 } N3DS_StereoOp;
@@ -3350,8 +3341,6 @@ void N3DS_ModelDraw_Begin(void)
 	s_modelDepthWriteState = -1;
 	s_modelDrawActive = 1;
 	s_modelSkyDome = 0;
-	s_modelResBound = 0;
-	s_modelCullState = 0;
 }
 
 static void N3DS_ModelDraw_InstanceImpl(const float *qx, const float *qy, const float *qw, float h, int skyDome)
@@ -3431,124 +3420,6 @@ static void N3DS_ModelDraw_SetTextured(int textured)
 	s_modelTexturedState = textured;
 }
 
-/* Vertex source and GPU cull for the next model run, memoized: resident 1
- * binds the resident region's buffer, 0 the frame buffer the packet path
- * appends into; cull as N3DS_ModelDraw_ClassRun. */
-static void N3DS_ModelDraw_SetSource(int resident, int cull)
-{
-	if (resident != s_modelResBound)
-	{
-		if (resident)
-		{
-			C3D_SetBufInfo(&s_modelResBufInfo);
-		}
-		else
-		{
-			C3D_BufInfo *bufInfo = C3D_GetBufInfo();
-
-			BufInfo_Init(bufInfo);
-			BufInfo_Add(bufInfo, s_vertexBufferMem, sizeof(N3DS_Vertex), 3, 0x210);
-		}
-		s_modelResBound = resident;
-	}
-	if (cull != s_modelCullState)
-	{
-		C3D_CullFace((cull == 1) ? GPU_CULL_FRONT_CCW : (cull == 2) ? GPU_CULL_BACK_CCW : GPU_CULL_NONE);
-		s_modelCullState = cull;
-	}
-}
-
-N3DS_Vertex *N3DS_ModelRes_Base(int *outCapacity)
-{
-	if (!s_modelResTried)
-	{
-		/* One allocation cannot span the two VRAM banks, and the render
-		 * target sits in one of them. */
-		static const int kKiB[5] = {2816, 2560, 2048, 1536, 1024};
-		char msg[128];
-		int i;
-
-		s_modelResTried = 1;
-		for (i = 0; (i < 5) && (s_modelResMem == NULL); i++)
-		{
-			s_modelResMem = (N3DS_Vertex *)vramAlloc((size_t)kKiB[i] * 1024u);
-			if (s_modelResMem != NULL)
-			{
-				s_modelResCapacity = (kKiB[i] * 1024) / (int)sizeof(N3DS_Vertex);
-			}
-		}
-		if (s_modelResMem != NULL)
-		{
-			BufInfo_Init(&s_modelResBufInfo);
-			BufInfo_Add(&s_modelResBufInfo, s_modelResMem, sizeof(N3DS_Vertex), 3, 0x210);
-		}
-		snprintf(msg, sizeof(msg), "[CTR-3DS] resident model region: %d KiB of video memory (%lu KiB free after)",
-		         (s_modelResCapacity * (int)sizeof(N3DS_Vertex)) / 1024, (unsigned long)(vramSpaceFree() / 1024));
-		N3DS_DebugLog(msg);
-	}
-	*outCapacity = s_modelResCapacity;
-	return s_modelResMem;
-}
-
-void N3DS_ModelRes_Flush(const void *ptr, int bytes)
-{
-	if ((ptr != NULL) && (bytes > 0))
-	{
-		GSPGPU_FlushDataCache(ptr, (u32)bytes);
-	}
-}
-
-void N3DS_ModelDraw_ClassRun(int resident, int startVertex, int triangleCount, int atlasIndex, int textured, int cull)
-{
-	{
-		N3DS_StereoOp *op = N3DS_StereoRecord(N3DS_STEREO_OP_MODEL_RUN);
-
-		if (op != NULL)
-		{
-			op->u.mrun.startVertex = startVertex;
-			op->u.mrun.triCount = triangleCount;
-			op->u.mrun.atlas = atlasIndex;
-			op->u.mrun.textured = textured;
-			op->u.mrun.blend = 0;
-			op->u.mrun.resident = (u8)(resident != 0);
-			op->u.mrun.cull = (u8)cull;
-		}
-	}
-
-	if (!s_modelDrawActive || (triangleCount <= 0) || (startVertex < 0))
-	{
-		return;
-	}
-	if (resident && ((s_modelResMem == NULL) || ((startVertex + (triangleCount * 3)) > s_modelResCapacity)))
-	{
-		return;
-	}
-
-	if (s_modelDepthWriteState != 1)
-	{
-		s_modelDepthWriteState = 1;
-		C3D_DepthTest(true, GPU_LEQUAL, GPU_WRITE_ALL);
-	}
-	N3DS_C3DSetBlendMode(0);
-	N3DS_ModelDraw_SetSource(resident, cull);
-
-	if (textured && (atlasIndex >= 0) && (atlasIndex < N3DS_ATLAS_COUNT))
-	{
-		if (s_modelBoundAtlas != atlasIndex)
-		{
-			N3DS_C3DBindAtlas(atlasIndex);
-			s_modelBoundAtlas = atlasIndex;
-		}
-		N3DS_ModelDraw_SetTextured(1);
-	}
-	else
-	{
-		N3DS_ModelDraw_SetTextured(0);
-	}
-
-	C3D_DrawArrays(GPU_TRIANGLES, startVertex, triangleCount * 3);
-}
-
 void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int textured, int blend)
 {
 	{
@@ -3561,8 +3432,6 @@ void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int 
 			op->u.mrun.atlas = atlasIndex;
 			op->u.mrun.textured = textured;
 			op->u.mrun.blend = blend;
-			op->u.mrun.resident = 0;
-			op->u.mrun.cull = 0;
 		}
 	}
 
@@ -3570,7 +3439,6 @@ void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int 
 	{
 		return;
 	}
-	N3DS_ModelDraw_SetSource(0, 0);
 
 	/*
 	 * Semi-transparency. blend is a BlendMode:
@@ -3639,17 +3507,11 @@ void N3DS_ModelDraw_End(void)
 		C3D_DepthTest(true, GPU_LEQUAL, GPU_WRITE_ALL);
 	}
 
-	if (s_modelCullState != 0)
-	{
-		C3D_CullFace(GPU_CULL_NONE);
-	}
 	s_modelDrawActive = 0;
 	s_modelTexturedState = -1;
 	s_modelBoundAtlas = -1;
 	s_modelDepthWriteState = -1;
 	s_modelSkyDome = 0;
-	s_modelResBound = 0;
-	s_modelCullState = 0;
 }
 
 /*
@@ -4272,15 +4134,7 @@ void N3DS_StereoRenderRightEye(void)
 		}
 		case N3DS_STEREO_OP_MODEL_RUN:
 		{
-			if (op->u.mrun.resident || op->u.mrun.cull)
-			{
-				N3DS_ModelDraw_ClassRun(op->u.mrun.resident, op->u.mrun.startVertex, op->u.mrun.triCount, op->u.mrun.atlas, op->u.mrun.textured,
-				                        op->u.mrun.cull);
-			}
-			else
-			{
-				N3DS_ModelDraw_Run(op->u.mrun.startVertex, op->u.mrun.triCount, op->u.mrun.atlas, op->u.mrun.textured, op->u.mrun.blend);
-			}
+			N3DS_ModelDraw_Run(op->u.mrun.startVertex, op->u.mrun.triCount, op->u.mrun.atlas, op->u.mrun.textured, op->u.mrun.blend);
 			break;
 		}
 		case N3DS_STEREO_OP_MODEL_END:
@@ -4476,12 +4330,6 @@ unsigned int N3DS_ReadButtons(void)
 	 *   posecheck [N] -- g_dbg_modelPoseCheck: 1 walks every such miss
 	 *                  anyway and compares the built record with the walked
 	 *                  one ([MDLPOSE] match/mismatch). Bare token toggles.
-	 *   modelres [N] -- g_dbg_modelResident: 1 (default) a cached model with
-	 *                  no blended texture and no fade draws from a resident
-	 *                  copy in video memory, GPU-culled; 0 copies and culls
-	 *                  every triangle each frame. Bare token toggles.
-	 *   resflip [N] -- g_dbg_modelResFlip: inverts the resident path's GPU
-	 *                  cull winding. Bare token toggles.
 	 *   stereoreuse [N] -- g_dbg_stereoReuse: 1 (default) draws the right eye
 	 *                  by submitting the left eye's command list a second
 	 *                  time; 0 replays the journal. Bare token toggles. Takes
@@ -5180,20 +5028,6 @@ unsigned int N3DS_ReadButtons(void)
 
 					g_dbg_modelPose = (word[9] == ' ') ? (atoi(&word[10]) != 0) : !g_dbg_modelPose;
 					N3DS_DebugLog(g_dbg_modelPose ? "[CTR-3DS] model poses: built from decoded vertices" : "[CTR-3DS] model poses: walked");
-				}
-				else if (strncmp(word, "modelres", 8) == 0)
-				{
-					extern int g_dbg_modelResident;
-
-					g_dbg_modelResident = (word[8] == ' ') ? (atoi(&word[9]) != 0) : !g_dbg_modelResident;
-					N3DS_DebugLog(g_dbg_modelResident ? "[CTR-3DS] models: resident copies" : "[CTR-3DS] models: per-triangle");
-				}
-				else if (strncmp(word, "resflip", 7) == 0)
-				{
-					extern int g_dbg_modelResFlip;
-
-					g_dbg_modelResFlip = (word[7] == ' ') ? (atoi(&word[8]) != 0) : !g_dbg_modelResFlip;
-					N3DS_DebugLog(g_dbg_modelResFlip ? "[CTR-3DS] resident cull: flipped" : "[CTR-3DS] resident cull: normal");
 				}
 				else if (strncmp(word, "posecheck", 9) == 0)
 				{
