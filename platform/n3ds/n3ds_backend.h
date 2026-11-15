@@ -546,9 +546,6 @@ void N3DS_TrackGeom_PatchEnd(int loVert, int hiVert);
  * between one Begin/End pair. */
 void N3DS_ModelDraw_Begin(void);
 void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, float h);
-/* An instance whose vertex colours the GPU fades: colour + amount * (far -
- * colour), far as 0..1 per channel, amount 0..1. */
-void N3DS_ModelDraw_InstanceFade(const float *qx, const float *qy, const float *qw, float h, float farR, float farG, float farB, float amount);
 /* The sky dome: same composed rows, but every vertex is pinned behind all world
  * content at the infinite-distance parallax, and its runs write no depth. */
 void N3DS_ModelDraw_InstanceSkyDome(const float *qx, const float *qy, const float *qw, float h);

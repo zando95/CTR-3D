@@ -874,7 +874,7 @@ static C3D_Tex s_trackAtlasTexturesNearest[N3DS_TRACK_ATLAS_MAX_UNITS];
 static DVLB_s *s_modelShaderDvlb = NULL;
 static shaderProgram_s s_modelShaderProgram;
 static int s_modelULocQx = -1, s_modelULocQy = -1, s_modelULocQw = -1;
-static int s_modelULocProjection = -1, s_modelULocH = -1, s_modelULocStereo = -1, s_modelULocFade = -1;
+static int s_modelULocProjection = -1, s_modelULocH = -1, s_modelULocStereo = -1;
 /* Texenv memo, same idea and lifetime rule as s_trackTexturedState: reset by
  * N3DS_ModelDraw_Begin because the packet path owns texenv 0 between model
  * frames. -1 = unknown, so the first Run after a Begin always emits. */
@@ -1151,7 +1151,6 @@ typedef struct N3DS_StereoOp
 		struct
 		{
 			float qx[4], qy[4], qw[4], h;
-			float fade[4]; /* MODEL_INSTANCE only */
 			u8 skyDome; /* MODEL_INSTANCE only */
 		} mtx; /* TRACK_BEGIN, MODEL_INSTANCE */
 		struct
@@ -1864,7 +1863,6 @@ int N3DS_C3DInit(void)
 	s_modelULocQy = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "qy");
 	s_modelULocQw = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "qw");
 	s_modelULocH = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "hParam");
-	s_modelULocFade = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "fade");
 	s_modelULocStereo = shaderInstanceGetUniformLocation(s_modelShaderProgram.vertexShader, "stereoWorld");
 
 	if (!N3DS_StereoReuseCheckLayout())
@@ -3356,14 +3354,8 @@ void N3DS_ModelDraw_Begin(void)
 	s_modelCullState = 0;
 }
 
-static void N3DS_ModelDraw_InstanceImpl(const float *qx, const float *qy, const float *qw, float h, int skyDome, const float *fade)
+static void N3DS_ModelDraw_InstanceImpl(const float *qx, const float *qy, const float *qw, float h, int skyDome)
 {
-	static const float kNoFade[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-	if (fade == NULL)
-	{
-		fade = kNoFade;
-	}
 	{
 		N3DS_StereoOp *op = N3DS_StereoRecord(N3DS_STEREO_OP_MODEL_INSTANCE);
 
@@ -3373,7 +3365,6 @@ static void N3DS_ModelDraw_InstanceImpl(const float *qx, const float *qy, const 
 			memcpy(op->u.mtx.qy, qy, sizeof(op->u.mtx.qy));
 			memcpy(op->u.mtx.qw, qw, sizeof(op->u.mtx.qw));
 			op->u.mtx.h = h;
-			memcpy(op->u.mtx.fade, fade, sizeof(op->u.mtx.fade));
 			op->u.mtx.skyDome = (u8)(skyDome != 0);
 		}
 	}
@@ -3393,27 +3384,16 @@ static void N3DS_ModelDraw_InstanceImpl(const float *qx, const float *qy, const 
 	 * because an unset uniform component holds whatever the last program that
 	 * used this register put there. */
 	C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocH, h, s_modelSkyDome ? 1.0f : 0.0f, 0.0f, 0.0f);
-	if (s_modelULocFade >= 0)
-	{
-		C3D_FVUnifSet(GPU_VERTEX_SHADER, s_modelULocFade, fade[0], fade[1], fade[2], fade[3]);
-	}
 }
 
 void N3DS_ModelDraw_Instance(const float *qx, const float *qy, const float *qw, float h)
 {
-	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 0, NULL);
-}
-
-void N3DS_ModelDraw_InstanceFade(const float *qx, const float *qy, const float *qw, float h, float farR, float farG, float farB, float amount)
-{
-	const float fade[4] = {farR, farG, farB, amount};
-
-	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 0, fade);
+	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 0);
 }
 
 void N3DS_ModelDraw_InstanceSkyDome(const float *qx, const float *qy, const float *qw, float h)
 {
-	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 1, NULL);
+	N3DS_ModelDraw_InstanceImpl(qx, qy, qw, h, 1);
 }
 
 /*
@@ -3659,13 +3639,9 @@ void N3DS_ModelDraw_End(void)
 		C3D_DepthTest(true, GPU_LEQUAL, GPU_WRITE_ALL);
 	}
 
-	/* citro3d emits a state change at its next draw, and the track's direct
-	 * leaves are raw draw commands that bypass that update: the register is
-	 * written here so nothing after the models draws GPU-culled. */
 	if (s_modelCullState != 0)
 	{
 		C3D_CullFace(GPU_CULL_NONE);
-		GPUCMD_AddWrite(GPUREG_FACECULLING_CONFIG, GPU_CULL_NONE);
 	}
 	s_modelDrawActive = 0;
 	s_modelTexturedState = -1;
@@ -4291,7 +4267,7 @@ void N3DS_StereoRenderRightEye(void)
 		}
 		case N3DS_STEREO_OP_MODEL_INSTANCE:
 		{
-			N3DS_ModelDraw_InstanceImpl(op->u.mtx.qx, op->u.mtx.qy, op->u.mtx.qw, op->u.mtx.h, op->u.mtx.skyDome, op->u.mtx.fade);
+			N3DS_ModelDraw_InstanceImpl(op->u.mtx.qx, op->u.mtx.qy, op->u.mtx.qw, op->u.mtx.h, op->u.mtx.skyDome);
 			break;
 		}
 		case N3DS_STEREO_OP_MODEL_RUN:
