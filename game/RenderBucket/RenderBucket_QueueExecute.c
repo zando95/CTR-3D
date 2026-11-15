@@ -41,7 +41,9 @@ extern int NativeModelEmit_SpecularEnabled(void);
 extern int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp);
 extern int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp);
 extern void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, u32 drawCommand,
-                                          int retailVerdict);
+                                          int retailVerdict, const int *vid3);
+extern u32 NativeModelCache_PoseVertexCount(const struct InstDrawPerPlayer *idpp);
+extern int NativeModelCache_InsertPose(const u32 *packedXY, const u32 *packedZ);
 extern void NativeModelCache_AbortFill(void);
 extern void NativeModelCache_EndFill(void);
 extern void NativeModelCache_NoteSkipped(int captured, int specular, int forceBlend);
@@ -457,6 +459,12 @@ struct RenderBucketDrawContext
 	int vertexIndex;
 	int splitPlane;
 	int waterSplitSide;
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+	/* Model frame cache topology: the vertex (decode order, 1-based) each
+	 * stack slot and each tempPacked slot holds; 0 = none decoded yet. */
+	u16 slotVid[256];
+	u16 tempVid[4];
+#endif
 };
 
 enum
@@ -2663,6 +2671,86 @@ static struct RenderBucketUncompressResult RenderBucket_UncompressAnimationFrame
 	return result;
 }
 
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+#define RBQ_POSE_MAX_VERTS 1024
+static u32 s_rbqPoseXY[RBQ_POSE_MAX_VERTS];
+static u32 s_rbqPoseZ[RBQ_POSE_MAX_VERTS];
+
+/* Packs the first `count` vertices of the instance's pose in decode order,
+ * with the arithmetic of RenderBucket_UncompressAnimationFrame (single frame)
+ * or RenderBucket_UncompressAnimationFrame_NextFrame (halfway pair), as the
+ * plain and next-frame dispatch would. Reads ctx's frame setup and leaves
+ * ctx, the stack and the scratch vertex cache untouched. */
+static void RenderBucket_NativeDecodePose(const struct RenderBucketDrawContext *ctx, u32 count, u32 *outXY, u32 *outZ)
+{
+	struct RenderBucketDrawContext *rctx = (struct RenderBucketDrawContext *)ctx;
+	const u32 *deltaArray = (const u32 *)ctx->idpp->ptrDeltaArray;
+	const int pair = (ctx->idpp->unkF0 == RB_RETAIL_UNCOMPRESS_NEXTFRAME) && (ctx->idpp->ptrNextFrame != 0) && (ctx->nextVertData != 0);
+	int bit = 0, nextBit = 0;
+	int ax = 0, ay = 0, az = 0, nx = 0, ny = 0, nz = 0;
+	u32 i;
+
+	for (i = 0; i < count; i++)
+	{
+		RenderBucketVertex curr, next;
+
+		if (deltaArray != 0)
+		{
+			u32 temporal = deltaArray[i];
+			u8 xBits = (temporal >> 6) & 7;
+			u8 zBits = (temporal >> 3) & 7;
+			u8 yBits = temporal & 7;
+			int bx = RenderBucket_SignExtendBits(temporal >> 25, 7) << 1;
+			int bz = RenderBucket_SignExtendBits(temporal >> 17, 8);
+			int by = RenderBucket_SignExtendBits(temporal >> 9, 8);
+
+			RenderBucket_ReadDeltaComponentFromStream((const u8 *)ctx->vertData, &bit, xBits, bx, &ax);
+			RenderBucket_ReadDeltaComponentFromStream((const u8 *)ctx->vertData, &bit, zBits, bz, &ay);
+			RenderBucket_ReadDeltaComponentFromStream((const u8 *)ctx->vertData, &bit, yBits, by, &az);
+			curr.x = ax;
+			curr.y = az;
+			curr.z = ay;
+			if (pair)
+			{
+				RenderBucket_ReadDeltaComponentFromStream((const u8 *)ctx->nextVertData, &nextBit, xBits, bx, &nx);
+				RenderBucket_ReadDeltaComponentFromStream((const u8 *)ctx->nextVertData, &nextBit, zBits, bz, &ny);
+				RenderBucket_ReadDeltaComponentFromStream((const u8 *)ctx->nextVertData, &nextBit, yBits, by, &nz);
+				next.x = nx;
+				next.y = nz;
+				next.z = ny;
+			}
+		}
+		else
+		{
+			const RenderBucketCompVertex *currVerts = (const RenderBucketCompVertex *)ctx->vertData;
+
+			curr.x = currVerts[i].x;
+			curr.y = currVerts[i].y;
+			curr.z = currVerts[i].z;
+			if (pair)
+			{
+				const RenderBucketCompVertex *nextVerts = (const RenderBucketCompVertex *)ctx->nextVertData;
+
+				next.x = nextVerts[i].x;
+				next.y = nextVerts[i].y;
+				next.z = nextVerts[i].z;
+			}
+		}
+
+		if (pair)
+		{
+			outXY[i] = RenderBucket_PackInterpolatedModelVertexXY(rctx, &curr, &next);
+			outZ[i] = RenderBucket_InterpolatedModelVertexZ(rctx, &curr, &next);
+		}
+		else
+		{
+			outXY[i] = RenderBucket_PackModelVertexXY(rctx, &curr);
+			outZ[i] = RenderBucket_ModelVertexZ(rctx, &curr);
+		}
+	}
+}
+#endif
+
 static struct RenderBucketUncompressResult RenderBucket_TransformSplitDecodedVertex(struct RenderBucketDrawContext *ctx, u32 command, u16 stackIndex,
                                                                                     struct RenderBucketUncompressResult result)
 {
@@ -4745,6 +4833,19 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 			NativeModelEmit_EndInstance();
 			return;
 		}
+		{
+			const u32 poseVerts = NativeModelCache_PoseVertexCount(ctx->idpp);
+
+			if ((poseVerts != 0) && (poseVerts <= RBQ_POSE_MAX_VERTS))
+			{
+				RenderBucket_NativeDecodePose(ctx, poseVerts, s_rbqPoseXY, s_rbqPoseZ);
+				if (NativeModelCache_InsertPose(s_rbqPoseXY, s_rbqPoseZ) && NativeModelCache_TryEmit(ctx->idpp))
+				{
+					NativeModelEmit_EndInstance();
+					return;
+				}
+			}
+		}
 		mdlFilling = NativeModelCache_BeginFill(ctx->idpp);
 	}
 	else
@@ -4787,6 +4888,19 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 		{
 			ctx->vertexIndex++;
 		}
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+		if (mdlFilling)
+		{
+			if ((flags & 4) == 0)
+			{
+				ctx->slotVid[stackIndex] = (u16)ctx->vertexIndex;
+			}
+			ctx->tempVid[0] = ctx->tempVid[1];
+			ctx->tempVid[1] = ctx->tempVid[2];
+			ctx->tempVid[2] = ctx->tempVid[3];
+			ctx->tempVid[3] = ctx->slotVid[stackIndex];
+		}
+#endif
 
 		ctx->tempCoords[0] = ctx->tempCoords[1];
 		ctx->tempCoords[1] = ctx->tempCoords[2];
@@ -4821,6 +4935,9 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 			ctx->tempCoords[1] = ctx->tempCoords[0];
 			ctx->tempPacked[1] = ctx->tempPacked[0];
 			ctx->tempColor[1] = ctx->tempColor[0];
+#if defined(CTR_NATIVE) && defined(CTR_NATIVE_MODEL_RENDERER) && CTR_NATIVE_MODEL_RENDERER
+			ctx->tempVid[1] = ctx->tempVid[0];
+#endif
 		}
 
 		if (ctx->stripLength < 2)
@@ -4857,8 +4974,9 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 						const u32 fillXY[3] = {ctx->tempPacked[1].xy, ctx->tempPacked[2].xy, ctx->tempPacked[3].xy};
 						const u32 fillZ[3] = {ctx->tempPacked[1].z, ctx->tempPacked[2].z, ctx->tempPacked[3].z};
 						const int fillColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
+						const int fillVid[3] = {ctx->tempVid[1], ctx->tempVid[2], ctx->tempVid[3]};
 
-						NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, fillTex, drawCommand, s_rbqNclipVerdict);
+						NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, fillTex, drawCommand, s_rbqNclipVerdict, fillVid);
 					}
 				}
 #endif
@@ -4879,8 +4997,9 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 				const u32 fillXY[3] = {ctx->tempPacked[1].xy, ctx->tempPacked[2].xy, ctx->tempPacked[3].xy};
 				const u32 fillZ[3] = {ctx->tempPacked[1].z, ctx->tempPacked[2].z, ctx->tempPacked[3].z};
 				const int fillColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
+				const int fillVid[3] = {ctx->tempVid[1], ctx->tempVid[2], ctx->tempVid[3]};
 
-				NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, tex, drawCommand, s_rbqNclipVerdict);
+				NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, tex, drawCommand, s_rbqNclipVerdict, fillVid);
 			}
 #endif
 

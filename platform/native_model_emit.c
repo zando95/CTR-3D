@@ -940,6 +940,20 @@ void NativeModelEmit_EndInstance(void)
  * an oldest entry drawn since it was last placed slides to the ring head
  * (a memmove of its record) instead of being dropped. dumpreq `modelcache
  * [N]`: 1 (default) 3 MiB with second chance, 0 1.5 MiB oldest-first.
+ *
+ * Pose builds. Racers draw halfway between an animation frame and the next
+ * one, so every (frame, next) pair is its own key, and a spin-out or hit
+ * plays a run of pairs no fill has seen. The first fill of a model records
+ * its topology beside the record: per triangle, the vertex each corner was
+ * decoded as (1-based decode order), plus its colours, texture and flags,
+ * which depend on the command list, texture layout and colour table but
+ * never on the frame. A later miss on a key whose topology is known decodes
+ * the pose's vertices with retail's decode and pack arithmetic
+ * (RenderBucket_NativeDecodePose) and gathers them through the topology into
+ * a record, without walking the instance. A topology is kept only when every
+ * corner names a vertex this instance decoded. dumpreq `modelpose [N]`: 1
+ * (default) builds, 0 walks every new key; `posecheck [N]` (internal) walks
+ * anyway and compares the built record with the walked one.
  */
 #define MODELCACHE_ARENA_BYTES      (3072u * 1024u)
 #define MODELCACHE_ARENA_BYTES_FIFO (1536u * 1024u)
@@ -1000,6 +1014,50 @@ global_variable int s_mcMode = -1;
 global_variable u32 s_mcWinRecycles;
 int g_dbg_modelCache = 1;
 
+#define MODELPOSE_TOPO_BYTES (256u * 1024u)
+#define MODELPOSE_MAX_TOPOS  128
+#define MODELPOSE_MAX_VERTS  1024
+
+/* texIndex: the command's texture-table index (0 = untextured), resolved
+ * through the instance's table at build time, since a table entry can be
+ * rewritten while the table pointer in the key stays the same. */
+struct NativeModelPoseTri
+{
+	u16 v[3]; /* 1-based decode order */
+	u16 texIndex;
+	u8 rgb[3][3];
+	u8 flags;
+};
+
+struct NativeModelPoseTopo
+{
+	u32 cmdList;
+	const void *texLayout;
+	u32 colorLayout;
+	u32 colorHash;
+	u32 offset;
+	u16 triCount;
+	u16 vertCount;
+};
+
+global_variable u8 *s_mpArena;
+global_variable u32 s_mpArenaHead;
+global_variable struct NativeModelPoseTopo s_mpTopos[MODELPOSE_MAX_TOPOS];
+global_variable u32 s_mpTopoCount;
+global_variable const struct NativeModelPoseTopo *s_mpCur;
+global_variable struct NativeModelCacheKey s_mpCurKey;
+global_variable u32 s_mpWinBuilds, s_mpWinTopos, s_mpWinTopoRefused;
+/* The last TryEmit found no record for its key: the one case a pose build
+ * can serve (a record that exists but cannot replay keeps the walk). */
+global_variable int s_mcLastWasMiss;
+int g_dbg_modelPose = 1;
+#ifdef CTR_INTERNAL
+int g_dbg_modelPoseCheck = 0;
+global_variable u32 s_mpCheckCount;
+global_variable int s_mpCheckPending;
+global_variable u32 s_mpWinCheckMatch, s_mpWinCheckMismatch;
+#endif
+
 global_variable struct NativeModelCacheTri s_mcFillTris[MODELCACHE_FILL_MAX_TRIS];
 global_variable u32 s_mcFillCount;
 global_variable int s_mcFillActive;
@@ -1009,6 +1067,15 @@ global_variable struct NativeModelCacheKey s_mcFillKey;
 global_variable float s_mcFillEye[3];
 global_variable float s_mcFillDet;
 global_variable int s_mcFillInstNeg;
+/* The open fill's topology: each triangle's corner vertices in decode order.
+ * Cleared when a corner names no vertex this instance decoded. */
+global_variable u16 s_mcFillVid[MODELCACHE_FILL_MAX_TRIS][3];
+global_variable u16 s_mcFillTexIdx[MODELCACHE_FILL_MAX_TRIS];
+global_variable int s_mcFillVidOk;
+global_variable u32 s_mcFillMaxVid;
+#ifdef CTR_INTERNAL
+global_variable struct NativeModelCacheTri s_mpCheckTris[MODELCACHE_FILL_MAX_TRIS];
+#endif
 
 global_variable u32 s_mcWinHits, s_mcWinMisses, s_mcWinFills, s_mcWinEvicts, s_mcWinNoRoom;
 global_variable u32 s_mcWinCullAgree, s_mcWinCullWeDrawRetailCulled, s_mcWinCullWeCullRetailDrew;
@@ -1257,6 +1324,12 @@ void NativeModelCache_Reset(void)
 	s_mcLiveCount = 0;
 	s_mcArenaHead = 0;
 	s_mcFillActive = 0;
+	s_mpArenaHead = 0;
+	s_mpTopoCount = 0;
+	s_mpCur = NULL;
+#ifdef CTR_INTERNAL
+	s_mpCheckPending = 0;
+#endif
 }
 
 /* Drops every entry when the level changes; see the section comment. */
@@ -1461,6 +1534,10 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 	u32 t;
 
 	NativeModelCache_CheckLevel();
+#ifdef CTR_INTERNAL
+	s_mpCheckPending = 0;
+#endif
+	s_mcLastWasMiss = 0;
 	if ((s_modelEmitCurInst < 0) || (s_mcArena == NULL))
 	{
 		return 0;
@@ -1471,6 +1548,7 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 	if (e == NULL)
 	{
 		s_mcWinMisses++;
+		s_mcLastWasMiss = 1;
 		return 0;
 	}
 	/* Not enough snapshot room for the whole record: keep the walk, which
@@ -1583,6 +1661,11 @@ int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp)
 			Platform_Log("[MDLCACHE] arena allocation failed (%u bytes); models keep the walk\n", MODELCACHE_ARENA_BYTES);
 			return 0;
 		}
+		s_mpArena = (u8 *)malloc(MODELPOSE_TOPO_BYTES);
+		if (s_mpArena == NULL)
+		{
+			Platform_Log("[MDLPOSE] topology arena allocation failed (%u bytes); new poses keep the walk\n", MODELPOSE_TOPO_BYTES);
+		}
 		NativeModelCache_Reset();
 		NativeModelCache_CheckLevel();
 	}
@@ -1598,17 +1681,35 @@ int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp)
 	memcpy(s_mcFillName, ((const struct Instance *)((const u8 *)idpp - sizeof(struct Instance)))->name, 16);
 #endif
 	s_mcFillCount = 0;
+	s_mcFillVidOk = 1;
+	s_mcFillMaxVid = 0;
 	s_mcFillActive = 1;
 	return 1;
 }
 
 /* retailVerdict: 1 = retail's NCLIP passed this face, 2 = retail's NCLIP
  * rejected it, 0 = not tested or rejected for another reason. */
+internal void NativeModelCache_TriNormal(struct NativeModelCacheTri *t)
+{
+	float e1[3], e2[3];
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		e1[k] = (float)t->p[1][k] - (float)t->p[0][k];
+		e2[k] = (float)t->p[2][k] - (float)t->p[0][k];
+	}
+	t->n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+	t->n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+	t->n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+}
+
+/* vid3: each corner's vertex in decode order, 1-based; 0 = not decoded by
+ * this instance (a stack slot read before any write). */
 void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, u32 drawCommand,
-                                   int retailVerdict)
+                                   int retailVerdict, const int *vid3)
 {
 	struct NativeModelCacheTri *t;
-	float e1[3], e2[3];
 	int k;
 
 	if (!s_mcFillActive)
@@ -1620,6 +1721,22 @@ void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, co
 		s_mcFillActive = 0;
 		return;
 	}
+
+	for (k = 0; k < 3; k++)
+	{
+		const int v = vid3[k];
+
+		if ((v <= 0) || (v > (int)MODELPOSE_MAX_VERTS))
+		{
+			s_mcFillVidOk = 0;
+		}
+		else if ((u32)v > s_mcFillMaxVid)
+		{
+			s_mcFillMaxVid = (u32)v;
+		}
+		s_mcFillVid[s_mcFillCount][k] = (u16)v;
+	}
+	s_mcFillTexIdx[s_mcFillCount] = (u16)(drawCommand & 0x1ffu);
 
 	t = &s_mcFillTris[s_mcFillCount++];
 	for (k = 0; k < 3; k++)
@@ -1639,15 +1756,7 @@ void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, co
 		t->flags |= MODELCACHE_TRI_FLIP;
 	}
 	t->tex = tex;
-
-	for (k = 0; k < 3; k++)
-	{
-		e1[k] = (float)t->p[1][k] - (float)t->p[0][k];
-		e2[k] = (float)t->p[2][k] - (float)t->p[0][k];
-	}
-	t->n[0] = e1[1] * e2[2] - e1[2] * e2[1];
-	t->n[1] = e1[2] * e2[0] - e1[0] * e2[2];
-	t->n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+	NativeModelCache_TriNormal(t);
 
 	if (retailVerdict != 0)
 	{
@@ -1673,15 +1782,154 @@ void NativeModelCache_AbortFill(void)
 	s_mcFillActive = 0;
 }
 
-void NativeModelCache_EndFill(void)
+internal const struct NativeModelPoseTopo *NativeModelCache_FindTopo(const struct NativeModelCacheKey *k)
+{
+	u32 i;
+
+	for (i = 0; i < s_mpTopoCount; i++)
+	{
+		const struct NativeModelPoseTopo *t = &s_mpTopos[i];
+
+		if ((t->cmdList == k->cmdList) && (t->texLayout == k->texLayout) && (t->colorLayout == k->colorLayout) && (t->colorHash == k->colorHash))
+		{
+			return t;
+		}
+	}
+	return NULL;
+}
+
+/* Places a record at the ring head under its key, replacing an older record
+ * of the same key. Returns 0 when the arena cannot hold it. */
+internal int NativeModelCache_InsertRecord(const struct NativeModelCacheKey *key, const struct NativeModelCacheTri *tris, u32 triCount)
 {
 	struct NativeModelCacheEntry *e;
 	struct NativeModelCacheEntry *old;
-	u32 bytes;
+	const u32 bytes = triCount * (u32)sizeof(struct NativeModelCacheTri);
 	s32 off;
 	u32 idx;
 	u32 b;
 
+	old = NativeModelCache_Find(key);
+	if (old != NULL)
+	{
+		NativeModelCache_Unlink((u32)(old - s_mcEntries));
+	}
+
+	off = NativeModelCache_Alloc(bytes);
+	if (off < 0)
+	{
+		return 0;
+	}
+
+	idx = s_mcHeadIdx;
+	s_mcHeadIdx = (s_mcHeadIdx + 1) % MODELCACHE_MAX_ENTRIES;
+	s_mcLiveCount++;
+
+	e = &s_mcEntries[idx];
+	e->key = *key;
+	e->offset = (u32)off;
+	e->bytes = bytes;
+	e->triCount = (u16)triCount;
+	e->live = 1;
+	e->ref = 0;
+	memcpy(s_mcArena + off, tris, bytes);
+	s_mcArenaHead = (u32)off + bytes;
+
+	b = NativeModelCache_HashKey(&e->key);
+	e->nextInBucket = s_mcBuckets[b];
+	s_mcBuckets[b] = (s16)idx;
+	return 1;
+}
+
+/* Keeps the open fill's topology when its model has none yet. */
+internal void NativeModelCache_StoreTopo(void)
+{
+	struct NativeModelPoseTopo *t;
+	struct NativeModelPoseTri *dst;
+	const u32 bytes = s_mcFillCount * (u32)sizeof(struct NativeModelPoseTri);
+	u32 i;
+
+	if ((s_mpArena == NULL) || NativeModelCache_FindTopo(&s_mcFillKey))
+	{
+		return;
+	}
+	if (!s_mcFillVidOk || (s_mpTopoCount >= MODELPOSE_MAX_TOPOS) || ((s_mpArenaHead + bytes) > MODELPOSE_TOPO_BYTES))
+	{
+		s_mpWinTopoRefused++;
+		return;
+	}
+
+	t = &s_mpTopos[s_mpTopoCount++];
+	t->cmdList = s_mcFillKey.cmdList;
+	t->texLayout = s_mcFillKey.texLayout;
+	t->colorLayout = s_mcFillKey.colorLayout;
+	t->colorHash = s_mcFillKey.colorHash;
+	t->offset = s_mpArenaHead;
+	t->triCount = (u16)s_mcFillCount;
+	t->vertCount = (u16)s_mcFillMaxVid;
+	dst = (struct NativeModelPoseTri *)(void *)(s_mpArena + s_mpArenaHead);
+	for (i = 0; i < s_mcFillCount; i++)
+	{
+		memcpy(dst[i].v, s_mcFillVid[i], sizeof(dst[i].v));
+		dst[i].texIndex = s_mcFillTexIdx[i];
+		memcpy(dst[i].rgb, s_mcFillTris[i].rgb, sizeof(dst[i].rgb));
+		dst[i].flags = s_mcFillTris[i].flags;
+	}
+	s_mpArenaHead += (bytes + 3u) & ~3u;
+	s_mpWinTopos++;
+}
+
+#ifdef CTR_INTERNAL
+/* posecheck: the record built from the decoded pose against the record the
+ * walk just filled for the same key, field by field. */
+internal void NativeModelCache_CheckPose(void)
+{
+	u32 i;
+	int same = (s_mpCheckCount == s_mcFillCount);
+
+	for (i = 0; same && (i < s_mcFillCount); i++)
+	{
+		const struct NativeModelCacheTri *a = &s_mpCheckTris[i];
+		const struct NativeModelCacheTri *b = &s_mcFillTris[i];
+
+		same = (memcmp(a->p, b->p, sizeof(a->p)) == 0) && (memcmp(a->rgb, b->rgb, sizeof(a->rgb)) == 0) && (a->flags == b->flags) &&
+		       (a->tex == b->tex) && (memcmp(a->n, b->n, sizeof(a->n)) == 0);
+		if (!same && (s_mpWinCheckMismatch < 4))
+		{
+			const int pm = memcmp(a->p, b->p, sizeof(a->p)) != 0;
+			const int cm = memcmp(a->rgb, b->rgb, sizeof(a->rgb)) != 0;
+
+			Platform_LogInstrument("[MDLPOSE] mismatch %.15s tri %lu/%lu: p%d rgb%d flags%d tex%d | p %d,%d,%d %d,%d,%d %d,%d,%d vs %d,%d,%d %d,%d,%d %d,%d,%d | rgb0 "
+			                       "%02x%02x%02x vs %02x%02x%02x\n",
+			                       s_mcFillName, (unsigned long)i, (unsigned long)s_mcFillCount, pm, cm, a->flags != b->flags, a->tex != b->tex, a->p[0][0],
+			                       a->p[0][1], a->p[0][2], a->p[1][0], a->p[1][1], a->p[1][2], a->p[2][0], a->p[2][1], a->p[2][2], b->p[0][0], b->p[0][1],
+			                       b->p[0][2], b->p[1][0], b->p[1][1], b->p[1][2], b->p[2][0], b->p[2][1], b->p[2][2], a->rgb[0][0], a->rgb[0][1],
+			                       a->rgb[0][2], b->rgb[0][0], b->rgb[0][1], b->rgb[0][2]);
+		}
+	}
+	if (!same && (s_mpCheckCount != s_mcFillCount) && (s_mpWinCheckMismatch < 4))
+	{
+		Platform_LogInstrument("[MDLPOSE] mismatch %.15s: built %lu tris, walked %lu\n", s_mcFillName, (unsigned long)s_mpCheckCount,
+		                       (unsigned long)s_mcFillCount);
+	}
+	if (same)
+	{
+		s_mpWinCheckMatch++;
+	}
+	else
+	{
+		s_mpWinCheckMismatch++;
+	}
+}
+#endif
+
+void NativeModelCache_EndFill(void)
+{
+#ifdef CTR_INTERNAL
+	const int checkPending = s_mpCheckPending;
+
+	s_mpCheckPending = 0;
+#endif
 	if (!s_mcFillActive)
 	{
 		return;
@@ -1692,43 +1940,97 @@ void NativeModelCache_EndFill(void)
 		return;
 	}
 
-	old = NativeModelCache_Find(&s_mcFillKey);
-	if (old != NULL)
-	{
-		NativeModelCache_Unlink((u32)(old - s_mcEntries));
-	}
 #ifdef CTR_INTERNAL
-	else
+	if (checkPending)
+	{
+		NativeModelCache_CheckPose();
+	}
+	if (NativeModelCache_Find(&s_mcFillKey) == NULL)
 	{
 		NativeModelCache_NoteNewKey(&s_mcFillKey);
 	}
 #endif
-
-	bytes = s_mcFillCount * (u32)sizeof(struct NativeModelCacheTri);
-	off = NativeModelCache_Alloc(bytes);
-	if (off < 0)
+	NativeModelCache_StoreTopo();
+	if (NativeModelCache_InsertRecord(&s_mcFillKey, s_mcFillTris, s_mcFillCount))
 	{
-		return;
+		s_mcWinFills++;
 	}
+}
 
-	idx = s_mcHeadIdx;
-	s_mcHeadIdx = (s_mcHeadIdx + 1) % MODELCACHE_MAX_ENTRIES;
-	s_mcLiveCount++;
+/* The vertex count to decode for this instance's pose, 0 when its model has
+ * no topology yet or pose builds are off. Remembers the topology and key for
+ * NativeModelCache_InsertPose. */
+u32 NativeModelCache_PoseVertexCount(const struct InstDrawPerPlayer *idpp)
+{
+	s_mpCur = NULL;
+	if ((s_mpArena == NULL) || (s_modelEmitCurInst < 0) || !s_mcLastWasMiss)
+	{
+		return 0;
+	}
+#ifdef CTR_INTERNAL
+	if (!g_dbg_modelPose && !g_dbg_modelPoseCheck)
+#else
+	if (!g_dbg_modelPose)
+#endif
+	{
+		return 0;
+	}
+	NativeModelCache_KeyFromIdpp(idpp, &s_mpCurKey);
+	s_mpCur = NativeModelCache_FindTopo(&s_mpCurKey);
+	return (s_mpCur != NULL) ? s_mpCur->vertCount : 0;
+}
 
-	e = &s_mcEntries[idx];
-	e->key = s_mcFillKey;
-	e->offset = (u32)off;
-	e->bytes = bytes;
-	e->triCount = (u16)s_mcFillCount;
-	e->live = 1;
-	e->ref = 0;
-	memcpy(s_mcArena + off, s_mcFillTris, bytes);
-	s_mcArenaHead = (u32)off + bytes;
+/* Gathers the decoded pose (packed retail vertex words, decode order) through
+ * the remembered topology into a record and places it. Returns 1 when the
+ * record was placed. */
+int NativeModelCache_InsertPose(const u32 *packedXY, const u32 *packedZ)
+{
+	const struct NativeModelPoseTri *src;
+	const struct TextureLayout *const *texTable = (const struct TextureLayout *const *)s_mpCurKey.texLayout;
+	struct NativeModelCacheTri *out = s_mcFillTris;
+	u32 i;
+	int k;
 
-	b = NativeModelCache_HashKey(&e->key);
-	e->nextInBucket = s_mcBuckets[b];
-	s_mcBuckets[b] = (s16)idx;
-	s_mcWinFills++;
+	if (s_mpCur == NULL)
+	{
+		return 0;
+	}
+#ifdef CTR_INTERNAL
+	if (g_dbg_modelPoseCheck)
+	{
+		out = s_mpCheckTris;
+	}
+#endif
+	src = (const struct NativeModelPoseTri *)(const void *)(s_mpArena + s_mpCur->offset);
+	for (i = 0; i < s_mpCur->triCount; i++)
+	{
+		struct NativeModelCacheTri *t = &out[i];
+
+		for (k = 0; k < 3; k++)
+		{
+			const u32 v = (u32)src[i].v[k] - 1u;
+
+			NativeModelEmit_UnpackVertex(packedXY[v], packedZ[v], &t->p[k][0], &t->p[k][1], &t->p[k][2]);
+		}
+		memcpy(t->rgb, src[i].rgb, sizeof(t->rgb));
+		t->flags = src[i].flags;
+		t->tex = (src[i].texIndex != 0) ? texTable[src[i].texIndex - 1] : NULL;
+		NativeModelCache_TriNormal(t);
+	}
+#ifdef CTR_INTERNAL
+	if (g_dbg_modelPoseCheck)
+	{
+		s_mpCheckCount = s_mpCur->triCount;
+		s_mpCheckPending = 1;
+		return 0;
+	}
+#endif
+	if (!NativeModelCache_InsertRecord(&s_mpCurKey, out, s_mpCur->triCount))
+	{
+		return 0;
+	}
+	s_mpWinBuilds++;
+	return 1;
 }
 
 /*
@@ -1906,7 +2208,17 @@ void NativeModelEmit_EndFrame(void)
 		s_mcWinRecycles = 0;
 #ifdef CTR_INTERNAL
 		NativeModelCache_LogNewKeys();
+		Platform_LogInstrument("[MDLPOSE] mode=%d builds=%lu topos=%lu (+%lu, refused %lu) topoKiB=%lu check=%d match=%lu mismatch=%lu\n", g_dbg_modelPose,
+		                       (unsigned long)s_mpWinBuilds, (unsigned long)s_mpTopoCount, (unsigned long)s_mpWinTopos, (unsigned long)s_mpWinTopoRefused,
+		                       (unsigned long)(s_mpArenaHead / 1024u), g_dbg_modelPoseCheck, (unsigned long)s_mpWinCheckMatch,
+		                       (unsigned long)s_mpWinCheckMismatch);
+		s_mpWinCheckMatch = s_mpWinCheckMismatch = 0;
+#else
+		Platform_LogInstrument("[MDLPOSE] mode=%d builds=%lu topos=%lu (+%lu, refused %lu) topoKiB=%lu\n", g_dbg_modelPose, (unsigned long)s_mpWinBuilds,
+		                       (unsigned long)s_mpTopoCount, (unsigned long)s_mpWinTopos, (unsigned long)s_mpWinTopoRefused,
+		                       (unsigned long)(s_mpArenaHead / 1024u));
 #endif
+		s_mpWinBuilds = s_mpWinTopos = s_mpWinTopoRefused = 0;
 		Platform_LogInstrument("[MDLCACHE] hits=%lu misses=%lu fills=%lu noRoom=%lu evicts=%lu live=%lu arenaKiB=%lu trisIn=%lu trisOut=%lu cull agree=%lu weDraw=%lu weCull=%lu\n",
 		                       (unsigned long)s_mcWinHits, (unsigned long)s_mcWinMisses, (unsigned long)s_mcWinFills,
 		                       (unsigned long)s_mcWinNoRoom, (unsigned long)s_mcWinEvicts, (unsigned long)s_mcLiveCount,

@@ -4323,6 +4323,13 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  cache whose eviction keeps entries drawn since their
 	 *                  placement; 0 1.5 MiB, oldest first. Bare token
 	 *                  toggles. A change empties the cache.
+	 *   modelpose [N] -- g_dbg_modelPose: 1 (default) a model frame cache
+	 *                  miss on a model whose topology is known builds the
+	 *                  pose from its decoded vertices; 0 walks the instance.
+	 *                  Bare token toggles.
+	 *   posecheck [N] -- g_dbg_modelPoseCheck: 1 walks every such miss
+	 *                  anyway and compares the built record with the walked
+	 *                  one ([MDLPOSE] match/mismatch). Bare token toggles.
 	 *   stereoreuse [N] -- g_dbg_stereoReuse: 1 (default) draws the right eye
 	 *                  by submitting the left eye's command list a second
 	 *                  time; 0 replays the journal. Bare token toggles. Takes
@@ -5014,6 +5021,20 @@ unsigned int N3DS_ReadButtons(void)
 
 					g_dbg_modelCache = (word[10] == ' ') ? (atoi(&word[11]) != 0) : !g_dbg_modelCache;
 					N3DS_DebugLog(g_dbg_modelCache ? "[CTR-3DS] model cache: 3 MiB, second chance" : "[CTR-3DS] model cache: 1.5 MiB, oldest first");
+				}
+				else if (strncmp(word, "modelpose", 9) == 0)
+				{
+					extern int g_dbg_modelPose;
+
+					g_dbg_modelPose = (word[9] == ' ') ? (atoi(&word[10]) != 0) : !g_dbg_modelPose;
+					N3DS_DebugLog(g_dbg_modelPose ? "[CTR-3DS] model poses: built from decoded vertices" : "[CTR-3DS] model poses: walked");
+				}
+				else if (strncmp(word, "posecheck", 9) == 0)
+				{
+					extern int g_dbg_modelPoseCheck;
+
+					g_dbg_modelPoseCheck = (word[9] == ' ') ? (atoi(&word[10]) != 0) : !g_dbg_modelPoseCheck;
+					N3DS_DebugLog(g_dbg_modelPoseCheck ? "[CTR-3DS] pose check: on" : "[CTR-3DS] pose check: off");
 				}
 				else if (strncmp(word, "stereoreuse", 11) == 0)
 				{
