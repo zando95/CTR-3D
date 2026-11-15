@@ -1021,6 +1021,103 @@ global_variable u32 s_mcWinSkipNoCapture, s_mcWinSkipSpecular, s_mcWinSkipBlend,
 /* Draw funcs dispatched this window: normal, normalAlt, split, special, other. */
 global_variable u32 s_mcWinFunc[5];
 
+#ifdef CTR_INTERNAL
+/* [MDLNEW]: each fill of a key the cache has never held, by instance name and
+ * by which key fields differ from the nearest live key with the same command
+ * list. Mask bits: 1 frame, 2 next, 4 colorLayout, 8 texLayout, 16 deltaArray,
+ * 32 colorHash, 64 no live key shares the command list. */
+#define MCNEW_SLOTS 24
+struct NativeModelCacheNewTally
+{
+	char name[16];
+	u32 mask;
+	u32 count;
+};
+global_variable char s_mcFillName[16];
+global_variable struct NativeModelCacheNewTally s_mcNewTally[MCNEW_SLOTS];
+global_variable u32 s_mcNewTallyUsed, s_mcNewOverflow, s_mcNewFieldCount[7];
+
+internal void NativeModelCache_NoteNewKey(const struct NativeModelCacheKey *k)
+{
+	u32 best = 64u;
+	int bestBits = 99;
+	u32 i;
+
+	for (i = 0; i < MODELCACHE_MAX_ENTRIES; i++)
+	{
+		const struct NativeModelCacheEntry *e = &s_mcEntries[i];
+		u32 m = 0;
+		int bits = 0;
+		u32 j;
+
+		if (!e->live || (e->key.cmdList != k->cmdList))
+		{
+			continue;
+		}
+		m |= (e->key.frame != k->frame) ? 1u : 0u;
+		m |= (e->key.next != k->next) ? 2u : 0u;
+		m |= (e->key.colorLayout != k->colorLayout) ? 4u : 0u;
+		m |= (e->key.texLayout != k->texLayout) ? 8u : 0u;
+		m |= (e->key.deltaArray != k->deltaArray) ? 16u : 0u;
+		m |= (e->key.colorHash != k->colorHash) ? 32u : 0u;
+		for (j = 0; j < 6; j++)
+		{
+			bits += (int)((m >> j) & 1u);
+		}
+		if (bits < bestBits)
+		{
+			bestBits = bits;
+			best = m;
+		}
+	}
+	for (i = 0; i < 7; i++)
+	{
+		if (best & (1u << i))
+		{
+			s_mcNewFieldCount[i]++;
+		}
+	}
+	for (i = 0; i < s_mcNewTallyUsed; i++)
+	{
+		if ((s_mcNewTally[i].mask == best) && (memcmp(s_mcNewTally[i].name, s_mcFillName, 16) == 0))
+		{
+			s_mcNewTally[i].count++;
+			return;
+		}
+	}
+	if (s_mcNewTallyUsed < MCNEW_SLOTS)
+	{
+		memcpy(s_mcNewTally[s_mcNewTallyUsed].name, s_mcFillName, 16);
+		s_mcNewTally[s_mcNewTallyUsed].name[15] = 0;
+		s_mcNewTally[s_mcNewTallyUsed].mask = best;
+		s_mcNewTally[s_mcNewTallyUsed].count = 1;
+		s_mcNewTallyUsed++;
+	}
+	else
+	{
+		s_mcNewOverflow++;
+	}
+}
+
+internal void NativeModelCache_LogNewKeys(void)
+{
+	u32 i;
+
+	Platform_LogInstrument("[MDLNEW] lvl=%d fields frame=%lu next=%lu colorLayout=%lu texLayout=%lu delta=%lu colorHash=%lu noCmdList=%lu overflow=%lu\n",
+	                       NativePerf_CurrentLevelID(), (unsigned long)s_mcNewFieldCount[0], (unsigned long)s_mcNewFieldCount[1],
+	                       (unsigned long)s_mcNewFieldCount[2], (unsigned long)s_mcNewFieldCount[3], (unsigned long)s_mcNewFieldCount[4],
+	                       (unsigned long)s_mcNewFieldCount[5], (unsigned long)s_mcNewFieldCount[6], (unsigned long)s_mcNewOverflow);
+	for (i = 0; i < s_mcNewTallyUsed; i++)
+	{
+		Platform_LogInstrument("[MDLNEW]   %-15s mask=%02lx n=%lu\n", s_mcNewTally[i].name, (unsigned long)s_mcNewTally[i].mask,
+		                       (unsigned long)s_mcNewTally[i].count);
+	}
+	s_mcNewTallyUsed = 0;
+	s_mcNewOverflow = 0;
+	memset(s_mcNewFieldCount, 0, sizeof(s_mcNewFieldCount));
+}
+#endif
+
 void NativeModelCache_NoteFunc(int kind)
 {
 	if ((kind >= 0) && (kind < 5))
@@ -1497,6 +1594,9 @@ int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp)
 	}
 	s_mcFillInstNeg = ((s16)(u16)idpp->instFlags < 0);
 	NativeModelCache_KeyFromIdpp(idpp, &s_mcFillKey);
+#ifdef CTR_INTERNAL
+	memcpy(s_mcFillName, ((const struct Instance *)((const u8 *)idpp - sizeof(struct Instance)))->name, 16);
+#endif
 	s_mcFillCount = 0;
 	s_mcFillActive = 1;
 	return 1;
@@ -1597,6 +1697,12 @@ void NativeModelCache_EndFill(void)
 	{
 		NativeModelCache_Unlink((u32)(old - s_mcEntries));
 	}
+#ifdef CTR_INTERNAL
+	else
+	{
+		NativeModelCache_NoteNewKey(&s_mcFillKey);
+	}
+#endif
 
 	bytes = s_mcFillCount * (u32)sizeof(struct NativeModelCacheTri);
 	off = NativeModelCache_Alloc(bytes);
@@ -1798,6 +1904,9 @@ void NativeModelEmit_EndFrame(void)
 		 * drew and this cull would drop) is the number that must stay 0. */
 		Platform_LogInstrument("[MDLCACHE] mode=%d recycles=%lu\n", s_mcMode, (unsigned long)s_mcWinRecycles);
 		s_mcWinRecycles = 0;
+#ifdef CTR_INTERNAL
+		NativeModelCache_LogNewKeys();
+#endif
 		Platform_LogInstrument("[MDLCACHE] hits=%lu misses=%lu fills=%lu noRoom=%lu evicts=%lu live=%lu arenaKiB=%lu trisIn=%lu trisOut=%lu cull agree=%lu weDraw=%lu weCull=%lu\n",
 		                       (unsigned long)s_mcWinHits, (unsigned long)s_mcWinMisses, (unsigned long)s_mcWinFills,
 		                       (unsigned long)s_mcWinNoRoom, (unsigned long)s_mcWinEvicts, (unsigned long)s_mcLiveCount,
