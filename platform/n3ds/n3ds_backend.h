@@ -565,8 +565,8 @@ void N3DS_ModelDraw_Run(int startVertex, int triangleCount, int atlasIndex, int 
 void N3DS_ModelDraw_ClassRun(int resident, int startVertex, int triangleCount, int atlasIndex, int textured, int cull);
 void N3DS_ModelDraw_End(void);
 
-/* Resident model vertices: a 1 MiB region of linear memory, allocated on first
- * call, in the N3DS_Vertex layout. Returns
+/* Resident model vertices: a region of video memory, allocated on first call
+ * (the largest of 2.75 MiB down to 1 MiB that fits), in the N3DS_Vertex layout. Returns
  * NULL with *outCapacity 0 when none could be had. Writes become visible to
  * the GPU through N3DS_ModelRes_Flush. */
 N3DS_Vertex *N3DS_ModelRes_Base(int *outCapacity);
