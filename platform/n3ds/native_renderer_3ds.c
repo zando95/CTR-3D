@@ -4507,62 +4507,6 @@ internal void N3DS_ModelTex_Resolve(s16 tpage, s16 clut, N3DS_TexView view, int 
 	}
 }
 
-/*
- * N3DS_ModelTex_Resolve memoized for the rest of the frame by its table key
- * (page, CLUT, view, tier, tile). Within a frame the answer for a key cannot
- * change: the cells it names are in use this frame and so not evictable, and
- * VRAM is not written while models draw. A racer's many small texture layouts
- * share few tiles, so the resident model draw checks each tile once a frame.
- * Triangles that reach a display rect bypass the memo.
- */
-#define N3DS_MTM_BITS 9
-
-typedef struct
-{
-	u32 keyA;
-	u32 frame;
-	s16 offU, offV;
-	s8 atlas;
-	u8 keyB;
-} N3DS_ModelTexMemo;
-
-global_variable N3DS_ModelTexMemo s_mtmTable[1 << N3DS_MTM_BITS];
-global_variable u32 s_mtmHits;
-
-internal void N3DS_ModelTex_ResolveFrame(s16 tpage, s16 clut, N3DS_TexView view, int u0, int v0, int u1, int v1, int u2, int v2, int *outAtlas, int *outOffU,
-                                         int *outOffV)
-{
-	const int minU = MIN3(u0, u1, u2), maxU = MAX3(u0, u1, u2);
-	const int minV = MIN3(v0, v1, v2), maxV = MAX3(v0, v1, v2);
-	const int tileX0 = minU / N3DS_SUBPAGE_DIM, tileY0 = minV / N3DS_SUBPAGE_DIM;
-	const int tier = (!g_dbg_disableSubPage && (tileX0 == (maxU / N3DS_SUBPAGE_DIM)) && (tileY0 == (maxV / N3DS_SUBPAGE_DIM))) ? 1 : 2;
-	const int tx = (tier == 1) ? tileX0 : 0, ty = (tier == 1) ? tileY0 : 0;
-	const u32 keyA = (u32)(u16)tpage | ((u32)(u16)clut << 16);
-	const u32 keyB = (u32)view | ((u32)tier << 2) | ((u32)tx << 4) | ((u32)ty << 6);
-	N3DS_ModelTexMemo *m = &s_mtmTable[(((keyA ^ (keyB * 0x9E3779B1u)) * 0x85EBCA6Bu) >> (32 - N3DS_MTM_BITS))];
-
-	if (N3DS_ModelTex_TriReachesDisplay(tpage, GetTPageFormat((int)tpage), minU, maxU, minV, maxV))
-	{
-		N3DS_ModelTex_Resolve(tpage, clut, view, u0, v0, u1, v1, u2, v2, outAtlas, outOffU, outOffV);
-		return;
-	}
-	if ((m->frame == s_frameCounter) && (m->keyA == keyA) && (m->keyB == (u8)keyB))
-	{
-		*outAtlas = m->atlas;
-		*outOffU = m->offU;
-		*outOffV = m->offV;
-		s_mtmHits++;
-		return;
-	}
-	N3DS_ModelTex_Resolve(tpage, clut, view, u0, v0, u1, v1, u2, v2, outAtlas, outOffU, outOffV);
-	m->keyA = keyA;
-	m->keyB = (u8)keyB;
-	m->frame = s_frameCounter;
-	m->atlas = (s8)*outAtlas;
-	m->offU = (s16)*outOffU;
-	m->offV = (s16)*outOffV;
-}
-
 int NativeRenderer_InitialiseRender(char *windowName, int width, int height, int fullscreen)
 {
 	(void)fullscreen;
