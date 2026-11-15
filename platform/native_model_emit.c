@@ -197,6 +197,7 @@ struct NativeModelEmitSnapshot
 	int degraded;
 	int valid;
 	u32 frameSeq;
+	u32 resGameFrame;
 };
 
 global_variable struct NativeModelEmitSnapshot s_modelEmitBuf[2];
@@ -1052,10 +1053,12 @@ struct NativeModelCacheSlot
  * record in the GPU vertex layout in video memory, the GPU culls back faces
  * per cull class, and the draw checks each slot's atlas placement once,
  * rewriting that slot's UVs only when it moved. The draw side (the render
- * worker on New 3DS) owns the copies; the game thread reads s_mrEntryRes and
- * s_mrRes to decide whether a copy is safe to reference: it must have been
- * drawn within the last 2 draw frames, and a copy is reclaimed only after 4
- * frames unused, so a referenced copy outlives the frame that draws it.
+ * worker on New 3DS) owns the copies. The game thread pins a copy before
+ * referencing it (pinGame = its frame number, then checks the copy is live
+ * and not being evicted); the draw side evicts only a copy whose pin is older
+ * than the frame it is drawing, after raising `evicting` and re-reading the
+ * pin. Each side writes its flag before reading the other's, so a pinned
+ * copy is never evicted before the frame that references it is drawn.
  * Records with a blended texture keep the per-triangle path. A fading
  * instance (alphaScale != 0) draws its copy's unfaded colours through the
  * shader's per-instance fade. dumpreq `modelres [N]`, 1 (default) resident.
@@ -1072,7 +1075,9 @@ struct NativeModelResEntry
 	u32 stampBase;
 	u32 stampCount;
 	volatile u32 lastUsed;
-	u8 live;
+	volatile u32 pinGame;
+	volatile u8 evicting;
+	volatile u8 live;
 };
 
 /* A slot's placement as last written into the copy's UVs. */
@@ -1096,6 +1101,7 @@ global_variable struct NativeModelResEntry s_mrRes[MODELRES_MAX_ENTRIES];
 global_variable struct NativeModelResStamp s_mrStamps[MODELRES_MAX_STAMPS];
 global_variable struct NativeModelEntryRes s_mrEntryRes[MODELCACHE_MAX_ENTRIES];
 global_variable volatile u32 s_mrFrame = 8;
+global_variable u32 s_mrGameFrame = 8; /* game thread; stamped into each snapshot */
 global_variable u32 s_mrLive;
 global_variable u32 s_mcUidNext;
 global_variable u32 s_mrWinRes, s_mrWinReq, s_mrWinBuilt, s_mrWinBuildFail, s_mrWinLost, s_mrWinPatches, s_mrWinSlots, s_mrWinDraws, s_mrWinIneligible, s_mrWinFade;
@@ -1656,9 +1662,11 @@ internal int NativeModelCache_EmitResident(struct NativeModelEmitSnapshot *dst, 
 
 		if ((uid == e->uid) && (rid >= 0) && (rid < MODELRES_MAX_ENTRIES))
 		{
-			const struct NativeModelResEntry *r = &s_mrRes[rid];
+			struct NativeModelResEntry *r = &s_mrRes[rid];
 
-			hot = r->live && (r->uid == e->uid) && ((r->lastUsed + 2u) >= s_mrFrame);
+			r->pinGame = s_mrGameFrame;
+			__sync_synchronize();
+			hot = r->live && !r->evicting && (r->uid == e->uid);
 		}
 		mi->resId = hot ? rid : (s16)-1;
 	}
@@ -2635,6 +2643,7 @@ void NativeModelEmit_Clear(void)
 	dst->triCount = 0;
 	dst->instCount = 0;
 	dst->resSlotCount = 0;
+	dst->resGameFrame = ++s_mrGameFrame;
 	dst->texTris = 0;
 	dst->droppedTris = 0;
 	dst->droppedInstances = 0;
@@ -2942,7 +2951,7 @@ internal void NativeModelRes_Evict(u16 id)
 	s_mrLive--;
 }
 
-internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts)
+internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts, u32 drawGame)
 {
 	if ((verts > capVerts) || (stamps > MODELRES_MAX_STAMPS))
 	{
@@ -2973,6 +2982,8 @@ internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts)
 			r->stampBase = sAt;
 			r->stampCount = stamps;
 			r->lastUsed = s_mrFrame;
+			r->pinGame = drawGame;
+			r->evicting = 0;
 			r->live = 1;
 			memmove(&s_mrByVert[vPos + 1u], &s_mrByVert[vPos], (size_t)(s_mrLive - vPos) * sizeof(s_mrByVert[0]));
 			s_mrByVert[vPos] = id;
@@ -2986,7 +2997,7 @@ internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts)
 		{
 			const u16 id = s_mrByVert[i];
 
-			if (((s_mrRes[id].lastUsed + 4u) < s_mrFrame) && ((victim < 0) || (s_mrRes[id].lastUsed < s_mrRes[victim].lastUsed)))
+			if ((s_mrRes[id].pinGame < drawGame) && ((victim < 0) || (s_mrRes[id].lastUsed < s_mrRes[victim].lastUsed)))
 			{
 				victim = (int)id;
 			}
@@ -2995,7 +3006,16 @@ internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts)
 		{
 			return -1;
 		}
+		s_mrRes[victim].evicting = 1;
+		__sync_synchronize();
+		if (s_mrRes[victim].pinGame >= drawGame)
+		{
+			/* Pinned by the game thread between the scan and the flag. */
+			s_mrRes[victim].evicting = 0;
+			return -1;
+		}
 		NativeModelRes_Evict((u16)victim);
+		s_mrRes[victim].evicting = 0;
 	}
 }
 
@@ -3110,7 +3130,15 @@ internal int NativeModelRes_Build(const struct NativeModelEmitSnapshot *snap, co
 	{
 		return -1;
 	}
-	id = NativeModelRes_Alloc(inst->uid, inst->triCount * 3u, inst->slotCount, (u32)cap);
+	{
+		const s16 rid = s_mrEntryRes[inst->entryIdx].resId;
+
+		if ((s_mrEntryRes[inst->entryIdx].uid == inst->uid) && (rid >= 0) && (rid < MODELRES_MAX_ENTRIES) && s_mrRes[rid].live && (s_mrRes[rid].uid == inst->uid))
+		{
+			return (int)rid;
+		}
+	}
+	id = NativeModelRes_Alloc(inst->uid, inst->triCount * 3u, inst->slotCount, (u32)cap, snap->resGameFrame);
 	if (id < 0)
 	{
 		return -1;
