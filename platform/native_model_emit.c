@@ -139,16 +139,48 @@ struct NativeModelEmitInstance
 	 */
 	s16 alphaScale;
 	s32 fcR, fcG, fcB;
+
+	/*
+	 * Resident draw (see the model frame cache's resident section). resMode 0:
+	 * faces in this snapshot, drawn as before. 1: no faces; the draw side
+	 * draws resident copy resId of cache entry uid. 2: every face of the
+	 * cache record, in record order, from which the draw side builds the
+	 * resident copy before drawing it. firstSlot/slotCount index resSlots.
+	 */
+	u8 resMode;
+	u8 instNeg; /* REVERSE_CULL: (s16)instFlags < 0 */
+	s16 resId;
+	u32 uid;
+	u16 entryIdx;
+	u16 firstSlot;
+	u16 slotCount;
 };
+
+/* One texture slot of a resident instance, read from its TextureLayout on the
+ * game thread this frame: a run of record triangles sharing one texture and
+ * one cull class (0 double-sided, 1 single-sided, 2 single-sided flipped). */
+struct NativeModelResSlotRef
+{
+	u16 tpage, clut;
+	u8 uv[6];
+	u8 textured;
+	u8 cls;
+	u16 first;
+	u16 count;
+};
+
+#define MODELEMIT_MAX_RESSLOTS 2048
 
 struct NativeModelEmitSnapshot
 {
 	struct NativeModelEmitVert verts[MODELEMIT_MAX_VERTS];
 	struct NativeModelEmitFace faces[MODELEMIT_MAX_TRIS];
 	struct NativeModelEmitInstance insts[MODELEMIT_MAX_INSTANCES];
+	struct NativeModelResSlotRef resSlots[MODELEMIT_MAX_RESSLOTS];
 
 	u32 triCount;
 	u32 instCount;
+	u32 resSlotCount;
 
 	/* Textured subset of triCount. Per-frame rather than accumulated straight
 	 * into the window, so a toggle flipped off mid-frame cannot leave the
@@ -537,6 +569,8 @@ int NativeModelEmit_BeginInstance(const struct InstDrawPerPlayer *idpp, const st
 	inst = &dst->insts[dst->instCount];
 	inst->firstTri = dst->triCount;
 	inst->triCount = 0;
+	inst->resMode = 0;
+	inst->slotCount = 0;
 	inst->forceSemiTrans = (u8)(forceSemiTrans ? 1 : 0);
 	inst->ghostComposite = (u8)(ghostComposite ? 1 : 0);
 	inst->fadeR = (u8)(fadeColorWord & 0xff);
@@ -895,7 +929,7 @@ void NativeModelEmit_EndInstance(void)
 	 * is on screen but facing away -- keeping those would put empty draws in
 	 * the frame that no counter would explain.
 	 */
-	if (dst->insts[s_modelEmitCurInst].triCount == 0)
+	if ((dst->insts[s_modelEmitCurInst].triCount == 0) && (dst->insts[s_modelEmitCurInst].resMode == 0))
 	{
 		s_modelEmitCurInst = -1;
 		return;
@@ -997,7 +1031,75 @@ struct NativeModelCacheEntry
 	s16 nextInBucket;
 	u8 live;
 	u8 ref; /* drawn since it was placed at the head */
+	u16 slotCount;
+	u32 uid; /* new on every placement; names the record to the resident copy */
 };
+
+/* A record's triangles are stored sorted by cull class, then texture; one slot
+ * per run, stored after the triangles in the arena. */
+struct NativeModelCacheSlot
+{
+	const struct TextureLayout *tex;
+	u16 first;
+	u16 count;
+	u8 cls; /* 0 double-sided, 1 single-sided, 2 single-sided flipped */
+	u8 _pad[3];
+};
+
+/*
+ * Resident copies. An instance whose record has a resident copy hands the draw
+ * side only its matrix and texture slots: the copy holds every triangle of the
+ * record in the GPU vertex layout in video memory, the GPU culls back faces
+ * per cull class, and the draw checks each slot's atlas placement once,
+ * rewriting that slot's UVs only when it moved. The draw side (the render
+ * worker on New 3DS) owns the copies; the game thread reads s_mrEntryRes and
+ * s_mrRes to decide whether a copy is safe to reference: it must have been
+ * drawn within the last 2 draw frames, and a copy is reclaimed only after 4
+ * frames unused, so a referenced copy outlives the frame that draws it.
+ * Records with a blended texture and fading instances (alphaScale != 0) keep
+ * the per-triangle path. dumpreq `modelres [N]`, 1 (default) resident.
+ */
+#define MODELRES_MAX_ENTRIES 1024
+#define MODELRES_MAX_SLOTS   64
+#define MODELRES_MAX_STAMPS  16384
+
+struct NativeModelResEntry
+{
+	u32 uid;
+	u32 vertBase;
+	u32 vertCount;
+	u32 stampBase;
+	u32 stampCount;
+	volatile u32 lastUsed;
+	u8 live;
+};
+
+/* A slot's placement as last written into the copy's UVs. */
+struct NativeModelResStamp
+{
+	s16 atlas;
+	s16 offU, offV;
+	u16 tpage, clut;
+	u8 uv[6];
+	u8 textured;
+	u8 valid;
+};
+
+struct NativeModelEntryRes
+{
+	volatile u32 uid;
+	volatile s16 resId;
+};
+
+global_variable struct NativeModelResEntry s_mrRes[MODELRES_MAX_ENTRIES];
+global_variable struct NativeModelResStamp s_mrStamps[MODELRES_MAX_STAMPS];
+global_variable struct NativeModelEntryRes s_mrEntryRes[MODELCACHE_MAX_ENTRIES];
+global_variable volatile u32 s_mrFrame = 8;
+global_variable u32 s_mrHead, s_mrTail, s_mrLive, s_mrVertHead, s_mrStampHead;
+global_variable u32 s_mcUidNext;
+global_variable u32 s_mrWinRes, s_mrWinReq, s_mrWinBuilt, s_mrWinBuildFail, s_mrWinLost, s_mrWinPatches, s_mrWinSlots, s_mrWinDraws, s_mrWinIneligible;
+int g_dbg_modelResident = 1;
+int g_dbg_modelResFlip = 0;
 
 global_variable u8 *s_mcArena;
 global_variable int s_mcArenaFailed;
@@ -1388,6 +1490,7 @@ internal void NativeModelCache_RecycleOldest(void)
 	moved.offset = dst;
 	moved.ref = 0;
 	moved.live = 1;
+	moved.uid = ++s_mcUidNext;
 	s_mcEntries[idx] = moved;
 	b = NativeModelCache_HashKey(&moved.key);
 	s_mcEntries[idx].nextInBucket = s_mcBuckets[b];
@@ -1522,6 +1625,123 @@ internal int NativeModelCache_FaceDrawn(const struct NativeModelCacheTri *t, con
 	return (v < 0.0f) == ((instNeg ^ ((t->flags & MODELCACHE_TRI_FLIP) ? 1 : 0)) != 0);
 }
 
+/* The resident form of a cache hit (see the resident section): the slots, and
+ * the whole record only when the draw side has no copy safe to reference.
+ * Returns 0 to keep the per-triangle path (a blended texture). */
+internal int NativeModelCache_EmitResident(struct NativeModelEmitSnapshot *dst, struct NativeModelEmitInstance *mi, const struct NativeModelCacheEntry *e,
+                                           int instNeg)
+{
+	const struct NativeModelCacheTri *tris = (const struct NativeModelCacheTri *)(s_mcArena + e->offset);
+	const struct NativeModelCacheSlot *slots =
+	    (const struct NativeModelCacheSlot *)(const void *)(s_mcArena + e->offset + ((u32)e->triCount * (u32)sizeof(struct NativeModelCacheTri)));
+	const u32 idx = (u32)(e - s_mcEntries);
+	struct NativeModelResSlotRef *ref = &dst->resSlots[dst->resSlotCount];
+	int hot = 0;
+	u32 s, t;
+
+	for (s = 0; s < e->slotCount; s++)
+	{
+		const struct TextureLayout *tex = slots[s].tex;
+
+		if ((tex != NULL) && (((tex->tpage >> 5) & 3) != 3))
+		{
+			s_mrWinIneligible++;
+			return 0;
+		}
+	}
+	{
+		const u32 uid = s_mrEntryRes[idx].uid;
+		const s16 rid = s_mrEntryRes[idx].resId;
+
+		if ((uid == e->uid) && (rid >= 0) && (rid < MODELRES_MAX_ENTRIES))
+		{
+			const struct NativeModelResEntry *r = &s_mrRes[rid];
+
+			hot = r->live && (r->uid == e->uid) && ((r->lastUsed + 2u) >= s_mrFrame);
+		}
+		mi->resId = hot ? rid : (s16)-1;
+	}
+	if (!hot && ((dst->triCount + e->triCount) > MODELEMIT_MAX_TRIS))
+	{
+		return 0;
+	}
+
+	for (s = 0; s < e->slotCount; s++)
+	{
+		const struct TextureLayout *tex = slots[s].tex;
+
+		if (tex != NULL)
+		{
+			ref[s].tpage = tex->tpage;
+			ref[s].clut = tex->clut;
+			ref[s].uv[0] = tex->u0;
+			ref[s].uv[1] = tex->v0;
+			ref[s].uv[2] = tex->u1;
+			ref[s].uv[3] = tex->v1;
+			ref[s].uv[4] = tex->u2;
+			ref[s].uv[5] = tex->v2;
+			ref[s].textured = 1;
+		}
+		else
+		{
+			ref[s].tpage = 0;
+			ref[s].clut = 0;
+			memset(ref[s].uv, 0, sizeof(ref[s].uv));
+			ref[s].textured = 0;
+		}
+		ref[s].cls = slots[s].cls;
+		ref[s].first = slots[s].first;
+		ref[s].count = slots[s].count;
+	}
+	mi->firstSlot = (u16)dst->resSlotCount;
+	mi->slotCount = e->slotCount;
+	dst->resSlotCount += e->slotCount;
+	mi->uid = e->uid;
+	mi->entryIdx = (u16)idx;
+	mi->instNeg = (u8)(instNeg != 0);
+	mi->resMode = hot ? 1 : 2;
+	if (hot)
+	{
+		s_mrWinRes++;
+		return 1;
+	}
+
+	s_mrWinReq++;
+	for (s = 0; s < e->slotCount; s++)
+	{
+		for (t = ref[s].first; t < (u32)(ref[s].first + ref[s].count); t++)
+		{
+			const struct NativeModelCacheTri *src = &tris[t];
+			struct NativeModelEmitFace *face = &dst->faces[dst->triCount];
+			struct NativeModelEmitVert *v = &dst->verts[dst->triCount * 3];
+			int k;
+
+			face->tpage = ref[s].tpage;
+			face->clut = ref[s].clut;
+			face->textured = ref[s].textured;
+			face->blendOverride = 0xFF;
+			face->_pad[0] = 0;
+			face->_pad[1] = 0;
+			for (k = 0; k < 3; k++)
+			{
+				v[k].x = src->p[k][0];
+				v[k].y = src->p[k][1];
+				v[k].z = src->p[k][2];
+				v[k].u = ref[s].uv[k * 2];
+				v[k].v = ref[s].uv[(k * 2) + 1];
+				v[k].r = src->rgb[k][0];
+				v[k].g = src->rgb[k][1];
+				v[k].b = src->rgb[k][2];
+				v[k]._pad = 0;
+			}
+			dst->triCount++;
+			dst->texTris += (u32)face->textured;
+			mi->triCount++;
+		}
+	}
+	return 1;
+}
+
 int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 {
 	struct NativeModelEmitSnapshot *dst = &s_modelEmitBuf[s_modelEmitWriteIdx];
@@ -1566,6 +1786,16 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 	}
 	instNeg = ((s16)(u16)idpp->instFlags < 0);
 	tris = (const struct NativeModelCacheTri *)(s_mcArena + e->offset);
+
+	if (g_dbg_modelResident && (mi->alphaScale == 0) && (e->slotCount <= MODELRES_MAX_SLOTS) &&
+	    ((dst->resSlotCount + e->slotCount) <= MODELEMIT_MAX_RESSLOTS) && NativeModelCache_EmitResident(dst, mi, e, instNeg))
+	{
+		e->ref = 1;
+		s_mcWinHits++;
+		s_mcWinTrisIn += e->triCount;
+		s_mcWinTrisOut += mi->triCount;
+		return 1;
+	}
 
 	for (t = 0; t < e->triCount; t++)
 	{
@@ -1800,14 +2030,72 @@ internal const struct NativeModelPoseTopo *NativeModelCache_FindTopo(const struc
 
 /* Places a record at the ring head under its key, replacing an older record
  * of the same key. Returns 0 when the arena cannot hold it. */
+global_variable u16 s_mcSortIdx[MODELCACHE_FILL_MAX_TRIS];
+global_variable const struct NativeModelCacheTri *s_mcSortSrc;
+
+internal int NativeModelCache_TriClass(const struct NativeModelCacheTri *t)
+{
+	if (t->flags & MODELCACHE_TRI_DOUBLE_SIDED)
+	{
+		return 0;
+	}
+	return (t->flags & MODELCACHE_TRI_FLIP) ? 2 : 1;
+}
+
+internal int NativeModelCache_SortCmp(const void *a, const void *b)
+{
+	const u16 ia = *(const u16 *)a;
+	const u16 ib = *(const u16 *)b;
+	const struct NativeModelCacheTri *ta = &s_mcSortSrc[ia];
+	const struct NativeModelCacheTri *tb = &s_mcSortSrc[ib];
+	const int ca = NativeModelCache_TriClass(ta);
+	const int cb = NativeModelCache_TriClass(tb);
+
+	if (ca != cb)
+	{
+		return ca - cb;
+	}
+	if (ta->tex != tb->tex)
+	{
+		return ((uintptr_t)ta->tex < (uintptr_t)tb->tex) ? -1 : 1;
+	}
+	return (int)ia - (int)ib;
+}
+
 internal int NativeModelCache_InsertRecord(const struct NativeModelCacheKey *key, const struct NativeModelCacheTri *tris, u32 triCount)
 {
 	struct NativeModelCacheEntry *e;
 	struct NativeModelCacheEntry *old;
-	const u32 bytes = triCount * (u32)sizeof(struct NativeModelCacheTri);
+	const u32 triBytes = triCount * (u32)sizeof(struct NativeModelCacheTri);
+	struct NativeModelCacheTri *outTris;
+	struct NativeModelCacheSlot *outSlots;
+	u32 slotCount = 0;
+	u32 bytes;
 	s32 off;
 	u32 idx;
 	u32 b;
+	u32 i;
+
+	if ((triCount == 0) || (triCount > MODELCACHE_FILL_MAX_TRIS))
+	{
+		return 0;
+	}
+	for (i = 0; i < triCount; i++)
+	{
+		s_mcSortIdx[i] = (u16)i;
+	}
+	s_mcSortSrc = tris;
+	qsort(s_mcSortIdx, triCount, sizeof(s_mcSortIdx[0]), NativeModelCache_SortCmp);
+	for (i = 0; i < triCount; i++)
+	{
+		const struct NativeModelCacheTri *t = &tris[s_mcSortIdx[i]];
+
+		if ((i == 0) || (t->tex != tris[s_mcSortIdx[i - 1]].tex) || (NativeModelCache_TriClass(t) != NativeModelCache_TriClass(&tris[s_mcSortIdx[i - 1]])))
+		{
+			slotCount++;
+		}
+	}
+	bytes = triBytes + (slotCount * (u32)sizeof(struct NativeModelCacheSlot));
 
 	old = NativeModelCache_Find(key);
 	if (old != NULL)
@@ -1830,9 +2118,32 @@ internal int NativeModelCache_InsertRecord(const struct NativeModelCacheKey *key
 	e->offset = (u32)off;
 	e->bytes = bytes;
 	e->triCount = (u16)triCount;
+	e->slotCount = (u16)slotCount;
+	e->uid = ++s_mcUidNext;
 	e->live = 1;
 	e->ref = 0;
-	memcpy(s_mcArena + off, tris, bytes);
+	outTris = (struct NativeModelCacheTri *)(void *)(s_mcArena + off);
+	outSlots = (struct NativeModelCacheSlot *)(void *)(s_mcArena + off + triBytes);
+	slotCount = 0;
+	for (i = 0; i < triCount; i++)
+	{
+		const struct NativeModelCacheTri *t = &tris[s_mcSortIdx[i]];
+		const int cls = NativeModelCache_TriClass(t);
+
+		outTris[i] = *t;
+		if ((slotCount == 0) || (t->tex != outSlots[slotCount - 1].tex) || (cls != outSlots[slotCount - 1].cls))
+		{
+			outSlots[slotCount].tex = t->tex;
+			outSlots[slotCount].first = (u16)i;
+			outSlots[slotCount].count = 0;
+			outSlots[slotCount].cls = (u8)cls;
+			outSlots[slotCount]._pad[0] = 0;
+			outSlots[slotCount]._pad[1] = 0;
+			outSlots[slotCount]._pad[2] = 0;
+			slotCount++;
+		}
+		outSlots[slotCount - 1].count++;
+	}
 	s_mcArenaHead = (u32)off + bytes;
 
 	b = NativeModelCache_HashKey(&e->key);
@@ -2314,6 +2625,7 @@ void NativeModelEmit_Clear(void)
 
 	dst->triCount = 0;
 	dst->instCount = 0;
+	dst->resSlotCount = 0;
 	dst->texTris = 0;
 	dst->droppedTris = 0;
 	dst->droppedInstances = 0;
@@ -2549,6 +2861,359 @@ int g_dbg_modelFast = 2;
  * (and ghosts, whose mask pass 1 draws). */
 global_variable u8 s_mdHasBlend[MODELEMIT_MAX_INSTANCES];
 
+/*
+ * Resident copies, draw side (see the model frame cache's resident section).
+ * Copies sit in allocation order in three rings: entries (s_mrRes), vertices
+ * (the video-memory region) and slot stamps. The oldest copy is reclaimed only
+ * when it has not been drawn for 4 frames; a copy the game thread may still
+ * reference is never reclaimed, so an allocation that would need one fails and
+ * the instance draws from the frame buffer instead.
+ */
+internal int NativeModelRes_RingFit(u32 head, u32 tailBase, u32 live, u32 cap, u32 n, u32 *out)
+{
+	if (n > cap)
+	{
+		return 0;
+	}
+	if (live == 0)
+	{
+		*out = 0;
+		return 1;
+	}
+	if (head > tailBase)
+	{
+		if ((head + n) <= cap)
+		{
+			*out = head;
+			return 1;
+		}
+		if (n <= tailBase)
+		{
+			*out = 0;
+			return 1;
+		}
+		return 0;
+	}
+	if (head < tailBase)
+	{
+		if ((head + n) <= tailBase)
+		{
+			*out = head;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+internal int NativeModelRes_Alloc(u32 uid, u32 verts, u32 stamps, u32 capVerts)
+{
+	for (;;)
+	{
+		if (s_mrLive == 0)
+		{
+			s_mrVertHead = 0;
+			s_mrStampHead = 0;
+		}
+		if (s_mrLive < MODELRES_MAX_ENTRIES)
+		{
+			const u32 vTail = s_mrLive ? s_mrRes[s_mrTail].vertBase : 0u;
+			const u32 sTail = s_mrLive ? s_mrRes[s_mrTail].stampBase : 0u;
+			u32 vAt, sAt;
+
+			if (NativeModelRes_RingFit(s_mrVertHead, vTail, s_mrLive, capVerts, verts, &vAt) &&
+			    NativeModelRes_RingFit(s_mrStampHead, sTail, s_mrLive, MODELRES_MAX_STAMPS, stamps, &sAt))
+			{
+				const int id = (int)s_mrHead;
+				struct NativeModelResEntry *r = &s_mrRes[id];
+
+				r->uid = uid;
+				r->vertBase = vAt;
+				r->vertCount = verts;
+				r->stampBase = sAt;
+				r->stampCount = stamps;
+				r->lastUsed = s_mrFrame;
+				r->live = 1;
+				s_mrHead = (s_mrHead + 1u) % MODELRES_MAX_ENTRIES;
+				s_mrLive++;
+				s_mrVertHead = vAt + verts;
+				s_mrStampHead = sAt + stamps;
+				return id;
+			}
+		}
+		if (s_mrLive == 0)
+		{
+			return -1;
+		}
+		{
+			struct NativeModelResEntry *t = &s_mrRes[s_mrTail];
+
+			if ((t->lastUsed + 4u) >= s_mrFrame)
+			{
+				return -1;
+			}
+			t->live = 0;
+			t->uid = 0;
+			s_mrTail = (s_mrTail + 1u) % MODELRES_MAX_ENTRIES;
+			s_mrLive--;
+		}
+	}
+}
+
+/* Where a slot's texture sits in the atlases this frame. */
+internal void NativeModelRes_Place(const struct NativeModelResSlotRef *ref, int *atlas, int *offU, int *offV)
+{
+	*atlas = -1;
+	*offU = 0;
+	*offV = 0;
+	if (ref->textured)
+	{
+		N3DS_ModelTex_Resolve((s16)ref->tpage, (s16)ref->clut, N3DS_TEXVIEW_OPAQUE, ref->uv[0], ref->uv[1], ref->uv[2], ref->uv[3], ref->uv[4], ref->uv[5], atlas,
+		                      offU, offV);
+	}
+	s_mrWinSlots++;
+}
+
+internal int NativeModelRes_StampMatches(const struct NativeModelResStamp *st, const struct NativeModelResSlotRef *ref, int atlas, int offU, int offV)
+{
+	return st->valid && (st->atlas == atlas) && (st->offU == offU) && (st->offV == offV) && (st->tpage == ref->tpage) && (st->clut == ref->clut) &&
+	       (st->textured == ref->textured) && (memcmp(st->uv, ref->uv, sizeof(st->uv)) == 0);
+}
+
+internal void NativeModelRes_SetStamp(struct NativeModelResStamp *st, const struct NativeModelResSlotRef *ref, int atlas, int offU, int offV)
+{
+	st->atlas = (s16)atlas;
+	st->offU = (s16)offU;
+	st->offV = (s16)offV;
+	st->tpage = ref->tpage;
+	st->clut = ref->clut;
+	st->textured = ref->textured;
+	memcpy(st->uv, ref->uv, sizeof(st->uv));
+	st->valid = 1;
+}
+
+/* The packet path's atlas UV encoding (N3DS_ConvertTriangleVerts): texel
+ * centres as 2a+1 against the shader's 1/2048, V flipped as 2047-2a. */
+internal void NativeModelRes_SlotUV(const struct NativeModelResSlotRef *ref, int offU, int offV, int k, s16 *u, s16 *v)
+{
+	if (ref->textured)
+	{
+		*u = (s16)(((offU + (int)ref->uv[k * 2]) << 1) + 1);
+		*v = (s16)(2047 - ((offV + (int)ref->uv[(k * 2) + 1]) << 1));
+	}
+	else
+	{
+		*u = 0;
+		*v = 0;
+	}
+}
+
+/* GPU cull mode for a slot class: 0 none (double-sided), else the mode that
+ * keeps the faces retail's NCLIP keeps (REVERSE_CULL ^ command bit 29, and the
+ * mirror world flips screen winding). */
+internal int NativeModelRes_Cull(int cls, int instNeg, int mirror)
+{
+	if (cls == 0)
+	{
+		return 0;
+	}
+	return (((cls == 2) ? 1 : 0) ^ (instNeg ? 1 : 0) ^ (mirror ? 1 : 0) ^ (g_dbg_modelResFlip ? 1 : 0)) ? 2 : 1;
+}
+
+/* Writes the record's vertices (resMode 2: the snapshot holds every face in
+ * record order) to dst, with UVs at each slot's current placement, filling
+ * the stamps. */
+internal void NativeModelRes_WriteVerts(const struct NativeModelEmitSnapshot *snap, const struct NativeModelEmitInstance *inst, N3DS_Vertex *dst,
+                                        struct NativeModelResStamp *stamps)
+{
+	u32 s;
+
+	for (s = 0; s < inst->slotCount; s++)
+	{
+		const struct NativeModelResSlotRef *ref = &snap->resSlots[inst->firstSlot + s];
+		int atlas, offU, offV;
+		u32 t;
+
+		NativeModelRes_Place(ref, &atlas, &offU, &offV);
+		NativeModelRes_SetStamp(&stamps[s], ref, atlas, offU, offV);
+		for (t = ref->first; t < (u32)(ref->first + ref->count); t++)
+		{
+			const struct NativeModelEmitVert *src = &snap->verts[(inst->firstTri + t) * 3];
+			N3DS_Vertex *out = &dst[t * 3];
+			int k;
+
+			for (k = 0; k < 3; k++)
+			{
+				out[k].x = src[k].x;
+				out[k].y = src[k].y;
+				out[k].z = src[k].z;
+				out[k].w = src[k].z;
+				NativeModelRes_SlotUV(ref, offU, offV, k, &out[k].u, &out[k].v);
+				out[k].r = src[k].r;
+				out[k].g = src[k].g;
+				out[k].b = src[k].b;
+				out[k]._pad = 0;
+			}
+		}
+	}
+}
+
+/* Builds the resident copy for a resMode 2 instance and publishes it to the
+ * game thread. -1 when the region has no room. */
+internal int NativeModelRes_Build(const struct NativeModelEmitSnapshot *snap, const struct NativeModelEmitInstance *inst)
+{
+	int cap = 0;
+	N3DS_Vertex *base = N3DS_ModelRes_Base(&cap);
+	struct NativeModelResEntry *r;
+	int id;
+
+	if ((base == NULL) || (inst->triCount == 0) || (inst->slotCount == 0))
+	{
+		return -1;
+	}
+	id = NativeModelRes_Alloc(inst->uid, inst->triCount * 3u, inst->slotCount, (u32)cap);
+	if (id < 0)
+	{
+		return -1;
+	}
+	r = &s_mrRes[id];
+	NativeModelRes_WriteVerts(snap, inst, base + r->vertBase, &s_mrStamps[r->stampBase]);
+	N3DS_ModelRes_Flush(base + r->vertBase, (int)(r->vertCount * sizeof(N3DS_Vertex)));
+	s_mrEntryRes[inst->entryIdx].resId = (s16)id;
+	__sync_synchronize();
+	s_mrEntryRes[inst->entryIdx].uid = inst->uid;
+	s_mrWinBuilt++;
+	return id;
+}
+
+struct NativeModelResRun
+{
+	int start, tris, atlas, textured, cull;
+};
+
+internal void NativeModelRes_FlushRun(int resident, struct NativeModelResRun *run, u32 *drawsOut)
+{
+	if (run->tris > 0)
+	{
+		N3DS_ModelDraw_ClassRun(resident, run->start, run->tris, run->atlas, run->textured, run->cull);
+		(*drawsOut)++;
+		s_mrWinDraws++;
+		run->tris = 0;
+	}
+}
+
+internal void NativeModelRes_AddRun(int resident, struct NativeModelResRun *run, int start, int tris, int atlas, int textured, int cull, u32 *drawsOut)
+{
+	if ((run->tris > 0) && (run->atlas == atlas) && (run->textured == textured) && (run->cull == cull) && (start == (run->start + (run->tris * 3))))
+	{
+		run->tris += tris;
+		return;
+	}
+	NativeModelRes_FlushRun(resident, run, drawsOut);
+	run->start = start;
+	run->tris = tris;
+	run->atlas = atlas;
+	run->textured = textured;
+	run->cull = cull;
+}
+
+/* One resident or resident-request instance, opaque pass. */
+internal void NativeModelRes_DrawInstance(const struct NativeModelEmitSnapshot *snap, const struct NativeModelEmitInstance *inst, u32 *drawsOut, u32 *instOut,
+                                          u32 *trisOut)
+{
+	struct NativeModelResRun run = {0, 0, -1, 0, 0};
+	const int mirror = NativeMirror_WorldFrame();
+	float qx[4], qy[4], qw[4], h;
+	int cap = 0;
+	N3DS_Vertex *base;
+	struct NativeModelResEntry *r;
+	int id;
+	u32 s;
+
+	NativeModelDraw_ComposeRows(inst, qx, qy, qw, &h);
+	if (h == 0.0f)
+	{
+		return;
+	}
+
+	id = (inst->resMode == 1) ? inst->resId : NativeModelRes_Build(snap, inst);
+	if ((inst->resMode == 1) && ((id < 0) || (id >= MODELRES_MAX_ENTRIES) || !s_mrRes[id].live || (s_mrRes[id].uid != inst->uid)))
+	{
+		s_mrWinLost++;
+		return;
+	}
+
+	N3DS_ModelDraw_Instance(qx, qy, qw, h);
+	(*instOut)++;
+
+	if (id < 0)
+	{
+		/* No room in the region: the record's faces go through the frame
+		 * buffer this frame, culled per class like a resident copy. */
+		int baseVertex = 0;
+		N3DS_Vertex *direct = N3DS_C3DReserveVertices((int)inst->triCount * 3, &baseVertex);
+
+		s_mrWinBuildFail++;
+		if (direct == NULL)
+		{
+			return;
+		}
+		{
+			struct NativeModelResStamp stamps[MODELRES_MAX_SLOTS];
+
+			NativeModelRes_WriteVerts(snap, inst, direct, stamps);
+			N3DS_C3DCommitVertices((int)inst->triCount * 3);
+			for (s = 0; s < inst->slotCount; s++)
+			{
+				const struct NativeModelResSlotRef *ref = &snap->resSlots[inst->firstSlot + s];
+
+				NativeModelRes_AddRun(0, &run, baseVertex + (int)ref->first * 3, ref->count, stamps[s].textured ? stamps[s].atlas : -1, stamps[s].textured,
+				                      NativeModelRes_Cull(ref->cls, inst->instNeg, mirror), drawsOut);
+			}
+			NativeModelRes_FlushRun(0, &run, drawsOut);
+		}
+		*trisOut += inst->triCount;
+		return;
+	}
+
+	base = N3DS_ModelRes_Base(&cap);
+	r = &s_mrRes[id];
+	r->lastUsed = s_mrFrame;
+	for (s = 0; s < inst->slotCount; s++)
+	{
+		const struct NativeModelResSlotRef *ref = &snap->resSlots[inst->firstSlot + s];
+		struct NativeModelResStamp *st = &s_mrStamps[r->stampBase + s];
+
+		if (inst->resMode == 1)
+		{
+			int atlas, offU, offV;
+
+			NativeModelRes_Place(ref, &atlas, &offU, &offV);
+			if (!NativeModelRes_StampMatches(st, ref, atlas, offU, offV))
+			{
+				N3DS_Vertex *v = base + r->vertBase + ((u32)ref->first * 3u);
+				u32 t;
+
+				for (t = 0; t < ref->count; t++)
+				{
+					int k;
+
+					for (k = 0; k < 3; k++)
+					{
+						NativeModelRes_SlotUV(ref, offU, offV, k, &v[(t * 3) + k].u, &v[(t * 3) + k].v);
+					}
+				}
+				N3DS_ModelRes_Flush(v, (int)(ref->count * 3u * sizeof(N3DS_Vertex)));
+				NativeModelRes_SetStamp(st, ref, atlas, offU, offV);
+				s_mrWinPatches++;
+			}
+		}
+		NativeModelRes_AddRun(1, &run, (int)(r->vertBase + ((u32)ref->first * 3u)), ref->count, st->textured ? st->atlas : -1, st->textured,
+		                      NativeModelRes_Cull(ref->cls, inst->instNeg, mirror), drawsOut);
+		*trisOut += ref->count;
+	}
+	NativeModelRes_FlushRun(1, &run, drawsOut);
+}
+
 void NativeModelDraw_IssueForWalk(void)
 {
 	const struct NativeModelEmitSnapshot *snap = &s_modelEmitBuf[s_modelEmitReadIdx];
@@ -2572,6 +3237,7 @@ void NativeModelDraw_IssueForWalk(void)
 	}
 
 	N3DS_ModelDraw_Begin();
+	s_mrFrame++;
 
 	/*
 	 * TWO PASSES, opaque then blended -- the same shape as the resident track's
@@ -2614,6 +3280,16 @@ void NativeModelDraw_IssueForWalk(void)
 		N3DS_Vertex *direct = NULL;
 		int directBase = 0, directRefused = 0;
 		u32 directTris = 0;
+
+		if (inst->resMode != 0)
+		{
+			if (pass == 0)
+			{
+				s_mdHasBlend[i] = 0;
+				NativeModelRes_DrawInstance(snap, inst, &drawsIssued, &instDrawn, &trisDrawn);
+			}
+			continue;
+		}
 
 		if (pass == 0)
 		{
@@ -2932,6 +3608,18 @@ void NativeModelDraw_IssueForWalk(void)
 		                       (unsigned long)s_mtcHits, (unsigned long)s_mtcMisses, (unsigned long)s_mtcMissKey, (unsigned long)s_mtcMissCell,
 		                       (unsigned long)s_mtcMissPage, (unsigned long)s_mtcMissClut, (unsigned long)s_mtcDisplay, (unsigned long)s_mtcUnstored,
 		                       (unsigned long)s_mtcEvicts, (unsigned long)s_mtcClutAdopts);
+		{
+			int cap = 0;
+
+			(void)N3DS_ModelRes_Base(&cap);
+			Platform_LogInstrument("[MDLRES] mode=%d flip=%d res=%lu req=%lu built=%lu fail=%lu lost=%lu ineligible=%lu slots=%lu patches=%lu draws=%lu live=%lu "
+			                       "vertsUsed~%lu/%d\n",
+			                       g_dbg_modelResident, g_dbg_modelResFlip, (unsigned long)s_mrWinRes, (unsigned long)s_mrWinReq, (unsigned long)s_mrWinBuilt,
+			                       (unsigned long)s_mrWinBuildFail, (unsigned long)s_mrWinLost, (unsigned long)s_mrWinIneligible, (unsigned long)s_mrWinSlots,
+			                       (unsigned long)s_mrWinPatches, (unsigned long)s_mrWinDraws, (unsigned long)s_mrLive, (unsigned long)s_mrVertHead, cap);
+			s_mrWinRes = s_mrWinReq = s_mrWinBuilt = s_mrWinBuildFail = s_mrWinLost = s_mrWinIneligible = 0;
+			s_mrWinSlots = s_mrWinPatches = s_mrWinDraws = 0;
+		}
 		s_mtcHits = 0;
 		s_mtcMisses = 0;
 		s_mtcUnstored = 0;
