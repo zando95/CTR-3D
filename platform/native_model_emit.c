@@ -3027,7 +3027,7 @@ internal void NativeModelRes_Place(const struct NativeModelResSlotRef *ref, int 
 	*offV = 0;
 	if (ref->textured)
 	{
-		N3DS_ModelTex_Resolve((s16)ref->tpage, (s16)ref->clut, N3DS_TEXVIEW_OPAQUE, ref->uv[0], ref->uv[1], ref->uv[2], ref->uv[3], ref->uv[4], ref->uv[5], atlas,
+		N3DS_ModelTex_ResolveFrame((s16)ref->tpage, (s16)ref->clut, N3DS_TEXVIEW_OPAQUE, ref->uv[0], ref->uv[1], ref->uv[2], ref->uv[3], ref->uv[4], ref->uv[5], atlas,
 		                      offU, offV);
 	}
 	s_mrWinSlots++;
@@ -3689,13 +3689,14 @@ void NativeModelDraw_IssueForWalk(void)
 			int cap = 0;
 
 			(void)N3DS_ModelRes_Base(&cap);
-			Platform_LogInstrument("[MDLRES] mode=%d flip=%d res=%lu req=%lu built=%lu fail=%lu lost=%lu ineligible=%lu fade=%lu slots=%lu patches=%lu draws=%lu live=%lu "
+			Platform_LogInstrument("[MDLRES] mode=%d flip=%d res=%lu req=%lu built=%lu fail=%lu lost=%lu ineligible=%lu fade=%lu slots=%lu memoHits=%lu patches=%lu draws=%lu live=%lu "
 			                       "vertsUsed~%lu/%d\n",
 			                       g_dbg_modelResident, g_dbg_modelResFlip, (unsigned long)s_mrWinRes, (unsigned long)s_mrWinReq, (unsigned long)s_mrWinBuilt,
-			                       (unsigned long)s_mrWinBuildFail, (unsigned long)s_mrWinLost, (unsigned long)s_mrWinIneligible, (unsigned long)s_mrWinFade, (unsigned long)s_mrWinSlots,
+			                       (unsigned long)s_mrWinBuildFail, (unsigned long)s_mrWinLost, (unsigned long)s_mrWinIneligible, (unsigned long)s_mrWinFade, (unsigned long)s_mrWinSlots, (unsigned long)s_mtmHits,
 			                       (unsigned long)s_mrWinPatches, (unsigned long)s_mrWinDraws, (unsigned long)s_mrLive, (unsigned long)s_mrVertsUsed, cap);
 			s_mrWinRes = s_mrWinReq = s_mrWinBuilt = s_mrWinBuildFail = s_mrWinLost = s_mrWinIneligible = s_mrWinFade = 0;
 			s_mrWinSlots = s_mrWinPatches = s_mrWinDraws = 0;
+			s_mtmHits = 0;
 		}
 		s_mtcHits = 0;
 		s_mtcMisses = 0;
