@@ -2,7 +2,7 @@
 
 What changed for players in each CTR 3D release, newest first. Add a line here in the same commit as any change a player would notice.
 
-## Unreleased
+## beta 1.1 (2026-11-16)
 
 It's been some time since Beta 1.0 released, and this update aims to polish off any rough edges the previous release still had. It also marks the arrival of content and modes that were not present in the original Crash Team Racing. This content aims to be seamlessly integrated into the game and be unobtrusive.
 
