@@ -120,6 +120,19 @@ typedef struct
  * window-edge vertices past the wide window by the stereo pad so neither eye's
  * UI pop-out can pull an edge on-screen. */
 #define PKTDEPTH_UI_STAMP_SCREENFADE 0xFFFAu
+/* Sixth class: the missile/warpball lock-on bracket around a targeted racer
+ * (UI_TrackerSelf: two gouraud arms per side plus the translucent lock icon).
+ * Retail links it into the PLAYER's OT at the nearest entry, so it paints over
+ * the world and the kart it surrounds; without its span mark the resolver
+ * looks its corners up in the capture table by screen position, and the
+ * centre corner sits exactly on the kart origin's own projection, so parts of
+ * the bracket take the kart's depth and the rest a coarse bucket depth -- the
+ * kart body and nearby track cut through it. Stamped into the band it draws in
+ * the ordered UI pass after the model pass, under the HUD. Re-pinned to 0xFFFF
+ * at the ordered-UI append like UIPIC. Unlike the other band classes it is
+ * EXEMPT from the widescreen X ramp: it is positioned from the kart's world
+ * projection, which REAL widescreen already leaves in place. */
+#define PKTDEPTH_UI_STAMP_TRACKER 0xFFF9u
 
 typedef enum
 {
