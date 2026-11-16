@@ -5566,6 +5566,26 @@ unsigned int N3DS_ReadButtons(void)
 	{
 		out |= N3DS_BTN_ZR;
 	}
+	/* Old 3DS / 2DS have no ZL/ZR: a touch on the left half of the bottom
+	 * screen is ZL (L2), the right half ZR (R2). Invisible zones, one at a
+	 * time (the panel reports a single touch point). New 3DS keeps its
+	 * hardware buttons and ignores the panel. */
+	if (held & KEY_TOUCH)
+	{
+		static int s_touchZoneIsNew3DS = -1;
+
+		if (s_touchZoneIsNew3DS < 0)
+		{
+			s_touchZoneIsNew3DS = N3DS_IsNew3DS() ? 1 : 0;
+		}
+		if (!s_touchZoneIsNew3DS)
+		{
+			touchPosition touch;
+
+			hidTouchRead(&touch);
+			out |= (touch.px < 160) ? N3DS_BTN_ZL : N3DS_BTN_ZR;
+		}
+	}
 	if (held & KEY_START)
 	{
 		out |= N3DS_BTN_START;
