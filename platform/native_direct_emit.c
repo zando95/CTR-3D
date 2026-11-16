@@ -434,10 +434,11 @@ internal int NativeDirectEmit_TryNode(const u8 *packet, u32 tagLength)
 	 * because the suppress flag latches only once the walk enters the UI
 	 * pushbuffer address band, and the sky walks before it.
 	 */
-	/* The HUD shine and full-window fade spans join the predicate here exactly
-	 * as they do in the resolver, so the two paths keep agreeing about what
-	 * counts as UI. */
-	if (GTECapture_LookupSuppressed() || (g_dbg_hudShine && s_hudshineNodeActive) || (g_dbg_screenFade && s_screenfadeNodeActive))
+	/* The HUD shine, full-window fade and lock-on bracket spans join the
+	 * predicate here exactly as they do in the resolver, so the two paths keep
+	 * agreeing about what counts as UI. */
+	if (GTECapture_LookupSuppressed() || (g_dbg_hudShine && s_hudshineNodeActive) || (g_dbg_screenFade && s_screenfadeNodeActive) ||
+	    (g_dbg_trackerUi && s_trackerNodeActive))
 	{
 		active = 0;
 	}

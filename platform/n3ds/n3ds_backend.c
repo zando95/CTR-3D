@@ -4373,6 +4373,10 @@ unsigned int N3DS_ReadButtons(void)
 	 *                  ordered UI pass across the whole wide window instead
 	 *                  of depth-testing against the world. Bare toggles, N
 	 *                  sets 0/1. Default ON.
+	 *   trackerui [N] -- g_dbg_trackerUi: the missile/warpball lock-on
+	 *                  bracket draws in the ordered UI pass over the world
+	 *                  and its own kart instead of depth-testing against
+	 *                  them. Bare toggles, N sets 0/1. Default ON.
 	 *   bilinear    -- toggle g_dbg_trackBilinear (default OFF): track-atlas
 	 *                  sampler bilinear <-> nearest. Live, no rebuild.
 	 *                  Button: SELECT+D-RIGHT.
@@ -5295,6 +5299,24 @@ unsigned int N3DS_ReadButtons(void)
 					}
 					N3DS_DebugLog(g_dbg_screenFade ? "[CTR-3DS] screenfade: ON (fade quad in the UI band)"
 					                               : "[CTR-3DS] screenfade: off (fade quad on the world-bucket fallback)");
+				}
+				else if (strncmp(word, "trackerui", 9) == 0)
+				{
+					extern int g_dbg_trackerUi;
+
+					/* Lock-on bracket in the UI band (DEFAULT ON, native_gpu.c
+					 * PacketDepth_ResolveXY). OFF leaves it on the world-bucket
+					 * fallback, depth-tested against the world and its kart. */
+					if (word[9] == ' ')
+					{
+						g_dbg_trackerUi = (atoi(&word[10]) != 0) ? 1 : 0;
+					}
+					else
+					{
+						g_dbg_trackerUi = !g_dbg_trackerUi;
+					}
+					N3DS_DebugLog(g_dbg_trackerUi ? "[CTR-3DS] trackerui: ON (lock-on bracket in the UI band)"
+					                              : "[CTR-3DS] trackerui: off (lock-on bracket on the world-bucket fallback)");
 				}
 				else if (strncmp(word, "tirefix", 7) == 0)
 				{

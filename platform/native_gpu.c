@@ -1476,6 +1476,10 @@ global_variable int s_hudshineNodeActive;
  * quads, the per-player ones linked into the player's OT. Read by the resolver
  * and by the direct-emit fast path's UI stand-aside, beside the shine's. */
 global_variable int s_screenfadeNodeActive;
+/* Lock-on bracket span (PKTDEPTH_UI_STAMP_TRACKER): UI_TrackerSelf's prims,
+ * linked into the player's OT. Read by the resolver and by the direct-emit
+ * fast path's UI stand-aside, beside the fade's. */
+global_variable int s_trackerNodeActive;
 /* Menu-backdrop span (character-select diorama strips). Read by
  * PacketDepth_ResolveXY, which sees screen coordinates, not packet addresses. */
 global_variable int s_menubdNodeActive;
@@ -1497,6 +1501,14 @@ int g_dbg_hudShine = 1;
  * widescreen margins stay unflashed.
  */
 int g_dbg_screenFade = 1;
+
+/*
+ * Runtime A/B for the lock-on bracket's UI-band classification (dumpreq
+ * 'trackerui'). ON = the missile/warpball bracket draws in the ordered UI pass
+ * over the world and its own kart. OFF restores the world-bucket fallback: the
+ * kart body and nearby track depth-test through the bracket.
+ */
+int g_dbg_trackerUi = 1;
 
 /* ------------------------------------------------------------------------- */
 
@@ -1907,6 +1919,12 @@ void NativeGpu_WalkCensusMark(int stage, const void *cursor)
 }
 #endif
 global_variable int s_screenfadeRangeCount[2];
+/* Lock-on bracket spans (PKTDEPTH_UI_STAMP_TRACKER): one per player per frame,
+ * separate entries for the shine's reason. */
+#define TRACKER_SPANS_MAX 4
+global_variable uintptr_t s_trackerRangeStart[2][TRACKER_SPANS_MAX];
+global_variable uintptr_t s_trackerRangeEnd[2][TRACKER_SPANS_MAX];
+global_variable int s_trackerRangeCount[2];
 
 void NativeGpu_MarkSkyRange(uintptr_t start, uintptr_t end)
 {
@@ -2246,6 +2264,19 @@ void NativeGpu_MarkScreenFadeRange(uintptr_t start, uintptr_t end)
 	s_screenfadeRangeCount[s_skyRangeWriteIdx] = n + 1;
 }
 
+void NativeGpu_MarkTrackerRange(uintptr_t start, uintptr_t end)
+{
+	int n = s_trackerRangeCount[s_skyRangeWriteIdx];
+
+	if ((end <= start) || (n >= TRACKER_SPANS_MAX))
+	{
+		return;
+	}
+	s_trackerRangeStart[s_skyRangeWriteIdx][n] = start;
+	s_trackerRangeEnd[s_skyRangeWriteIdx][n] = end;
+	s_trackerRangeCount[s_skyRangeWriteIdx] = n + 1;
+}
+
 void NativeGpu_PublishSkyRange(void)
 {
 	s_skyRangeReadIdx = s_skyRangeWriteIdx;
@@ -2271,6 +2302,7 @@ void NativeGpu_ClearSkyRange(void)
 	s_uipicRangeEnd[s_skyRangeWriteIdx] = 0;
 	s_hudshineRangeCount[s_skyRangeWriteIdx] = 0;
 	s_screenfadeRangeCount[s_skyRangeWriteIdx] = 0;
+	s_trackerRangeCount[s_skyRangeWriteIdx] = 0;
 #ifdef NATIVE_WALK_CENSUS
 	memset(s_wcMark[s_skyRangeWriteIdx], 0, sizeof(s_wcMark[0]));
 #endif
@@ -2336,6 +2368,20 @@ internal int NativeGpu_IsScreenFadePacket(uintptr_t addr)
 	for (i = 0; i < s_screenfadeRangeCount[s_skyRangeReadIdx]; i++)
 	{
 		if ((addr >= s_screenfadeRangeStart[s_skyRangeReadIdx][i]) && (addr < s_screenfadeRangeEnd[s_skyRangeReadIdx][i]))
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+internal int NativeGpu_IsTrackerPacket(uintptr_t addr)
+{
+	int i;
+
+	for (i = 0; i < s_trackerRangeCount[s_skyRangeReadIdx]; i++)
+	{
+		if ((addr >= s_trackerRangeStart[s_skyRangeReadIdx][i]) && (addr < s_trackerRangeEnd[s_skyRangeReadIdx][i]))
 		{
 			return 1;
 		}
@@ -2646,8 +2692,11 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 	 * stereo flatten -- the burst stays at retail X while the fruit moves with
 	 * the wide window. The per-player full-window fade takes the same leg for
 	 * the same reason: on the world-bucket fallback the track and models
-	 * depth-test through the flash. */
-	if (GTECapture_LookupSuppressed() || (g_dbg_hudShine && s_hudshineNodeActive) || (g_dbg_screenFade && s_screenfadeNodeActive))
+	 * depth-test through the flash. The lock-on bracket takes it too: on the
+	 * fallback its corners pick up the kart's own captured depth and the kart
+	 * cuts through it. */
+	if (GTECapture_LookupSuppressed() || (g_dbg_hudShine && s_hudshineNodeActive) || (g_dbg_screenFade && s_screenfadeNodeActive) ||
+	    (g_dbg_trackerUi && s_trackerNodeActive))
 	{
 		/* 2D in the UI band: no depth exists, and it must stay on top of every
 		 * world stamp. Ordinal ordering is preserved WITHIN the band so UI
@@ -2734,6 +2783,12 @@ internal int PacketDepth_ResolveXY(const s16 *xs, const s16 *ys, int n, u16 *out
 					else if (g_dbg_screenFade && s_screenfadeNodeActive)
 					{
 						*out = PKTDEPTH_UI_STAMP_SCREENFADE;
+					}
+					/* Lock-on bracket: re-pinned likewise; the stamp keys
+					 * the widescreen X-ramp exemption. */
+					else if (g_dbg_trackerUi && s_trackerNodeActive)
+					{
+						*out = PKTDEPTH_UI_STAMP_TRACKER;
 					}
 				}
 			}
@@ -5542,6 +5597,7 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			s_uipicNodeActive = NativeGpu_IsUiPicPacket((uintptr_t)basePacket);
 			s_hudshineNodeActive = NativeGpu_IsHudShinePacket((uintptr_t)basePacket);
 			s_screenfadeNodeActive = NativeGpu_IsScreenFadePacket((uintptr_t)basePacket);
+			s_trackerNodeActive = NativeGpu_IsTrackerPacket((uintptr_t)basePacket);
 #endif
 			if (tagLength > 0)
 			{

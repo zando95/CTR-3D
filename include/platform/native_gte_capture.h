@@ -114,6 +114,12 @@ void NativeGpu_MarkHudShineRange(uintptr_t start, uintptr_t end);
  * Same lifecycle as the sky pair; inert on PC. Runtime A/B: dumpreq
  * 'screenfade' (default ON). */
 void NativeGpu_MarkScreenFadeRange(uintptr_t start, uintptr_t end);
+/* Lock-on bracket span (PKTDEPTH_UI_STAMP_TRACKER): UI_TrackerSelf's prims,
+ * which retail links into each player's OT rather than the UI OT. Marked once
+ * per player per frame and kept as separate entries, never a union. Same
+ * lifecycle as the sky pair; inert on PC. Runtime A/B: dumpreq 'trackerui'
+ * (default ON). */
+void NativeGpu_MarkTrackerRange(uintptr_t start, uintptr_t end);
 /* The character-select diorama backdrop (MM_Characters' RwdBlueRect strips):
  * screen-space quads with no captured depth, which the resolver would
  * otherwise leave on the raw emit ordinal where the menu flag buries them.

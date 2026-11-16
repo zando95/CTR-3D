@@ -3815,7 +3815,10 @@ internal void N3DS_ConvertTriangleVerts(N3DS_Vertex *dst3, const GrVertex *triVe
 			extern int g_dbg_packetDepth;
 			s16 sx = (s16)src->x;
 
-			if (g_dbg_packetDepth && (src->emitOrdinal >= 0xFFC0u))
+			/* The lock-on bracket is band-stamped for its draw order only: it
+			 * sits on the kart's world projection, which the wide window
+			 * leaves in place, so the HUD ramp would pull it off the kart. */
+			if (g_dbg_packetDepth && (src->emitOrdinal >= 0xFFC0u) && (src->emitOrdinal != PKTDEPTH_UI_STAMP_TRACKER))
 			{
 				sx = (s16)NativeWide_UiShiftX((int)sx);
 
@@ -6812,7 +6815,7 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles)
 					 * routed leg keeps 0xFFFD -- the bottom pass needs the
 					 * map a step behind the FPS text's 0xFFFE. */
 					if ((triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_UIPIC) || (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_HUDSHINE) ||
-					    (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_SCREENFADE) ||
+					    (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_SCREENFADE) || (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_TRACKER) ||
 					    (!g_dbg_btmMap && (triVerts[0].emitOrdinal == PKTDEPTH_UI_STAMP_BTMMAP)))
 					{
 						const s16 pinned = (s16)(0xFFFFu - 32768);

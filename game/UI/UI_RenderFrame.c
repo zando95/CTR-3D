@@ -11,6 +11,7 @@ extern void NativeGpu_MarkUiMapRange(uintptr_t start, uintptr_t end, int retailT
 // The juiced-wumpa shine (UI_Weapon_DrawBG) draws into the player's OT, not the
 // UI OT, so nothing downstream classifies it as UI without this span mark.
 extern void NativeGpu_MarkHudShineRange(uintptr_t start, uintptr_t end);
+extern void NativeGpu_MarkTrackerRange(uintptr_t start, uintptr_t end);
 #endif
 #ifdef CTR_NATIVE
 // Bottom-screen map hook (platform/native_gpu.c). RouteActive lets the map
@@ -547,7 +548,18 @@ void UI_RenderFrame_Racing()
 
 			// draw lock-on target for driver, if
 			// a missile or warpball is chasing them
-			UI_TrackerSelf(playerStruct);
+			{
+#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+				// The bracket is a screen overlay linked into the player's OT;
+				// the span mark keeps the 3DS renderer from depth-testing it
+				// against the world and the kart it surrounds.
+				uintptr_t trackerPrimStart = (uintptr_t)gGT->backBuffer->primMem.cursor;
+#endif
+				UI_TrackerSelf(playerStruct);
+#if defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+				NativeGpu_MarkTrackerRange(trackerPrimStart, (uintptr_t)gGT->backBuffer->primMem.cursor);
+#endif
+			}
 
 			// If you're in Battle
 			if ((gameMode1 & BATTLE_MODE) != 0)
