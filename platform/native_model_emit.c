@@ -929,8 +929,10 @@ void NativeModelEmit_EndInstance(void)
  * Off-screen and near faces are not rejected: the GPU clips them, and models
  * have no near plane.
  *
- * Texture layouts are re-read on every draw, since a layout can be rewritten at
- * runtime. The colour table's contents are hashed into the key on every draw,
+ * A record holds each face's texture-table index, never the layout it named:
+ * the table entry and the layout are both read again on every draw, since
+ * animated textures (CTR_CycleTex_Model, e.g. a blink) rewrite table entries
+ * while the table pointer in the key stays the same. The colour table's contents are hashed into the key on every draw,
  * since a setup callback can rewrite the table between instances; each colour
  * variant is its own entry. Every entry is dropped when the level changes:
  * frame and command pointers are MEMPACK addresses that a later load reuses.
@@ -973,7 +975,7 @@ struct NativeModelCacheTri
 	s16 p[3][3];
 	u8 rgb[3][3];
 	u8 flags;
-	const struct TextureLayout *tex;
+	u16 texIndex; /* command's texture-table index, 0 = untextured */
 	float n[3];
 };
 
@@ -1018,9 +1020,7 @@ int g_dbg_modelCache = 1;
 #define MODELPOSE_MAX_TOPOS  128
 #define MODELPOSE_MAX_VERTS  1024
 
-/* texIndex: the command's texture-table index (0 = untextured), resolved
- * through the instance's table at build time, since a table entry can be
- * rewritten while the table pointer in the key stays the same. */
+/* texIndex: the command's texture-table index (0 = untextured). */
 struct NativeModelPoseTri
 {
 	u16 v[3]; /* 1-based decode order */
@@ -1070,7 +1070,6 @@ global_variable int s_mcFillInstNeg;
 /* The open fill's topology: each triangle's corner vertices in decode order.
  * Cleared when a corner names no vertex this instance decoded. */
 global_variable u16 s_mcFillVid[MODELCACHE_FILL_MAX_TRIS][3];
-global_variable u16 s_mcFillTexIdx[MODELCACHE_FILL_MAX_TRIS];
 global_variable int s_mcFillVidOk;
 global_variable u32 s_mcFillMaxVid;
 #ifdef CTR_INTERNAL
@@ -1529,6 +1528,7 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 	struct NativeModelCacheKey key;
 	struct NativeModelCacheEntry *e;
 	const struct NativeModelCacheTri *tris;
+	const struct TextureLayout *const *texTable;
 	float eye[3], det;
 	int instNeg;
 	u32 t;
@@ -1566,13 +1566,14 @@ int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp)
 	}
 	instNeg = ((s16)(u16)idpp->instFlags < 0);
 	tris = (const struct NativeModelCacheTri *)(s_mcArena + e->offset);
+	texTable = (const struct TextureLayout *const *)e->key.texLayout;
 
 	for (t = 0; t < e->triCount; t++)
 	{
 		const struct NativeModelCacheTri *src = &tris[t];
 		struct NativeModelEmitFace *face;
 		struct NativeModelEmitVert *v;
-		const struct TextureLayout *tex = src->tex;
+		const struct TextureLayout *tex = ((src->texIndex != 0) && (texTable != NULL)) ? texTable[src->texIndex - 1] : NULL;
 		int k;
 
 		if (!NativeModelCache_FaceDrawn(src, eye, det, instNeg))
@@ -1706,8 +1707,7 @@ internal void NativeModelCache_TriNormal(struct NativeModelCacheTri *t)
 
 /* vid3: each corner's vertex in decode order, 1-based; 0 = not decoded by
  * this instance (a stack slot read before any write). */
-void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, u32 drawCommand,
-                                   int retailVerdict, const int *vid3)
+void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, u32 drawCommand, int retailVerdict, const int *vid3)
 {
 	struct NativeModelCacheTri *t;
 	int k;
@@ -1736,7 +1736,6 @@ void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, co
 		}
 		s_mcFillVid[s_mcFillCount][k] = (u16)v;
 	}
-	s_mcFillTexIdx[s_mcFillCount] = (u16)(drawCommand & 0x1ffu);
 
 	t = &s_mcFillTris[s_mcFillCount++];
 	for (k = 0; k < 3; k++)
@@ -1755,7 +1754,7 @@ void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, co
 	{
 		t->flags |= MODELCACHE_TRI_FLIP;
 	}
-	t->tex = tex;
+	t->texIndex = (u16)(drawCommand & 0x1ffu);
 	NativeModelCache_TriNormal(t);
 
 	if (retailVerdict != 0)
@@ -1871,7 +1870,7 @@ internal void NativeModelCache_StoreTopo(void)
 	for (i = 0; i < s_mcFillCount; i++)
 	{
 		memcpy(dst[i].v, s_mcFillVid[i], sizeof(dst[i].v));
-		dst[i].texIndex = s_mcFillTexIdx[i];
+		dst[i].texIndex = s_mcFillTris[i].texIndex;
 		memcpy(dst[i].rgb, s_mcFillTris[i].rgb, sizeof(dst[i].rgb));
 		dst[i].flags = s_mcFillTris[i].flags;
 	}
@@ -1893,7 +1892,7 @@ internal void NativeModelCache_CheckPose(void)
 		const struct NativeModelCacheTri *b = &s_mcFillTris[i];
 
 		same = (memcmp(a->p, b->p, sizeof(a->p)) == 0) && (memcmp(a->rgb, b->rgb, sizeof(a->rgb)) == 0) && (a->flags == b->flags) &&
-		       (a->tex == b->tex) && (memcmp(a->n, b->n, sizeof(a->n)) == 0);
+		       (a->texIndex == b->texIndex) && (memcmp(a->n, b->n, sizeof(a->n)) == 0);
 		if (!same && (s_mpWinCheckMismatch < 4))
 		{
 			const int pm = memcmp(a->p, b->p, sizeof(a->p)) != 0;
@@ -1901,7 +1900,7 @@ internal void NativeModelCache_CheckPose(void)
 
 			Platform_LogInstrument("[MDLPOSE] mismatch %.15s tri %lu/%lu: p%d rgb%d flags%d tex%d | p %d,%d,%d %d,%d,%d %d,%d,%d vs %d,%d,%d %d,%d,%d %d,%d,%d | rgb0 "
 			                       "%02x%02x%02x vs %02x%02x%02x\n",
-			                       s_mcFillName, (unsigned long)i, (unsigned long)s_mcFillCount, pm, cm, a->flags != b->flags, a->tex != b->tex, a->p[0][0],
+			                       s_mcFillName, (unsigned long)i, (unsigned long)s_mcFillCount, pm, cm, a->flags != b->flags, a->texIndex != b->texIndex, a->p[0][0],
 			                       a->p[0][1], a->p[0][2], a->p[1][0], a->p[1][1], a->p[1][2], a->p[2][0], a->p[2][1], a->p[2][2], b->p[0][0], b->p[0][1],
 			                       b->p[0][2], b->p[1][0], b->p[1][1], b->p[1][2], b->p[2][0], b->p[2][1], b->p[2][2], a->rgb[0][0], a->rgb[0][1],
 			                       a->rgb[0][2], b->rgb[0][0], b->rgb[0][1], b->rgb[0][2]);
@@ -1986,7 +1985,6 @@ u32 NativeModelCache_PoseVertexCount(const struct InstDrawPerPlayer *idpp)
 int NativeModelCache_InsertPose(const u32 *packedXY, const u32 *packedZ)
 {
 	const struct NativeModelPoseTri *src;
-	const struct TextureLayout *const *texTable = (const struct TextureLayout *const *)s_mpCurKey.texLayout;
 	struct NativeModelCacheTri *out = s_mcFillTris;
 	u32 i;
 	int k;
@@ -2014,7 +2012,7 @@ int NativeModelCache_InsertPose(const u32 *packedXY, const u32 *packedZ)
 		}
 		memcpy(t->rgb, src[i].rgb, sizeof(t->rgb));
 		t->flags = src[i].flags;
-		t->tex = (src[i].texIndex != 0) ? texTable[src[i].texIndex - 1] : NULL;
+		t->texIndex = src[i].texIndex;
 		NativeModelCache_TriNormal(t);
 	}
 #ifdef CTR_INTERNAL

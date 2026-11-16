@@ -40,8 +40,8 @@ extern void NativeModelEmit_OwnGteStores(void);
 extern int NativeModelEmit_SpecularEnabled(void);
 extern int NativeModelCache_TryEmit(const struct InstDrawPerPlayer *idpp);
 extern int NativeModelCache_BeginFill(const struct InstDrawPerPlayer *idpp);
-extern void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, const struct TextureLayout *tex, u32 drawCommand,
-                                          int retailVerdict, const int *vid3);
+extern void NativeModelCache_FillTriangle(const u32 *packedXY3, const u32 *packedZ3, const int *color3, u32 drawCommand, int retailVerdict,
+                                          const int *vid3);
 extern u32 NativeModelCache_PoseVertexCount(const struct InstDrawPerPlayer *idpp);
 extern int NativeModelCache_InsertPose(const u32 *packedXY, const u32 *packedZ);
 extern void NativeModelCache_AbortFill(void);
@@ -4967,7 +4967,7 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 				}
 				if (mdlFilling)
 				{
-					struct TextureLayout *fillTex = RenderBucket_GetCommandTexture(ctx, drawCommand, &isValidTexture);
+					RenderBucket_GetCommandTexture(ctx, drawCommand, &isValidTexture);
 
 					if (isValidTexture != 0)
 					{
@@ -4976,7 +4976,7 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 						const int fillColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
 						const int fillVid[3] = {ctx->tempVid[1], ctx->tempVid[2], ctx->tempVid[3]};
 
-						NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, fillTex, drawCommand, s_rbqNclipVerdict, fillVid);
+						NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, drawCommand, s_rbqNclipVerdict, fillVid);
 					}
 				}
 #endif
@@ -4999,7 +4999,7 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 				const int fillColor[3] = {ctx->tempColor[1], ctx->tempColor[2], ctx->tempColor[3]};
 				const int fillVid[3] = {ctx->tempVid[1], ctx->tempVid[2], ctx->tempVid[3]};
 
-				NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, tex, drawCommand, s_rbqNclipVerdict, fillVid);
+				NativeModelCache_FillTriangle(fillXY, fillZ, fillColor, drawCommand, s_rbqNclipVerdict, fillVid);
 			}
 #endif
 
