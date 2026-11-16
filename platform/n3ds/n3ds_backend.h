@@ -699,6 +699,9 @@ void N3DS_DebugSetVRAMForDump(const void *vram, unsigned int bytes, const unsign
  * Reported on screen so runaway allocation is visible as it happens. */
 unsigned long N3DS_HeapUsedBytes(void);
 unsigned long N3DS_LinearFreeBytes(void);
+/* Size of the application heap as launched: about 14 MiB on an original 3DS in
+ * its 64 MiB mode, more in a CIA's extended memory mode or on a New 3DS. */
+unsigned long N3DS_HeapSizeBytes(void);
 /* One log line: heap size and bytes in use, linear heap size and bytes free, tagged with `where`,
  * flushed to the card before it returns. Boot and load only. */
 void N3DS_LogMemory(const char *where);

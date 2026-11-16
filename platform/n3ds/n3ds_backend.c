@@ -5584,6 +5584,11 @@ unsigned long N3DS_LinearFreeBytes(void)
 	return (unsigned long)linearSpaceFree();
 }
 
+unsigned long N3DS_HeapSizeBytes(void)
+{
+	return (unsigned long)envGetHeapSize();
+}
+
 void N3DS_LogMemory(const char *where)
 {
 	struct mallinfo mi = mallinfo();

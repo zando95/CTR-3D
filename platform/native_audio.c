@@ -4344,14 +4344,20 @@ internal int NativeAudio_XAStreamCountAudioSectors(struct NativeAudioXaSource *s
  * cached too (s_xaCacheRaceStings).
  */
 /* Blob size, fixed before the blob is allocated. A New 3DS has the heap for
- * every GAME and EXTRA line. An original 3DS has about 14 MiB of heap for the
- * whole game, about 3.7 MiB of which the rest of the game needs at its peak in
- * a race, so it caches up to 8 MiB (the race stings first, then voice lines)
- * while leaving NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE free, and the rest
- * stream from the SD card. A build with less heap (a larger executable) gets a
- * smaller cache, not a level that fails to load. */
+ * every GAME and EXTRA line. An original 3DS in its standard 64 MiB mode (every
+ * .3dsx) has about 14 MiB of heap for the whole game, about 3.7 MiB of which the
+ * rest of the game needs at its peak in a race, so it caches up to 8 MiB (the
+ * race stings first, then voice lines) while leaving
+ * NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE free, and the rest stream from the
+ * SD card. An original 3DS running the CIA in an extended memory mode has a heap
+ * of at least NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_EXT_HEAP and caches up to the
+ * New 3DS size while leaving NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_EXT_RESERVE free. A build with less heap (a larger executable) gets
+ * a smaller cache, not a level that fails to load. */
 #define NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES  (32u * 1024u * 1024u)
 #define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES  (8u * 1024u * 1024u)
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_EXT_HEAP (24u * 1024u * 1024u)
+/* Left free in extended memory: the game's own heap peaks near 5.4 MiB in a race on the Old 3DS. */
+#define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_EXT_RESERVE (8u * 1024u * 1024u)
 #define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE (5u * 1024u * 1024u)
 #define NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP   (512u * 1024u)
 internal u32 s_xaVoiceCacheMaxBytes = NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES;
@@ -4550,16 +4556,20 @@ internal u32 NativeAudio_XAVoiceCachePlannedSectors(int categoryID)
 	return total;
 }
 
-/* The largest blob up to NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES that leaves
- * the reserve free, found by allocating blob and reserve together (the heap's
- * size is not visible from this file). 0 when not even one step fits. */
+/* The largest blob up to the original 3DS cap for this heap that leaves the
+ * reserve free, found by allocating blob and reserve together (the heap's free
+ * space is not visible from this file). 0 when not even one step fits. */
 internal u32 NativeAudio_XAVoiceCacheOld3DSBytes(void)
 {
+	const int extended = N3DS_HeapSizeBytes() >= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_EXT_HEAP;
+	const u32 cap = extended ? NATIVE_AUDIO_XA_VOICE_CACHE_NEW3DS_BYTES : NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES;
+	const u32 reserve = extended ? NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_EXT_RESERVE : NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE;
 	u32 bytes;
 
-	for (bytes = NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_BYTES; bytes >= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP; bytes -= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP)
+	for (bytes = cap; bytes >= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP; bytes -= NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_STEP)
 	{
-		void *probe = malloc((size_t)bytes + NATIVE_AUDIO_XA_VOICE_CACHE_OLD3DS_RESERVE);
+		/* volatile: a malloc whose result is only freed is removable, and GCC then treats it as succeeding. */
+		void *volatile probe = malloc((size_t)bytes + reserve);
 
 		if (probe != NULL)
 		{
