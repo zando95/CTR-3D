@@ -4494,6 +4494,7 @@ internal struct
 	int sectors;
 	u32 readSectors;    /* disc/SD sectors this warm has actually read */
 	u32 plannedSectors; /* what it set out to read; 0 until the plan is known */
+	u32 settledSectors; /* planned sectors a file will never read: skipped, or shorter than its slot */
 } s_vce;
 
 /* Resumable state for one category's build pass (GAME then EXTRA). A step
@@ -4514,7 +4515,23 @@ internal struct
 	u8 *fileBuf;
 	int span;
 	int pos;
+	int filePlan; /* the plan's sector count for the file in hand */
+	int fileRead; /* sectors of it actually read */
 } s_xacb;
+
+/* Closes out a file's share of the read plan. A file that is skipped (will not
+ * open, no scratch memory, short read) or shorter than its XNF slot reads less
+ * than planned; the shortfall counts as settled so the percentage tracks the
+ * work that remains instead of stalling and jumping at the end. */
+internal void NativeAudio_XAVoiceCacheFileSettle(void)
+{
+	if (s_xacb.filePlan > s_xacb.fileRead)
+	{
+		s_vce.settledSectors += (u32)(s_xacb.filePlan - s_xacb.fileRead);
+	}
+	s_xacb.filePlan = 0;
+	s_xacb.fileRead = 0;
+}
 
 /* Disc sectors one category's build pass sets out to read: each wanted file is
  * read once, across the longest slot any wanted track occupies in it -- the
@@ -4633,10 +4650,21 @@ internal int NativeAudio_XAVoiceCacheBuildCategoryStep(int budgetSectors)
 			s_xacb.fileNumber++;
 			continue;
 		}
+		s_xacb.filePlan = 0;
+		s_xacb.fileRead = 0;
+		for (i = 0; i < s_xacb.numWanted; i++)
+		{
+			if ((s_xaVoiceCacheScratch[i].info.fileNumber == s_xacb.fileNumber) && (s_xaVoiceCacheScratch[i].info.numSectors > s_xacb.filePlan))
+			{
+				s_xacb.filePlan = s_xaVoiceCacheScratch[i].info.numSectors;
+			}
+		}
+
 		if (!NativeAudio_BuildXAPathForPack(path, sizeof(path), s_xacb.pack, s_xacb.categoryID, s_xacb.fileNumber) ||
 		    !NativeAudio_XASourceOpenForPack(&s_xacb.src, path, s_xacb.pack, 0))
 		{
 			NativeAudio_XAVoiceCacheLog("[XAPRELOAD] cannot open %s -- its tracks stay on the SD path", path);
+			NativeAudio_XAVoiceCacheFileSettle();
 			s_xacb.fileNumber++;
 			continue;
 		}
@@ -4665,6 +4693,7 @@ internal int NativeAudio_XAVoiceCacheBuildCategoryStep(int budgetSectors)
 			NativeAudio_XAVoiceCacheLog("[XAPRELOAD] no %d KiB scratch for %s -- its tracks stay on the SD path",
 			                            (s_xacb.span * s_xacb.src.sectorSize) >> 10, path);
 			NativeAudio_XASourceClose(&s_xacb.src);
+			NativeAudio_XAVoiceCacheFileSettle();
 			s_xacb.fileNumber++;
 			continue;
 		}
@@ -4695,11 +4724,13 @@ internal int NativeAudio_XAVoiceCacheBuildCategoryStep(int budgetSectors)
 			s_xacb.fileBuf = NULL;
 			NativeAudio_XASourceClose(&s_xacb.src);
 			s_xacb.srcOpen = 0;
+			NativeAudio_XAVoiceCacheFileSettle();
 			s_xacb.fileNumber++;
 			return 0;
 		}
 
 		s_vce.readSectors += (u32)chunk;
+		s_xacb.fileRead += chunk;
 		s_xacb.pos += chunk;
 		if (s_xacb.pos < s_xacb.span)
 		{
@@ -4770,6 +4801,7 @@ internal int NativeAudio_XAVoiceCacheBuildCategoryStep(int budgetSectors)
 	s_xacb.fileBuf = NULL;
 	NativeAudio_XASourceClose(&s_xacb.src);
 	s_xacb.srcOpen = 0;
+	NativeAudio_XAVoiceCacheFileSettle();
 	s_xacb.fileNumber++;
 	return 0;
 }
@@ -5149,7 +5181,7 @@ int NativeAudio_VoiceCacheWarmPercent(void)
 		return 0;
 	}
 
-	pct = (u32)(((u64)s_vce.readSectors * 100u) / s_vce.plannedSectors);
+	pct = (u32)(((u64)(s_vce.readSectors + s_vce.settledSectors) * 100u) / s_vce.plannedSectors);
 	return (pct > 99u) ? 99 : (int)pct;
 #else
 	return 0;
