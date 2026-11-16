@@ -17,7 +17,7 @@ It's been some time since Beta 1.0 released, and this update aims to polish off 
 - Support for PAL voices (Requires your own PAL disc image; see README.)
 - Easter egg: Retro-Fueled mode. Toggle with the existing Super Turbo Pads cheat code. Look up the Retro-Fueled mod for more information on how this mode works.
 - CTR Challenge and Relic Race can be chosen from Arcade menu.
-- EXPERIMENTAL: Boots and plays on Old 3DS.
+- EXPERIMENTAL: Boots and plays on Old 3DS. If you're playing on an Old 3DS, I recommend installing the .cia. This lets us keep more of the game's audio in memory, which reduces hitches.
 
 ### QOL
 
