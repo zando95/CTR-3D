@@ -103,10 +103,11 @@ typedef struct
 
 	const char *debugText;
 
-	/* This split is driver-local exhaust smoke (Particle.c tagged its packet
-	 * with code bit 0x01). Forces a dedicated split via the AddSplit
-	 * coalescing check and makes DrawAllSplits hold it out of the normal pass
-	 * for a redraw after the native model pass. Always 0 off 3DS. */
+	/* This split draws in the post-model pass: driver-local exhaust smoke
+	 * (Particle.c registered its packet address) or a blended held-shield
+	 * layer. Forces a dedicated split via the AddSplit coalescing check and
+	 * makes DrawAllSplits hold it out of the normal pass for a redraw after
+	 * the native model pass. Always 0 off 3DS. */
 	bool deferredSmoke;
 } GPUDrawSplit;
 
@@ -4540,9 +4541,20 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	/* Consume the smoke one-shot up front so every early return below leaves it
 	 * cleared -- a coalesce that keeps the current split must not let the flag
 	 * leak onto the following primitive. */
-	const bool wantDeferredSmoke = (s_ngpuDeferSmokeNext != 0);
+	bool wantDeferredSmoke = (s_ngpuDeferSmokeNext != 0);
 
 	s_ngpuDeferSmokeNext = 0;
+
+#if defined(__3DS__) && defined(CTR_NATIVE) && CTR_NATIVE_GTE_CAPTURE
+	/* Held-shield bubble layers (the pinned paint-on-top range) that blend draw
+	 * in the post-model pass with the smoke. Blends write no depth, so drawn in
+	 * the walk's merge they would be painted over by every opaque native model
+	 * drawn after it: the shortcut door, other karts, the shield's own kart. */
+	if (semiTrans && (GTECapture_NodePaintNear() == 1) && (GTECapture_NodePaintNearPin() != 0))
+	{
+		wantDeferredSmoke = true;
+	}
+#endif
 
 	if (framebufferFeedback)
 	{
@@ -4724,8 +4736,8 @@ internal void SetPSXMaskState(u32 code)
  * the post-model redraw. One kart's exhaust is a handful of quads; the copy is
  * cheap and immune to buffer reuse.
  */
-#define NATIVE_DEFERRED_SMOKE_MAX_SPLITS 64
-#define NATIVE_DEFERRED_SMOKE_MAX_VERTS 2048
+#define NATIVE_DEFERRED_SMOKE_MAX_SPLITS 256
+#define NATIVE_DEFERRED_SMOKE_MAX_VERTS 4096
 global_variable GPUDrawSplit s_deferredSmokeSplits[NATIVE_DEFERRED_SMOKE_MAX_SPLITS];
 global_variable GrVertex s_deferredSmokeVerts[NATIVE_DEFERRED_SMOKE_MAX_VERTS];
 global_variable int s_deferredSmokeSplitCount = 0;
@@ -4741,7 +4753,7 @@ internal void NativeGpu_CaptureDeferredSmoke(const GPUDrawSplit *split)
 	int base = s_deferredSmokeVertCount;
 	int k;
 
-	if ((s_deferredSmokeSplitCount >= NATIVE_DEFERRED_SMOKE_MAX_SPLITS) || (base + n > NATIVE_DEFERRED_SMOKE_MAX_VERTS))
+	if (base + n > NATIVE_DEFERRED_SMOKE_MAX_VERTS)
 	{
 		s_deferredSmokeDropped++;
 		return;
@@ -4749,6 +4761,35 @@ internal void NativeGpu_CaptureDeferredSmoke(const GPUDrawSplit *split)
 	for (k = 0; k < n; k++)
 	{
 		s_deferredSmokeVerts[base + k] = s_gpu.vertexBuffer[split->startVertex + k];
+	}
+	/* AddSplit opens a split per primitive for some state (textured
+	 * semi-transparency), so a captured split that matches the previous one in
+	 * every field DrawSplit reads, and whose vertices follow it, extends it.
+	 * Textured semi-transparent splits stay separate: DrawSplit draws each in
+	 * two passes, and merging would reorder those passes across primitives. */
+	if (s_deferredSmokeSplitCount > 0)
+	{
+		GPUDrawSplit *prev = &s_deferredSmokeSplits[s_deferredSmokeSplitCount - 1];
+
+		if (!split->psxTexturedSemiTrans && !prev->psxTexturedSemiTrans && ((int)prev->startVertex + (int)prev->numVerts == base) &&
+		    (prev->blendMode == split->blendMode) && (prev->texFormat == split->texFormat) && (prev->textureId == split->textureId) &&
+		    (prev->drawPrimMode == split->drawPrimMode) && (prev->psxTextureOutputSTP == split->psxTextureOutputSTP) &&
+		    (prev->psxDrawMaskSet == split->psxDrawMaskSet) && (prev->debugText == split->debugText) &&
+		    (prev->drawenv.clip.x == split->drawenv.clip.x) && (prev->drawenv.clip.y == split->drawenv.clip.y) &&
+		    (prev->drawenv.clip.w == split->drawenv.clip.w) && (prev->drawenv.clip.h == split->drawenv.clip.h) &&
+		    (prev->drawenv.dfe == split->drawenv.dfe) && (prev->drawenv.tw.w == split->drawenv.tw.w) && (prev->drawenv.tw.h == split->drawenv.tw.h) &&
+		    (prev->dispenv.disp.x == split->dispenv.disp.x) && (prev->dispenv.disp.y == split->dispenv.disp.y) &&
+		    (prev->dispenv.disp.w == split->dispenv.disp.w) && (prev->dispenv.disp.h == split->dispenv.disp.h))
+		{
+			prev->numVerts = (u16)(prev->numVerts + n);
+			s_deferredSmokeVertCount += n;
+			return;
+		}
+	}
+	if (s_deferredSmokeSplitCount >= NATIVE_DEFERRED_SMOKE_MAX_SPLITS)
+	{
+		s_deferredSmokeDropped++;
+		return;
 	}
 	s_deferredSmokeSplits[s_deferredSmokeSplitCount] = *split;
 	s_deferredSmokeSplits[s_deferredSmokeSplitCount].startVertex = (u16)base;
@@ -4785,6 +4826,22 @@ void NativeGpu_DrawDeferredSmoke(void)
 	{
 		return;
 	}
+#ifdef CTR_INTERNAL
+	{
+		static int s_dsHiSplits;
+		static int s_dsHiVerts;
+		static u32 s_dsLoggedDropped;
+
+		if ((s_deferredSmokeSplitCount > s_dsHiSplits) || (s_deferredSmokeVertCount > s_dsHiVerts) || (s_deferredSmokeDropped != s_dsLoggedDropped))
+		{
+			s_dsHiSplits = (s_deferredSmokeSplitCount > s_dsHiSplits) ? s_deferredSmokeSplitCount : s_dsHiSplits;
+			s_dsHiVerts = (s_deferredSmokeVertCount > s_dsHiVerts) ? s_deferredSmokeVertCount : s_dsHiVerts;
+			s_dsLoggedDropped = s_deferredSmokeDropped;
+			Platform_LogInstrument("[POSTMODEL] high-water splits=%d/%d verts=%d/%d dropped=%lu\n", s_dsHiSplits, NATIVE_DEFERRED_SMOKE_MAX_SPLITS, s_dsHiVerts,
+			                       NATIVE_DEFERRED_SMOKE_MAX_VERTS, (unsigned long)s_deferredSmokeDropped);
+		}
+	}
+#endif
 	NativeRenderer_UpdateVertexBuffer(s_deferredSmokeVerts, s_deferredSmokeVertCount);
 	for (i = 0; i < s_deferredSmokeSplitCount; i++)
 	{
