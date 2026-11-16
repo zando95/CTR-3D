@@ -46,6 +46,7 @@ It's been some time since Beta 1.0 released, and this update aims to polish off 
 - The world no longer blinks out for a frame when you drive into the next Adventure hub.
 - TNT exploding on a racer's head can no longer occasionally cause the game to crash
 - Fixed pause menu having line of random pixels along the bottom
+- Warp orbs can no longer occasionally cause the game to crash.
 
 ## beta 1.0 (2026-09-16)
 
