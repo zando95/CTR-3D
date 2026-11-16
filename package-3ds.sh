@@ -91,8 +91,14 @@ A homebrew port of Crash Team Racing (PS1, 1999). CTR 3D is a fork of
 CTR Native, the native PC port built on the CTR-ModSDK decompilation.
 
 Requirements:
-- New Nintendo 3DS, New 3DS XL, or New 2DS XL only -- the original
-  3DS/2DS is not supported.
+- New Nintendo 3DS, New 3DS XL, or New 2DS XL. This is the target.
+- The original 3DS, 3DS XL and 2DS (Old 3DS) boot and play it too, but
+  support is EXPERIMENTAL. Expect roughly 26-29 fps; heavier tracks
+  such as Tiger Temple dip lower. This .3dsx build gets 64 MB of
+  memory, which leaves a smaller voice cache. The CIA build asks for
+  80 MB of extended memory and gets a larger one. While the CIA is
+  installed, Miiverse and the Internet Browser will not open from the
+  HOME Menu.
 - Custom firmware with the Homebrew Launcher (Luma3DS).
 - One-time DSP firmware dump (Rosalina -> Miscellaneous options ->
   Dump DSP firmware), or audio will be silent.

@@ -7,11 +7,13 @@ body:
     id: platform
     attributes:
       label: Platform
-      description: Which build were you running?
+      description: Which console were you using? Old 3DS support is experimental (roughly 26-29 fps expected); reports are welcome, but low frame rate on an Old 3DS is known.
       options:
         - New 3DS
         - New 3DS XL
         - New 2DS XL
+        - Old 3DS or 3DS XL (experimental)
+        - Old 2DS (experimental)
         - PC — Windows
         - PC — Linux
     validations:
@@ -75,5 +77,5 @@ body:
       options:
         - label: I am using my own NTSC-U disc dump in raw BIN (MODE2/2352) format
           required: true
-        - label: "3DS only: I am on a New 3DS / New 3DS XL / New 2DS XL (the original 3DS/2DS is not supported). PC reporters can leave this unchecked."
+        - label: "3DS only: I know the Old 3DS / 3DS XL / 2DS is experimental and runs at a lower frame rate. PC reporters can leave this unchecked."
           required: false

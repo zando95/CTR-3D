@@ -24,7 +24,8 @@ The goal is a game that could pass for a retail 3DS port: faithful to the origin
 
 ## Requirements
 
-- A **New** Nintendo 3DS, New 3DS XL, or New 2DS XL for full speed. The original 3DS, 3DS XL and 2DS boot and play it experimentally, at a lower frame rate.
+- A **New** Nintendo 3DS, New 3DS XL, or New 2DS XL. This is the target.
+- The original 3DS, 3DS XL and 2DS (Old 3DS) boot and play it, but support is **experimental**: expect roughly 26-29 fps, lower on heavier tracks such as Tiger Temple. The `.3dsx` build gets 64 MB of memory (a smaller voice cache); the CIA build gets 80 MB, and while it is installed Miiverse and the Internet Browser will not open from the HOME Menu.
 - Custom firmware with the Homebrew Launcher ([Luma3DS](https://github.com/LumaTeam/Luma3DS)). If your console is not modded yet, [3ds.hacks.guide](https://3ds.hacks.guide/) is the place to start.
 - A one-time DSP firmware dump, or the game will be silent: open the Rosalina menu (default **L + Down + Select**), choose Miscellaneous options, then Dump DSP firmware.
 - Your own NTSC-U (North American) retail CTR disc image, in the common raw PSX BIN layout: MODE2/2352 sectors, data track starting at byte 0. A cooked 2048-byte `.iso` drops the XA and STR sectors that music, voices and video need.
