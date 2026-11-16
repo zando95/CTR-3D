@@ -5,7 +5,7 @@ include(CheckCCompilerFlag)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
-set(CTR_NATIVE_VERSION "beta 1.0")
+set(CTR_NATIVE_VERSION "beta 1.1")
 set(CTR_NATIVE_AUTHOR "CTR 3D" CACHE STRING "Author shown under the icon in the Homebrew Launcher (SMDH publisher field)")
 
 # Host builds target x86-32 with SSE. On the 3DS the devkitPro platform module
